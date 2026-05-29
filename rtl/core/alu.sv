@@ -28,53 +28,18 @@ module alu (
 
     always_comb begin
         unique case (alu_op_i)
-            ALU_ADD: begin
-                result_o = op_a_i + op_b_i;
-            end
-
-            ALU_SUB: begin
-                result_o = op_a_i - op_b_i;
-            end
-
-            ALU_SLL: begin
-                result_o = op_a_i << shamt;
-            end
-
-            ALU_SLT: begin
-                result_o = ($signed(op_a_i) < $signed(op_b_i))
-                         ? {{(XLEN-1){1'b0}}, 1'b1}
-                         : '0;
-            end
-
-            ALU_SLTU: begin
-                result_o = (op_a_i < op_b_i)
-                         ? {{(XLEN-1){1'b0}}, 1'b1}
-                         : '0;
-            end
-
-            ALU_XOR: begin
-                result_o = op_a_i ^ op_b_i;
-            end
-
-            ALU_SRL: begin
-                result_o = op_a_i >> shamt;
-            end
-
-            ALU_SRA: begin
-                result_o = $signed(op_a_i) >>> shamt;
-            end
-
-            ALU_OR: begin
-                result_o = op_a_i | op_b_i;
-            end
-
-            ALU_AND: begin
-                result_o = op_a_i & op_b_i;
-            end
-
-            default: begin
-                result_o = '0;
-            end
+            ALU_NONE:            result_o = '0;
+            ALU_ADD:             result_o = op_a_i + op_b_i;
+            ALU_SUB:             result_o = op_a_i - op_b_i;
+            ALU_XOR:             result_o = op_a_i ^ op_b_i;
+            ALU_OR:              result_o = op_a_i | op_b_i;
+            ALU_AND:             result_o = op_a_i & op_b_i;
+            ALU_SLL:             result_o = op_a_i << shamt;
+            ALU_SRL:             result_o = op_a_i >> shamt;
+            ALU_SRA:             result_o = $signed(op_a_i) >>> shamt;
+            ALU_SLT:             result_o = ($signed(op_a_i) < $signed(op_b_i)) ? {{(XLEN-1){1'b0}}, 1'b1} : '0;
+            ALU_SLTU:            result_o = (op_a_i < op_b_i) ? {{(XLEN-1){1'b0}}, 1'b1} : '0;
+            default:             result_o = '0;
         endcase
     end
 
