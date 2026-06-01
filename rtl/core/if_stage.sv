@@ -13,7 +13,6 @@
 //   - 向 imem 输出取指地址。
 //   - 计算当前 PC 对应的 PC+4。
 //   - 透传 imem 返回的 instruction 和来自前端控制的 valid。
-//   - 本文件只定义端口和说明，内部逻辑留作练习实现。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -30,6 +29,12 @@ module if_stage (
     output logic                          if_valid_o         // 当前 IF 输出是否有效。
 );
     import core_pkg::*;
+
+    assign imem_addr_o = pc_i;
+    assign if_pc_o = pc_i;
+    assign if_pc_plus4_o = pc_i + 32'd4;
+    assign if_instr_o = imem_rdata_i;
+    assign if_valid_o = pc_valid_i;
 
 endmodule
 
