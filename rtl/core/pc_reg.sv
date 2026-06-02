@@ -19,10 +19,11 @@
 `default_nettype none
 
 module pc_reg (
-    input  logic [core_pkg::XLEN-1:0]     pc_plus4_i,         // 默认顺序下一 PC，通常来自 if_stage 的 PC+4。
-    input  logic [core_pkg::XLEN-1:0]     redirect_pc_i,      // branch/JAL/JALR 产生的重定向目标 PC。
     input  logic                          clk_i,
     input  logic                          rst_n_i,
+
+    input  logic [core_pkg::XLEN-1:0]     pc_plus4_i,         // 默认顺序下一 PC，通常来自 if_stage 的 PC+4。
+    input  logic [core_pkg::XLEN-1:0]     redirect_pc_i,      // branch/JAL/JALR 产生的重定向目标 PC。
     input  logic                          redirect_valid_i,   // 为 1 时下一拍 PC 跳转到 redirect_pc_i。
     input  logic                          stall_pc_i,         // 来自 hazard/顶层控制；为 1 时保持 PC，用于 load-use 或访存等待。 
                                                               // 最简单的单周期、固定响应 imem/dmem 下，通常不需要 stall_pc_i，可以恒为 1'b0。

@@ -9,7 +9,7 @@
 //   - decoder 和 imm_gen 可在本模块内部例化，也可先在 core_top 中显式连接。
 //
 // 功能：
-//   - 接收 IF/ID 保存的 valid、PC、PC+4 和 instruction。
+//   - 接收 IF/ID 保存的 valid 和 instruction。
 //   - 输出 rs1/rs2 读地址给 regfile，并接收 regfile 读出的 rs1/rs2 数据。
 //   - 生成 ID/EX 后续需要的数据字段、立即数和控制信号。
 //   - 部分字段不直接进入 EX 组合逻辑，但需要由顶层或流水线寄存器继续带到 MEM/WB/commit。
@@ -20,8 +20,6 @@
 
 module id_stage (
     input  logic                          if_valid_i,        // IF/ID 槽是否有效。
-    input  logic [core_pkg::XLEN-1:0]     if_pc_i,           // IF/ID 保存的当前指令 PC。
-    input  logic [core_pkg::XLEN-1:0]     if_pc_plus4_i,     // IF/ID 保存的当前指令 PC + 4。
     input  logic [core_pkg::ILEN-1:0]     if_instr_i,        // IF/ID 保存的原始指令。
     input  logic [core_pkg::XLEN-1:0]     rs1_rdata_i,       // regfile 根据 rs1_addr_o 返回的 rs1 数据。
     input  logic [core_pkg::XLEN-1:0]     rs2_rdata_i,       // regfile 根据 rs2_addr_o 返回的 rs2 数据。
@@ -56,8 +54,6 @@ module id_stage (
     output logic [core_pkg::XLEN-1:0]     id_imm_o,          // imm_gen 生成的 32 bit 立即数。
 
     output logic                          id_valid_o,        // 送入 ID/EX 的 valid。
-    output logic [core_pkg::XLEN-1:0]     id_pc_o,           // 送入 ID/EX 的 PC。
-    output logic [core_pkg::XLEN-1:0]     id_pc_plus4_o,     // 送入后级保存的 PC + 4；主要用于 JAL/JALR 写回和 commit/debug。
     output logic [core_pkg::ILEN-1:0]     id_instr_o,        // 送入后级保存的原始指令；主要用于 commit trace/debug。
     output logic [core_pkg::XLEN-1:0]     id_rs1_rdata_o,    // 送入 ID/EX 的 rs1 原始读值；单周期可直接送 EX，流水线中可先进入 forwarding mux。
     output logic [core_pkg::XLEN-1:0]     id_rs2_rdata_o     // 送入 ID/EX 的 rs2 原始读值；branch、store data 和 forwarding 都会使用。
@@ -112,8 +108,6 @@ module id_stage (
     );
 
     assign id_valid_o = if_valid_i;
-    assign id_pc_o = if_pc_i;
-    assign id_pc_plus4_o = if_pc_plus4_i;
     assign id_instr_o = if_instr_i;
     assign id_rs1_rdata_o = rs1_rdata_i;
     assign id_rs2_rdata_o = rs2_rdata_i;

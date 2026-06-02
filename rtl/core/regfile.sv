@@ -11,8 +11,7 @@
 // 功能：
 //   - 为整数数据通路提供两个读端口和一个写端口。
 //   - x0 硬连为 0：对 x0 的写入会被丢弃，读取 x0 永远返回 0。
-//   - 同一周期读写同一个非零寄存器时，读端口返回本周期准备写入的数据，
-//     也就是明确采用写优先的同拍读写语义。
+//   - 读端口直接返回当前寄存器数组中的值，不在 regfile 内部做同拍写读旁路。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -52,8 +51,6 @@ module regfile (
     always_comb begin
         if (rs1_addr_i == 5'd0) begin
             rs1_rdata_o = '0;
-        end else if (we_i && (rd_addr_i == rs1_addr_i) && (rd_addr_i != 5'd0)) begin
-            rs1_rdata_o = rd_wdata_i;   //写优先的读同拍转发逻辑，相当于做了forwaring
         end else begin
             rs1_rdata_o = gpr_q[rs1_addr_i];
         end
@@ -62,8 +59,6 @@ module regfile (
     always_comb begin
         if (rs2_addr_i == 5'd0) begin
             rs2_rdata_o = '0;
-        end else if (we_i && (rd_addr_i == rs2_addr_i) && (rd_addr_i != 5'd0)) begin
-            rs2_rdata_o = rd_wdata_i;
         end else begin
             rs2_rdata_o = gpr_q[rs2_addr_i];
         end

@@ -20,12 +20,12 @@
 `default_nettype none
 
 module ex_stage (
+    input  logic                          valid_i,           // 当前 EX 槽是否有效。各阶段有各自的 valid 门控其副作用：
+                                                             // EX→redirect，MEM→dmem 写，WB→regfile 写。
     input  logic [core_pkg::XLEN-1:0]     pc_i,              // 当前 EX 阶段指令的 PC。
     input  logic [core_pkg::XLEN-1:0]     rs1_data_i,        // EX 实际使用的 rs1 数据；单周期 demo 直接来自 regfile，流水线中可来自 forwarding mux。
     input  logic [core_pkg::XLEN-1:0]     rs2_data_i,        // EX 实际使用的 rs2 数据；branch 比较和 store data 都会使用。
     input  logic [core_pkg::XLEN-1:0]     imm_i,             // ID 阶段生成并传入的 32 bit 立即数。
-    input  logic                          valid_i,           // 当前 EX 槽是否有效。各阶段有各自的 valid 门控其副作用：
-                                                             //   EX→redirect，MEM→dmem 写，WB→regfile 写。
     input  core_pkg::alu_op_e             alu_op_i,          // ALU 运算类型。
     input  core_pkg::op_a_sel_e           op_a_sel_i,        // ALU 第一个操作数选择。
     input  core_pkg::op_b_sel_e           op_b_sel_i,        // ALU 第二个操作数选择。

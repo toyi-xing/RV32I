@@ -38,12 +38,13 @@ module mem_stage (
 
     output logic                          valid_o,         // 送入 MEM/WB 的 valid；第一版 MEM 不主动丢弃指令，直接透传 valid_i。
     output logic                          mem_misaligned_o,// 为 1 时表示当前 load/store 地址不满足访问宽度对齐要求；第一版用于 halt/error，后续可接 trap。
-    output logic                          dmem_re_o,       // 输出到 dmem 的 load 读使能；地址不对齐时不发起读访问。
+    output logic                          dmem_re_o,       // 输出到 dmem 的 load 读使能；地址不对齐时不发起读访问。 
+                                                           // 实际上 RAM 无需读使能，但此处可以作为 wb 阶段写回确定
     output logic                          dmem_we_o,       // 输出到 dmem 的 store 写使能。
     output logic [3:0]                    dmem_be_o,       // 输出到 dmem 的 store byte enable，如：SH x1, 0(x2) → 写 2 个字节 → be = 0011 / 1100
     output logic [core_pkg::XLEN-1:0]     dmem_addr_o,     // 输出到 dmem 的 load/store 地址。
     output logic [core_pkg::XLEN-1:0]     dmem_wdata_o,    // 输出到 dmem 的按 byte lane 对齐后的 store 数据。
-    output logic [core_pkg::XLEN-1:0]     load_data_o     // 送往 WB 的 32 bit load 扩展结果。
+    output logic [core_pkg::XLEN-1:0]     load_data_o      // 送往 WB 的 32 bit load 扩展结果。
     
 );
     import core_pkg::*;
