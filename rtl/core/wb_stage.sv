@@ -17,15 +17,23 @@
 `default_nettype none
 
 module wb_stage (
+    input  logic                           valid_i,
+    input  logic                           reg_we_i,
     input  core_pkg::wb_sel_e              wb_sel_i,
     input  logic [core_pkg::XLEN-1:0]      alu_result_i,
     input  logic [core_pkg::XLEN-1:0]      load_data_i,
     input  logic [core_pkg::XLEN-1:0]      pc_plus4_i,
     input  logic [core_pkg::XLEN-1:0]      imm_i,
 
+    output logic                           valid_o,
+    output logic                           reg_we_o,
     output logic [core_pkg::XLEN-1:0]      wb_wdata_o
 );
     import core_pkg::*;
+
+    assign valid_o  = valid_i;
+    
+    assign reg_we_o = valid_i & reg_we_i;
 
     always_comb begin
         unique case (wb_sel_i)

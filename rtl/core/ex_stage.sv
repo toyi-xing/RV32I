@@ -6,7 +6,8 @@
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
 //   - 本模块是纯组合逻辑，不包含时钟或复位。
 //   - ALU 操作、操作数选择、分支比较类型统一使用 core_pkg.sv 中的枚举。
-//   - 第一版先接收已经完成 forwarding 选择后的 rs1/rs2 数据。
+//   - 本模块只接收 EX 实际使用的 rs1/rs2 数据：
+//     单周期 demo 中通常直接来自 ID/regfile；五级流水中可来自 forwarding mux。
 //
 // 功能：
 //   - 根据 op_a_sel_i/op_b_sel_i 选择 ALU 输入操作数。
@@ -20,8 +21,8 @@
 
 module ex_stage (
     input  logic [core_pkg::XLEN-1:0]     pc_i,              // 当前 EX 阶段指令的 PC。
-    input  logic [core_pkg::XLEN-1:0]     rs1_data_i,        // forwarding 后的 rs1 数据。
-    input  logic [core_pkg::XLEN-1:0]     rs2_data_i,        // forwarding 后的 rs2 数据，branch 比较和 store data 都会使用。
+    input  logic [core_pkg::XLEN-1:0]     rs1_data_i,        // EX 实际使用的 rs1 数据；单周期 demo 直接来自 regfile，流水线中可来自 forwarding mux。
+    input  logic [core_pkg::XLEN-1:0]     rs2_data_i,        // EX 实际使用的 rs2 数据；branch 比较和 store data 都会使用。
     input  logic [core_pkg::XLEN-1:0]     imm_i,             // ID 阶段生成并传入的 32 bit 立即数。
     input  logic                          valid_i,           // 当前 EX 槽是否有效。各阶段有各自的 valid 门控其副作用：
                                                              //   EX→redirect，MEM→dmem 写，WB→regfile 写。
@@ -32,6 +33,7 @@ module ex_stage (
     input  logic                          jump_i,            // 当前指令是否为 JAL/JALR。
     input  logic                          jalr_i,            // 当前指令是否为 JALR；JALR 目标地址需要清 bit0。
 
+    output logic                          valid_o,           // 送入 EX/MEM 的 valid；第一版 EX 不主动丢弃指令，直接透传 valid_i。
     output logic [core_pkg::XLEN-1:0]     alu_result_o,      // ALU 计算结果，向 EX/MEM 传递。
     output logic [core_pkg::XLEN-1:0]     store_data_o,      // 传给 MEM 阶段的 store 写数据。
     output logic                          branch_taken_o,    // 条件分支是否满足跳转条件。
@@ -39,6 +41,8 @@ module ex_stage (
     output logic [core_pkg::XLEN-1:0]     redirect_pc_o      // branch/JAL/JALR 的目标 PC。
 );
     import core_pkg::*;
+    
+    assign valid_o = valid_i;
 
     wire [core_pkg::XLEN-1:0] op_a = (op_a_sel_i == OP_A_RS1) ? rs1_data_i :
                                      (op_a_sel_i == OP_A_PC)  ? pc_i : '0;

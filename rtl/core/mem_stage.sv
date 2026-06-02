@@ -27,6 +27,7 @@
 `default_nettype none
 
 module mem_stage (
+    input  logic                          valid_i,         // 当前 MEM 槽是否有效；用于门控访存副作用和错误上报。
     input  logic [core_pkg::XLEN-1:0]     alu_result_i,    // EX 阶段 ALU 结果，load/store 时作为 dmem 地址。
     input  logic [core_pkg::XLEN-1:0]     store_data_i,    // store 指令要写入 dmem 的原始 rs2 数据。
     input  logic                          mem_re_i,        // 当前指令是否执行 load。
@@ -35,6 +36,7 @@ module mem_stage (
     input  logic                          mem_unsigned_i,  // load 是否零扩展；为 0 时表示符号扩展。
     input  logic [core_pkg::XLEN-1:0]     dmem_rdata_i,    // dmem 返回的 32 bit 读数据。
 
+    output logic                          valid_o,         // 送入 MEM/WB 的 valid；第一版 MEM 不主动丢弃指令，直接透传 valid_i。
     output logic                          mem_misaligned_o,// 为 1 时表示当前 load/store 地址不满足访问宽度对齐要求；第一版用于 halt/error，后续可接 trap。
     output logic                          dmem_re_o,       // 输出到 dmem 的 load 读使能；地址不对齐时不发起读访问。
     output logic                          dmem_we_o,       // 输出到 dmem 的 store 写使能。
@@ -46,12 +48,14 @@ module mem_stage (
 );
     import core_pkg::*;
 
-    wire misa_lw = (mem_re_i || mem_we_i) && (mem_size_i == MEM_WORD) && (|alu_result_i[1:0]);
-    wire misa_lh = (mem_re_i || mem_we_i) && (mem_size_i == MEM_HALF) && (alu_result_i[0]);
+    assign valid_o = valid_i;
+
+    wire misa_lw = valid_i && (mem_re_i || mem_we_i) && (mem_size_i == MEM_WORD) && (|alu_result_i[1:0]);
+    wire misa_lh = valid_i && (mem_re_i || mem_we_i) && (mem_size_i == MEM_HALF) && (alu_result_i[0]);
     assign mem_misaligned_o = misa_lw || misa_lh;
 
-    assign dmem_re_o = ~mem_misaligned_o & mem_re_i;
-    assign dmem_we_o = ~mem_misaligned_o & mem_we_i;
+    assign dmem_re_o = valid_i & ~mem_misaligned_o & mem_re_i;
+    assign dmem_we_o = valid_i & ~mem_misaligned_o & mem_we_i;
 
     assign dmem_be_o = ~dmem_we_o ? 4'b0000 : ( (mem_size_i == MEM_WORD ? 4'b1111 : 4'b0000) |
                                                 (mem_size_i == MEM_HALF ? 4'b0011 << alu_result_i[1:0] : 4'b0000) |
