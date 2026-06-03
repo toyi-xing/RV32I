@@ -42,12 +42,14 @@ module pc_reg (
             // 优先级：redirect > stall > PC+4。
             // redirect 优先于 stall：分支/JAL/JALR 的重定向必须立即生效，
             // 不能被数据冒险的停顿挡住，否则流水线会多取一条错误路径的指令。
-            if (redirect_valid_i) begin
-                pc_o <= redirect_pc_i;
-            end else if (stall_pc_i) begin
-                pc_o <= pc_o;
-            end else begin
-                pc_o <= pc_plus4_i;
+            if (pc_valid_o == 1'b1) begin
+                if (redirect_valid_i) begin
+                    pc_o <= redirect_pc_i;
+                end else if (stall_pc_i) begin
+                    pc_o <= pc_o;
+                end else begin
+                    pc_o <= pc_plus4_i;
+                end
             end
         end
     end
