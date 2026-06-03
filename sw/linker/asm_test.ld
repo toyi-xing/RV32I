@@ -1,5 +1,5 @@
 /*==============================================================================
- * linker.ld — RV32I 教学 core 链接脚本
+ * asm_test.ld — RV32I 教学 core 汇编测试链接脚本
  *
  * 内存布局：
  *   IMEM (0x00000000) : .text
@@ -9,7 +9,7 @@
  * 每块 memory 容量为 4 KiB。链接脚本先与这个仿真 memory model 保持一致。
  *
  * 用法：
- *   ${CROSS_COMPILE}ld -T sw/linker/linker.ld -o program.elf program.o
+ *   ${CROSS_COMPILE}ld -T sw/linker/asm_test.ld -o program.elf program.o
  *============================================================================*/
 
 OUTPUT_ARCH(riscv)

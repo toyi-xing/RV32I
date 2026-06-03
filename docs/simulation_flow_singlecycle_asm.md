@@ -12,7 +12,7 @@
 |----|--------|----------|-----------|
 | 1 | 写 testbench | `tb/sv/tb_core_single_cycle.sv` | 产生 clk/rst、例化 core+ROM+RAM、打印 commit trace、检测 PASS |
 | 2 | 写裸机汇编测试 | `sw/asm/<test>.S` | RV32I 汇编程序，最后往 `DMEM_BASE+0x100` 写 1 表示 PASS |
-| 3 | 写链接脚本 | `sw/linker/linker.ld` | 规定 `.text`→IMEM(0x0)、`.data`→DMEM(0x10000)、`_start` 入口 |
+| 3 | 写汇编测试链接脚本 | `sw/linker/asm_test.ld` | 规定 `.text`→IMEM(0x0)、`.data`→DMEM(0x10000)、`_start` 入口 |
 | 4 | 写格式转换脚本 | `scripts/bin2mem32.py` | 把 `.bin` 二进制转成每行一个 32-bit hex word 的 `.mem` |
 | 5 | 编译软件生成 memory image | 运行 `05_build_mem.sh` | `.S`→`.elf`→`.dump`→`.bin`→`.mem` |
 | 6 | 构建并运行仿真 | 运行 `06_run_sim.sh` | Verilator 编译脚本中列出的 .sv → `+imem=` 加载 .mem → 跑出 PASS/FAIL |
@@ -24,7 +24,7 @@
                       │  sw/asm/<test>.S    │  ← 你写的汇编测试
                       └────────┬────────────┘
                                │
-                     riscv64-unknown-elf-gcc  +  sw/linker/linker.ld
+                     riscv64-unknown-elf-gcc  +  sw/linker/asm_test.ld
                                │
                                ▼
                       ┌─────────────────────┐
@@ -91,7 +91,7 @@
 | 文件 | 角色 | 说明 |
 |------|------|------|
 | `sw/asm/<test>.S` | 汇编测试程序 | RV32I 汇编，测试 core 功能。见第 4 节骨架 |
-| `sw/linker/linker.ld` | 链接脚本 | 定义 `.text`→IMEM(0x0)、`.data/.bss`→DMEM(0x10000) |
+| `sw/linker/asm_test.ld` | 汇编测试链接脚本 | 定义 `.text`→IMEM(0x0)、`.data/.bss`→DMEM(0x10000) |
 | `tb/sv/tb_core_single_cycle.sv` | testbench | 产生 clk/rst、例化 core+ROM+RAM、打印 commit trace、检测 PASS/FAIL |
 
 ### 3.2 RTL 源文件
@@ -183,7 +183,7 @@ sim/single_cycle_asm/05_build_mem.sh <test>
 ```
 
 执行流程：
-1. `gcc` 汇编 + 链接（`-T sw/linker/linker.ld`）→ `.elf`
+1. `gcc` 汇编 + 链接（`-T sw/linker/asm_test.ld`）→ `.elf`
 2. `objdump -d` → `.dump`（先检查这个文件确认指令编码正确）
 3. `objcopy -O binary` → `.bin`
 4. `bin2mem32.py` → `.mem`
@@ -215,6 +215,12 @@ PASS after 4 cycles
 sim/single_cycle_asm/run_test.sh <test>
 ```
 
+7 个 asm 程序连续测试总脚本：
+
+```bash
+sim/single_cycle_asm/run_all.sh
+```
+
 ### 5.4 PASS/FAIL 约定
 
 ```
@@ -233,10 +239,10 @@ TIMEOUT          = 超过 20010 周期未写入
 | 你改了... | 重新生成 .mem？ | 重新构建仿真？ |
 |-----------|-----------------|---------------|
 | `sw/asm/<test>.S` | **是** (跑 05_build_mem.sh) | 否；重跑 `06_run_sim.sh` 时 Verilator 会按需增量构建 |
-| `sw/linker/linker.ld` | **是** | 否 |
+| `sw/linker/asm_test.ld` | **是** | 否 |
 | `rtl/core/*.sv`（任意 RTL 模块） | 否 | **是**（重跑 06_run_sim.sh） |
 | `rtl/mem/simple_rom.sv` / `simple_ram.sv` | 否 | **是** |
-| `rtl/common/core_pkg.sv`（改 IMEM_BASE/DMEM_BASE 等） | **是**（同步检查 linker.ld 是否一致） | **是** |
+| `rtl/common/core_pkg.sv`（改 IMEM_BASE/DMEM_BASE 等） | **是**（同步检查 asm_test.ld 是否一致） | **是** |
 | `tb/sv/tb_core_single_cycle.sv` | 否 | **是** |
 | 新增 .sv 文件 | 否 | **是**，并且要加到 06_run_sim.sh 的 verilator 命令中 |
 | `scripts/bin2mem32.py` | **是**（已有 .mem 是旧转换结果） | 否 |
