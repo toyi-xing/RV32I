@@ -1,0 +1,22 @@
+# Generated build/simulation outputs
+build/
+
+# Simulation logs and waveforms
+*.log
+*.vcd
+*.fst
+*.fsdb
+*.wlf
+*.ghw
+
+# Verilator/Icarus generated outputs
+obj_dir/
+*.vvp
+*.vcd.*
+
+# Tool and temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
