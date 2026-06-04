@@ -9,7 +9,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TOOLCHAIN_ENV="/home/a/tools/riscv-unknown-elf/env.sh"
+TOOLCHAIN_ENV="${TOOLCHAIN_ENV:-/home/a/tools/riscv-unknown-elf/env.sh}"
 
 TEST_NAME="${1:-smoke}"
 ASM_FILE="${REPO_ROOT}/sw/asm/${TEST_NAME}.S"
