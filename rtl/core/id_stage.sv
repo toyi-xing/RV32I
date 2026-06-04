@@ -54,7 +54,6 @@ module id_stage (
     output logic [core_pkg::XLEN-1:0]     id_imm_o,          // imm_gen 生成的 32 bit 立即数。
 
     output logic                          id_valid_o,        // 送入 ID/EX 的 valid。
-    output logic [core_pkg::ILEN-1:0]     id_instr_o,        // 送入后级保存的原始指令；主要用于 commit trace/debug。
     output logic [core_pkg::XLEN-1:0]     id_rs1_rdata_o,    // 送入 ID/EX 的 rs1 原始读值；单周期可直接送 EX，流水线中可先进入 forwarding mux。
     output logic [core_pkg::XLEN-1:0]     id_rs2_rdata_o     // 送入 ID/EX 的 rs2 原始读值；branch、store data 和 forwarding 都会使用。
 
@@ -108,7 +107,6 @@ module id_stage (
     );
 
     assign id_valid_o = if_valid_i;
-    assign id_instr_o = if_instr_i;
     assign id_rs1_rdata_o = rs1_rdata_i;
     assign id_rs2_rdata_o = rs2_rdata_i;
 

@@ -188,7 +188,6 @@ module core_single_cycle (
         .id_imm_o       (id_imm),
 
         .id_valid_o     (id_valid),
-        .id_instr_o     (),
         .id_rs1_rdata_o (id_rs1_rdata),
         .id_rs2_rdata_o (id_rs2_rdata)
     );
@@ -224,7 +223,6 @@ module core_single_cycle (
         .valid_o            (ex_valid),
         .alu_result_o       (ex_alu_result),
         .store_data_o       (ex_store_data),
-        .branch_taken_o     (),
         .redirect_valid_o   (ex_redirect_valid),
         .redirect_pc_o      (ex_redirect_pc)
     );

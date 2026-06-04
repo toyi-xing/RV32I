@@ -144,7 +144,7 @@ sw/c/c_loop.c
 对应命令是：
 
 ```bash
-sim/single_cycle_c/run_test.sh c_loop
+sim/single_cycle_c/run_test.sh <test>
 ```
 
 **实际操作建议**：拿不准时直接跑 `sim/single_cycle_c/run_test.sh <test>`。它会先重新生成两份 memory image，再构建/运行仿真，最不容易漏步骤。

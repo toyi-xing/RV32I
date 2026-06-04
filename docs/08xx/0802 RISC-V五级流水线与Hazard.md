@@ -760,6 +760,26 @@ ID/EX.rs_value     ----+
 
 因此，forwarding 单元不能只看 `rd == rs1/rs2`。它还要知道该 producer 的数据在当前 cycle 是否已经可用。把 load 的 EX/MEM 地址计算结果误当前递数据，是 load-use bug 的典型来源。
 
+从 forwarding 的适用范围也能反过来理解哪些流水级需要 stall/bubble/flush、哪些不需要。
+
+- EX/MEM 和 MEM/WB 两级在任何情况下都不需要 stall、bubble 或 flush。因为 GPR 只读于 ID、只写于 WB：RAW 数据缺口由 forwarding_unit 跨级前递填补（EX/MEM -> EX 或 MEM/WB -> EX），不需要让 EX/MEM 或 MEM/WB 停住。
+- 同样，branch/JAL/JALR 在 EX 阶段算出 redirect 后，flush 只杀 IF/ID 和 ID/EX 中的错误路径指令；走到 EX/MEM 的指令必定已是正确路径，不存在需要 flush 的理由。
+
+store 的 rs2 数据依赖也是同一类问题。若 store 的 rs2 来自前一条 `load` 如：
+
+```text
+LW x5, ...
+SW x5, ...
+```
+
+`load` 数据到 MEM 末尾才有效。
+
+标准处理是 load-use stall 一拍（冻结 PC 和 IF/ID，ID/EX 插 bubble），下一拍 consumer 进入 EX 时从 MEM/WB forward 拿到 load data。
+
+不需要 MEM/WB -> MEM 转发，因为 store_data 已在 EX 阶段选好并锁存进 EX/MEM 寄存器；等 load_data 到达 MEM/WB 时，SW 的 store_data 早已在 EX/MEM 里，MEM 阶段使用的是上一拍锁存的数据，而非当前 MEM/WB 的组合输出。
+
+> 注意：EX/MEM -> EX 之所以可行，是因为 EX 是纯组合逻辑：forwarding mux 改变输入后，同一拍内 ALU 和 branch comparator 的输出随之更新，结果在时钟沿锁存进 EX/MEM。
+
 ### 5.4 ALU-ALU forwarding 示例
 
 ```text

@@ -36,7 +36,6 @@ module ex_stage (
     output logic                          valid_o,           // 送入 EX/MEM 的 valid；第一版 EX 不主动丢弃指令，直接透传 valid_i。
     output logic [core_pkg::XLEN-1:0]     alu_result_o,      // ALU 计算结果，向 EX/MEM 传递。
     output logic [core_pkg::XLEN-1:0]     store_data_o,      // 传给 MEM 阶段的 store 写数据。
-    output logic                          branch_taken_o,    // 条件分支是否满足跳转条件。
     output logic                          redirect_valid_o,  // 当前 EX 指令是否要求重定向 PC。
     output logic [core_pkg::XLEN-1:0]     redirect_pc_o      // branch/JAL/JALR 的目标 PC。
 );
@@ -56,14 +55,16 @@ module ex_stage (
 
     assign store_data_o = rs2_data_i;
 
+    wire branch_taken;
+
     branch_unit u_branch_unit (
         .branch_op_i    (branch_op_i),
         .rs1_data_i     (rs1_data_i),
         .rs2_data_i     (rs2_data_i),
-        .branch_taken_o (branch_taken_o)
+        .branch_taken_o (branch_taken)
     );
 
-    assign redirect_valid_o = valid_i & (branch_taken_o | jump_i);
+    assign redirect_valid_o = valid_i & (branch_taken | jump_i);
 
     assign redirect_pc_o = jalr_i ? (alu_result_o & ~32'b1) : alu_result_o;
 
