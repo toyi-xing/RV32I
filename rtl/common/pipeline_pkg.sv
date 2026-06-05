@@ -12,12 +12,12 @@ package pipeline_pkg;
 
     // forwarding 选择枚举。
     // FWD_GPR   不使用前递，直接取 regfile 输出。
-    // FWD_EXMEM  从 EX/MEM 寄存器取前递值。
-    // FWD_MEMWB  从 MEM/WB 寄存器取前递值。
+    // FWD_EX_MEM  从 EX/MEM 寄存器取前递值。
+    // FWD_MEM_WB  从 MEM/WB 寄存器取前递值。
     typedef enum logic [1:0] {
-        FWD_GPR   = 2'b00,
-        FWD_EXMEM = 2'b01,
-        FWD_MEMWB = 2'b10
+        FWD_GPR,
+        FWD_EX_MEM,
+        FWD_MEM_WB
     } fwd_sel_e;
 
     // ── 流水线寄存器结构体 ──

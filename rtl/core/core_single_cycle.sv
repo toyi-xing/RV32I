@@ -192,7 +192,7 @@ module core_single_cycle (
         .id_rs2_rdata_o (id_rs2_rdata)
     );
 
-    regfile u_regfile (
+    regfile #(.BYPASS_EN(0)) u_regfile (
         .clk_i          (clk_i),
         .rst_n_i        (rst_n_i),
 

@@ -58,6 +58,7 @@ endmodule
 //                memory wait、全流水线暂停这类“当前 EX 指令也不能前进”的场景。
 //
 // 优先级：reset > flush > stall > bubble > normal advance。
+// 当前设计 EX 及之后流水不会 stall,但统一保留 stall_i 接口，供后续扩展使用。
 module pipe_reg_id_ex (
     input  logic                    clk_i,
     input  logic                    rst_n_i,
@@ -82,7 +83,7 @@ module pipe_reg_id_ex (
             valid_o <= 1'b0; 
             data_o  <= '0;
         end else if (stall_i) begin
-            // 保持当前 ID/EX 内容；load-use 不应走这个分支。
+            // 保持，供后续扩展使用；load-use 不应走这个分支。
         end else if (bubble_i) begin
             // 插入 invalid 空槽，避免 ID 阶段 consumer 过早进入 EX。
             valid_o <= 1'b0;  
@@ -109,6 +110,7 @@ module pipe_reg_ex_mem (
 
     input  pipeline_pkg::ex_mem_reg_t  data_i,
     input  logic                      valid_i,
+    input  logic                      stall_i,
 
     output pipeline_pkg::ex_mem_reg_t  data_o,
     output logic                      valid_o
@@ -120,6 +122,8 @@ module pipe_reg_ex_mem (
         if (~rst_n_i) begin
             valid_o <= 1'b0;
             data_o  <= '0;
+        end else if (stall_i) begin
+            // 保持，供后续扩展使用
         end else begin
             valid_o <= valid_i;
             data_o  <= data_i;
@@ -136,6 +140,7 @@ module pipe_reg_mem_wb (
 
     input  pipeline_pkg::mem_wb_reg_t  data_i,
     input  logic                      valid_i,
+    input  logic                      stall_i,
 
     output pipeline_pkg::mem_wb_reg_t  data_o,
     output logic                      valid_o
@@ -147,6 +152,8 @@ module pipe_reg_mem_wb (
         if (~rst_n_i) begin
             valid_o <= 1'b0;
             data_o  <= '0;
+        end else if (stall_i) begin
+            // 保持，供后续扩展使用
         end else begin
             valid_o <= valid_i;
             data_o  <= data_i;

@@ -1,56 +1,141 @@
 # RV32I Teaching Core
 
-本仓库是一个 RV32I 教学核实现仓库。当前阶段先跑通单周期 demo core，后续再把顶层替换为五级流水版本。
+本仓库是一个 RV32I 教学核实现仓库，包含**单周期**和**五级流水线**两套顶层，均通过 Verilator 仿真验证。
 
-本仓库 README 只作为工程入口，重点说明当前如何运行仿真。工程的规划、说明是 `docs/08xx/` 下的 082x 系列文档。
+工程架构说明见 `docs/08xx/` 下的 082x 系列文档。
+
+---
+
+## 目录结构
+
+| 目录 | 说明 |
+|------|------|
+| `rtl/` | RTL 源码（core_pkg、pipeline_pkg、core 各阶段模块、memory 封装） |
+| `tb/` | testbench（单周期 + 流水线各一套） |
+| `sim/` | 编译和仿真脚本（按单周期/流水线、汇编/C 分目录） |
+| `sw/` | 汇编和 C 裸机测试程序 |
+| `scripts/` | 辅助脚本（bin2mem32 等） |
+| `build/` | 编译产物（.elf、.dump、.bin、.mem） |
+| `docs/` | 架构设计文档 |
+
+---
 
 ## 当前状态
 
-- `rtl/core/core_single_cycle.sv`：单周期 RV32I demo 顶层。
-- `tb/sv/tb_core_single_cycle.sv`：单周期 core testbench。
-- `sw/asm/smoke.S`：最小裸机 smoke test。
-- `sim/single_cycle_asm/`：单周期汇编测试编译和仿真脚本。
-- `sw/c/c_smoke.c`：最小 C 裸机 smoke test。
-- `sim/single_cycle_c/`：单周期 C 测试编译和仿真脚本。
+| 阶段 | 顶层 | 状态 | git 历史版本 |
+|------|------|------|------|
+| 单周期 RV32I | `core_single_cycle.sv` | 已完成 | v1.0 |
+| 五级流水线空壳 | `core_pipeline5.sv` | 已完成 | v1.3 |
+| data hazard（forwarding + load-use stall） | `core_pipeline5.sv` | 已完成 | v1.4 |
+| control hazard（redirect flush/kill） | `core_pipeline5.sv` | 待做 | - |
 
-当前 smoke 测试约定：裸机程序向 `core_pkg::DMEM_BASE + 0x100` 写入 `1` 表示 PASS，testbench 检测到该 store 后结束仿真。
+---
 
-## 快速运行
+## 环境依赖
 
-汇编测试在仓库根目录执行：
+- **RV32I 工具链**：`riscv64-unknown-elf-gcc` 等，将测试程序编译为 .elf 并提取二进制 .bin。
+- **Verilator**：SystemVerilog 仿真器
+- **Python 3**：运行 `bin2mem32.py`，编译出的裸二进制 .bin 转成每行一个 32-bit hex word 的 .mem 文件。
+
+---
+
+## 单周期核
+
+### 涉及文件
+
+**RTL（15 个文件）：**
+```
+rtl/common/core_pkg.sv           # ISA 常量与枚举
+rtl/core/pc_reg.sv               # PC 寄存器
+rtl/core/if_stage.sv             # 取指
+rtl/core/id_stage.sv             # 译码
+rtl/core/decoder.sv              # 指令译码器
+rtl/core/imm_gen.sv              # 立即数生成
+rtl/core/regfile.sv              # 通用寄存器堆
+rtl/core/ex_stage.sv             # 执行
+rtl/core/alu.sv                  # ALU 运算
+rtl/core/branch_unit.sv          # 分支跳转判断
+rtl/core/mem_stage.sv            # 访存
+rtl/core/wb_stage.sv             # 写回
+rtl/core/core_single_cycle.sv    # 单周期顶层
+rtl/mem/simple_rom.sv            # 指令 ROM
+rtl/mem/simple_ram.sv            # 数据 RAM
+```
+
+**Testbench：** `tb/sv/tb_core_single_cycle.sv`
+
+**汇编测试程序：** (sw/asm/) `smoke.S`、`alu_imm.S`、`alu_reg.S`、`load_store.S`、`branch.S`、`jump.S`、`u_type.S`，须搭配 asm 链接程序 `sw/linker/asm_test.ld`
+
+**c测试程序：** (sw/c) `c_smoke.c`、`dmem_init.c`，须搭配 c 启动程序 `sw/c_runtime/crt0.S` 和 c 链接程序 `sw/linker/c_baremetal.ld`
+
+**仿真脚本：** `sim/single_cycle_asm/`，`sim/single_cycle_c/`
+
+### 仿真命令
 
 ```bash
-sim/single_cycle_asm/run_test.sh smoke
-```
+# 跑全部单周期汇编测试
+sim/single_cycle_asm/run_all.sh
 
-C 裸机测试在仓库根目录执行：
-
-```bash
-sim/single_cycle_c/run_test.sh c_smoke
-```
-
-期望输出中出现：
-
-```text
-PASS after ... cycles
-```
-
-如果只修改了 `sw/asm/smoke.S`，重新执行上面两条命令即可。如果修改了 RTL 或 testbench，也执行同样两条命令，第二个脚本会重新调用 Verilator 构建仿真程序。
-
-## 编写新测试
-
-新增测试时，在 `sw/asm/` 下创建一个同名 `.S` 文件，例如：
-
-```text
-sw/asm/alu_imm.S
-```
-
-然后运行：
-
-```bash
+# 跑单个测试
 sim/single_cycle_asm/run_test.sh alu_imm
+
+# C 测试
+sim/single_cycle_c/run_test.sh c_smoke
 ```
 
 汇编仿真详细流程见 [docs/simulation_flow_singlecycle_asm.md](docs/simulation_flow_singlecycle_asm.md)。
 
-C 裸机仿真详细流程见 [docs/simulation_flow_singlecycle_c.md](docs/simulation_flow_singlecycle_c.md)。
+---
+
+## 五级流水线核
+
+### 涉及文件
+
+单周期的 RTL 全部共用，额外增加以下文件：
+
+**RTL 新增（5 个文件）：**
+```
+rtl/common/pipeline_pkg.sv           # 流水线专用类型（struct、fwd_sel 枚举）
+rtl/core/core_pipeline5.sv           # 五级流水顶层（代替 core_single_cycle）
+rtl/core/pipe_reg.sv                 # 四组流水线寄存器
+rtl/core/forwarding_unit.sv          # RAW 数据前递
+rtl/core/hazard_unit.sv              # load-use stall 控制
+```
+
+**Testbench：** `tb/sv/tb_core_pipeline5.sv`
+
+**测试程序：**
+```
+sw/asm/pipeline5_nofwd_noredirect.S    # 无 forwarding/redirect 基线冒烟
+sw/asm/pipeline5_fwd_noredirect.S      # data hazard 全覆盖
+```
+
+**仿真脚本：** `sim/pipeline5_asm/`
+
+### 仿真命令
+
+```bash
+# 跑流水线测试
+sim/pipeline5_asm/run_test.sh pipeline5_fwd_noredirect
+sim/pipeline5_asm/run_test.sh pipeline5_nofwd_noredirect
+```
+
+---
+
+## 编写新测试
+
+### 单周期
+
+在 `sw/asm/` 下创建 `.S` 文件，然后：
+
+```bash
+sim/single_cycle_asm/run_test.sh <test>
+```
+
+流水线同理：
+
+```bash
+sim/pipeline5_asm/run_test.sh <test>
+```
+
+汇编测试编写规范见 `sw/asm/readme.md`。

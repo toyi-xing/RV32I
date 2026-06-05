@@ -47,22 +47,33 @@ module core_pipeline5 (
     wire [core_pkg::XLEN-1:0] ex_redirect_pc;
     wire                      ex_redirect_valid;
 
-    // TODO: 后续接 hazard_unit。当前只搭空壳，不实现 load-use stall。
-    wire stall_if = 1'b0;
-    wire stall_id = 1'b0;
-    wire bubble_ex = 1'b0;
+    // 做 data hazard，接 hazard_unit。
+    wire stall_if;
+    wire stall_id;
+    wire bubble_ex;
 
-    // TODO: 后续接 control hazard flush/kill。当前不杀错路径指令。
+    // 全流水线暂停（如可变延迟 memory），当前不使用。
+    // wire stall_pipeline = 1'b0;
+
+    // TODO: 后续做 control hazard flush/kill，接 hazard_unit。当前不杀错路径指令。
     wire flush_if_id = 1'b0;
     wire flush_id_ex = 1'b0;
 
-    // 各valid信号
+    // 各 valid 信号，中间 data。由中间寄存器寄存
     wire pc_valid;
     wire if_valid, if_id_valid;
     wire id_valid, id_ex_valid;
     wire ex_valid, ex_mem_valid;
     wire mem_valid, mem_wb_valid;
     wire wb_valid;
+    pipeline_pkg::if_id_reg_t if_id_data_d;
+    pipeline_pkg::if_id_reg_t if_id_data_q;
+    pipeline_pkg::id_ex_reg_t id_ex_data_d;
+    pipeline_pkg::id_ex_reg_t id_ex_data_q;
+    pipeline_pkg::ex_mem_reg_t ex_mem_data_d;
+    pipeline_pkg::ex_mem_reg_t ex_mem_data_q;
+    pipeline_pkg::mem_wb_reg_t mem_wb_data_d;
+    pipeline_pkg::mem_wb_reg_t mem_wb_data_q;
 
     // GPR
     wire [4:0]                id_rs1_addr;
@@ -72,15 +83,12 @@ module core_pipeline5 (
     wire [core_pkg::XLEN-1:0] wb_rd_wdata;
     wire                      wb_rd_we;
 
-    // IF/ID
+    // IF
     wire [core_pkg::XLEN-1:0] if_pc;
     wire [core_pkg::ILEN-1:0] if_instr;
     wire [core_pkg::XLEN-1:0] if_pc_plus4;
 
-    pipeline_pkg::if_id_reg_t if_id_data_d;
-    pipeline_pkg::if_id_reg_t if_id_data_q;
-
-    // ID/EX
+    // ID
     wire [4:0]                id_rd_addr;
     wire                      id_uses_rs1;
     wire                      id_uses_rs2;
@@ -100,28 +108,16 @@ module core_pipeline5 (
     wire [core_pkg::XLEN-1:0] id_imm;
     wire [core_pkg::XLEN-1:0] id_rs1_rdata, id_rs2_rdata;
 
-    pipeline_pkg::id_ex_reg_t id_ex_data_d;
-    pipeline_pkg::id_ex_reg_t id_ex_data_q;
-
-    // EX阶段
+    // forwarding 前递数据直连
     wire [core_pkg::XLEN-1:0] ex_rs1_data;
     wire [core_pkg::XLEN-1:0] ex_rs2_data;
+
+    // EX
     wire [core_pkg::XLEN-1:0] ex_alu_result;
     wire [core_pkg::XLEN-1:0] ex_store_data;
 
-    // TODO: 后续替换为 forwarding_unit 控制的 mux。
-    assign ex_rs1_data = id_ex_data_q.rs1_rdata;
-    assign ex_rs2_data = id_ex_data_q.rs2_rdata;
-
-    // EX/MEM
-    pipeline_pkg::ex_mem_reg_t ex_mem_data_d;
-    pipeline_pkg::ex_mem_reg_t ex_mem_data_q;
-
-    // MEM/WB
+    // MEM
     wire [core_pkg::XLEN-1:0] mem_load_data;
-
-    pipeline_pkg::mem_wb_reg_t mem_wb_data_d;
-    pipeline_pkg::mem_wb_reg_t mem_wb_data_q;
 
     // WB 随指令输出 -> commit
     wire [core_pkg::ILEN-1:0] wb_instr          = mem_wb_data_q.instr;
@@ -136,7 +132,7 @@ module core_pipeline5 (
         .pc_plus4_i         (if_pc_plus4),
         .redirect_pc_i      (ex_redirect_pc),
         .redirect_valid_i   (ex_redirect_valid),
-        .stall_pc_i         (stall_if),
+        .stall_pc_i         (stall_if), // if 要 stall 一拍，让 pc 保持不变
 
         .pc_o               (pc),
         .pc_valid_o         (pc_valid)
@@ -161,7 +157,7 @@ module core_pipeline5 (
         .data_i     (if_id_data_d),
         .valid_i    (if_valid),
         .flush_i    (flush_if_id),
-        .stall_i    (stall_id),
+        .stall_i    (stall_id), // id 要 stall 一拍，让 IF/ID 保持不变
 
         .data_o     (if_id_data_q),
         .valid_o    (if_id_valid)
@@ -212,7 +208,7 @@ module core_pipeline5 (
         .id_rs2_rdata_o (id_rs2_rdata)
     );
 
-    regfile u_regfile (
+    regfile #(.BYPASS_EN(1)) u_regfile (
         .clk_i          (clk_i),
         .rst_n_i        (rst_n_i),
 
@@ -227,6 +223,52 @@ module core_pipeline5 (
         .rd_wdata_i     (wb_rd_wdata)
     );
 
+    // hazard_unit 当前功能不完整，仅做了 load-use
+    hazard_unit u_hazard_unit (
+        .if_id_valid_i      (if_id_valid),
+        .id_rs1_addr_i      (id_rs1_addr),
+        .id_rs2_addr_i      (id_rs2_addr),
+        .id_uses_rs1_i      (id_uses_rs1),
+        .id_uses_rs2_i      (id_uses_rs2),
+
+        .id_ex_valid_i      (id_ex_valid),
+        .id_ex_rd_addr_i    (id_ex_data_q.rd_addr),
+        .id_ex_mem_re_i     (id_ex_data_q.mem_re),
+
+        .stall_if_o         (stall_if),
+        .stall_id_o         (stall_id),
+        .bubble_ex_o        (bubble_ex)
+    );
+
+    // forwarding，处理 RAW 时 EX/MEM -> EX 和 MEM/WB -> EX
+    forwarding_unit u_forwarding_unit (
+        .id_ex_valid_i      (id_ex_valid),
+        .id_ex_rs1_addr_i   (id_ex_data_q.rs1_addr),
+        .id_ex_rs2_addr_i   (id_ex_data_q.rs2_addr),
+        .id_ex_uses_rs1_i   (id_ex_data_q.uses_rs1),
+        .id_ex_uses_rs2_i   (id_ex_data_q.uses_rs2),
+
+        .ex_mem_valid_i     (ex_mem_valid),
+        .ex_mem_rd_addr_i   (ex_mem_data_q.rd_addr),
+        .ex_mem_reg_we_i    (ex_mem_data_q.reg_we),
+        .ex_mem_mem_re_i    (ex_mem_data_q.mem_re),
+
+        .mem_wb_valid_i     (mem_wb_valid),
+        .mem_wb_rd_addr_i   (mem_wb_data_q.rd_addr),
+        .mem_wb_reg_we_i    (mem_wb_data_q.reg_we),
+
+        .id_ex_rs1_rdata_i  (id_ex_data_q.rs1_rdata),
+        .id_ex_rs2_rdata_i  (id_ex_data_q.rs2_rdata),
+        .ex_mem_wb_sel_i    (ex_mem_data_q.wb_sel),
+        .ex_mem_alu_result_i(ex_mem_data_q.alu_result),
+        .ex_mem_pc_plus4_i  (ex_mem_data_q.pc_plus4),
+        .ex_mem_imm_i       (ex_mem_data_q.imm),
+        .mem_wb_wdata_i     (wb_rd_wdata),
+
+        .rs1_fwd_o          (ex_rs1_data),
+        .rs2_fwd_o          (ex_rs2_data)
+    );
+
     pipe_reg_id_ex u_pipe_reg_id_ex (
         .clk_i      (clk_i),
         .rst_n_i    (rst_n_i),
@@ -235,7 +277,7 @@ module core_pipeline5 (
         .valid_i    (id_valid),
         .flush_i    (flush_id_ex),
         .bubble_i   (bubble_ex),
-        .stall_i    (1'b0),
+        .stall_i    (1'b0), // EX 在当前设计不会 stall，为后续扩展保留（比如可变延迟 memory 需要全流水线暂停时）
 
         .data_o     (id_ex_data_q),
         .valid_o    (id_ex_valid)
@@ -295,6 +337,7 @@ module core_pipeline5 (
 
         .data_i     (ex_mem_data_d),
         .valid_i    (ex_valid),
+        .stall_i    (1'b0), // 为后续扩展保留
 
         .data_o     (ex_mem_data_q),
         .valid_o    (ex_mem_valid)
@@ -343,6 +386,7 @@ module core_pipeline5 (
 
         .data_i     (mem_wb_data_d),
         .valid_i    (mem_valid),
+        .stall_i    (1'b0), // 为后续扩展保留
 
         .data_o     (mem_wb_data_q),
         .valid_o    (mem_wb_valid)

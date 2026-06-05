@@ -4,18 +4,18 @@
 
 ## 总体路线
 
-1. **搭五级流水空壳**：pipeline register + valid bit。
-2. **接完整数据通路**：IF/ID/EX/MEM/WB 各级控制信号随指令流动。
-3. **加 data hazard**：forwarding + load-use stall。
-4. **加 control hazard**：branch/JAL/JALR redirect + flush/kill。
+1. ~~**搭五级流水空壳**：pipeline register + valid bit。~~ `已完成 (v1.2-pipe-skeleton)`
+2. ~~**接完整数据通路**：IF/ID/EX/MEM/WB 各级控制信号随指令流动。~~ `已完成 (v1.2-pipe-skeleton)`
+3. ~~**加 data hazard**：forwarding + load-use stall。~~ `已完成`
+4. [ ] **加 control hazard**：branch/JAL/JALR redirect + flush/kill。
 
 ---
 
-## RTL 应新增
+## RTL 已新增
 
-### 1. `rtl/core/core_pipeline5.sv`
+### 1. `rtl/core/core_pipeline5.sv` `已完成`
 
-新的五级流水顶层，保留 `core_single_cycle.sv` 作为 golden/reference。
+五级流水顶层，保留 `core_single_cycle.sv` 作为 golden/reference。
 它负责实例化：
 
 - `pc_reg`
@@ -24,102 +24,68 @@
 - `ex_stage`
 - `mem_stage`
 - `wb_stage`
-- `regfile`
+- `regfile`（带 `#(.BYPASS_EN(1))`）
 - 四组流水线寄存器：IF/ID、ID/EX、EX/MEM、MEM/WB
 - `forwarding_unit`
 - `hazard_unit`
 
-外部接口建议尽量和当前 `core_single_cycle.sv` 保持一致，方便后面 TB 和脚本切换。
-
-### 2. `rtl/core/forwarding_unit.sv`
+### 2. `rtl/core/forwarding_unit.sv` `已完成`
 
 对应 `docs/08xx/0825 Hazard控制：forwarding、stall、flush与kill.md:51`。
 
-核心功能：检测 EX/MEM 和 MEM/WB 两级的 `rd` 是否与当前 EX 输入的 `rs1`/`rs2` 匹配，若匹配则用前递结果替代 regfile 输出。
+核心功能：检测 EX/MEM 和 MEM/WB 两级的 `rd` 是否与当前 EX 输入的 `rs1`/`rs2` 匹配，若匹配则前递对应数据。
 
-输出选择信号：
-
-- `fwd_a_sel` — 控制 ALU 输入 a 的来源（rs1_rdata / ex_mem_rd_wdata / mem_wb_rd_wdata）
-- `fwd_b_sel` — 控制 ALU 输入 b 的来源（rs2_rdata / ex_mem_rd_wdata / mem_wb_rd_wdata）
-- `fwd_mem_wdata_sel` — store data 的前递选择
-
-编码对应 `core_pkg` 中的枚举：
-
-| 来源 | 含义 |
-|------|------|
-| `FWD_GPR` | 不使用前递，直接取 regfile 输出 |
-| `FWD_EXMEM` | 从 EX/MEM 寄存器取前递值 |
-| `FWD_MEMWB` | 从 MEM/WB 寄存器取前递值 |
-
-覆盖场景：
-
-- ALU operand forwarding — `fwd_a_sel`/`fwd_b_sel` 选择 EX/MEM 或 MEM/WB 的运算结果
-- branch 比较 operand forwarding — 同理，分支比较器使用前递后的值
-- store data forwarding — `fwd_mem_wdata_sel` 选择 rs2 的前递来源
+模块内部完成 detection + mux，直接输出前递后的数据值，不对外暴露选择信号。
 
 关键规则：
 
-- `rd = x0` 不参与 forwarding，写 x0 不改变任何寄存器的语义值
-- EX/MEM 的 load 不能前递：EX/MEM 寄存器中 load 指令的 `rd_wdata` 是 load 地址，不是 load 数据（数据 MEM 阶段才从 DMEM 读出）
-- EX/MEM 优先于 MEM/WB：同一拍内 EX/MEM 的 `rd` 比 MEM/WB 的 `rd` 更新
+- `rd = x0` 不参与 forwarding。
+- EX/MEM 的 load 不能前递（load 的 ALU 结果是访存地址，不是数据）。
+- EX/MEM 优先于 MEM/WB。
+- 内部 mux 根据 EX/MEM 的 `wb_sel` 选择数据源：`WB_ALU`→alu_result、`WB_IMM`→imm、`WB_PC4`→pc_plus4。
 
-### 3. `rtl/core/hazard_unit.sv`
+覆盖场景：
+
+- ALU operand forwarding
+- branch 比较 operand forwarding
+- store data forwarding
+
+### 3. `rtl/core/hazard_unit.sv` `已完成`
 
 对应 `docs/08xx/0825 Hazard控制：forwarding、stall、flush与kill.md:185`。
 
-建议输出：
+当前实现 load-use stall：
 
-- `stall_if`
-- `stall_id`
-- `bubble_ex`
+- `stall_if` + `stall_id`：冻结 PC 和 IF/ID 寄存器
+- `bubble_ex`：在 ID/EX 插入 invalid 空槽
+
+待完成（step 4）：
+
 - `flush_if_id`
 - `flush_id_ex`
 
-控制优先级按文档：
+### 4. 流水线寄存器（四组模块，合并为一个文件 `pipe_reg.sv`） `已完成`
 
-```
-reset > redirect/flush > load-use stall > normal advance
-```
-
-也就是 redirect 不能被 load-use stall 卡住。
-
-### 4. 流水线寄存器（四组独立模块）
-
-创建四个独立的流水线寄存器文件，各对应一个阶段间的流水控制：
-
-- `rtl/core/pipe_reg_if_id.sv` — IF/ID，含 flush 接口（redirect 时清空 ID 阶段）
-- `rtl/core/pipe_reg_id_ex.sv` — ID/EX，含 bubble 接口（load-use 时插入气泡）
-- `rtl/core/pipe_reg_ex_mem.sv` — EX/MEM
-- `rtl/core/pipe_reg_mem_wb.sv` — MEM/WB
-
-每个寄存器负责：
-- 在时钟上升沿锁存前一级的控制信号和数据通路值
-- 处理 valid/kill/flush/bubble 等流水控制信号
-- 公共逻辑（如暂停时保持不动、刷新时清零）直接在各自模块内实现
+- `pipe_reg_if_id` — IF/ID，含 flush + stall
+- `pipe_reg_id_ex` — ID/EX，含 flush + bubble + stall（优先级 reset > flush > stall > bubble > normal）
+- `pipe_reg_ex_mem` — EX/MEM，含 stall（为后续全流水线暂停预留）
+- `pipe_reg_mem_wb` — MEM/WB，含 stall（同上）
 
 ---
 
-## RTL 应修改
+## RTL 已修改
 
-### 1. `rtl/common/core_pkg.sv`
+### 1. `rtl/common/core_pkg.sv` `已完成`
 
-补充流水线用 typedef/enum：
+流水线寄存器 struct 和 forwarding 枚举放在独立的 `pipeline_pkg.sv` 中。`core_pkg.sv` 保持 ISA 层级定义不变。
 
-- forwarding 选择枚举：`FWD_GPR`、`FWD_EXMEM`、`FWD_MEMWB`
-- 可选补充 pipeline register struct：
-  - `if_id_reg_t`
-  - `id_ex_reg_t`
-  - `ex_mem_reg_t`
-  - `mem_wb_reg_t`
+### 2. `rtl/core/regfile.sv` `已完成`
 
-如果当前 package 已经有 decoder 控制 enum，就沿用，不要重命名。
+加 `parameter bit BYPASS_EN = 0` 控制同拍写读旁路：
 
-### 2. `rtl/core/regfile.sv`
+- **单周期**（BYPASS_EN=0，默认）：纯组合读，无旁路。单周期不产生同拍写读窗口，加了反而引入不必要的组合环路。
+- **流水线**（BYPASS_EN=1）：读端口检测 `we_i && rd_addr_i == rs_addr_i` 时直接输出写数据。
+  - 不加旁路时，producer 与 consumer 之间隔恰好 2 条指令时，producer 已离开 MEM/WB（forwarding 来不及），但 ID 读 GPR 时 producer 尚未写回（同步写），consumer 锁存旧值进入 EX → 计算结果错误。
+  - 旁路在 ID 的组合读阶段直接输出写数据，consumer 锁存到正确值。
 
-**保持不动，不加 WB 同拍旁路。**
-
-流水线中 ID 阶段与 WB 阶段相差 3 拍，当 ID 需要读取刚被 WB 写入的寄存器时，`forwarding_unit` 已经通过 MEM/WB → EX 路径前递到 ALU，不会出现读旧值的问题。
-
-唯一需要同拍旁路的场景是 ID 阶段提前做分支比较（early branch resolution），但那是后续优化，初版不需要。
-
-所以 `regfile.sv` 完全沿用单周期版本，单周期和流水线两套顶层共用同一个 regfile，互不影响。
+通过 `generate if (BYPASS_EN)` 在编译期分离两种模式，被禁用分支不生成任何逻辑。

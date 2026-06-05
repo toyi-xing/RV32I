@@ -29,6 +29,8 @@ verilator -sv --binary --timing --top-module tb_core_pipeline5 \
     rtl/core/imm_gen.sv \
     rtl/core/regfile.sv \
     rtl/core/pc_reg.sv \
+    rtl/core/hazard_unit.sv \
+    rtl/core/forwarding_unit.sv \
     rtl/core/if_stage.sv \
     rtl/core/id_stage.sv \
     rtl/core/ex_stage.sv \
