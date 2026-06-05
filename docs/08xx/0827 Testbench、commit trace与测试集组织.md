@@ -214,9 +214,33 @@ end
 
 后续加入异常、中断、可变延迟 memory 后，commit 定义要更严格，不能简单等同于 WB valid。
 
-## 第4章 directed test 组织
+## 第4章 DMEM/stack 运行时统计
 
-### 4.1 测试命名
+除 PASS/FAIL 和 commit trace 之外，testbench 还可以在仿真结束时打印本次程序的 DMEM 访问范围和最大栈深：
+
+```text
+PASS after 3652 cycles
+DMEM access range: 0x00010200 - 0x00010ffc
+Stack max used:    80 bytes
+```
+
+当前单周期和五级流水 testbench 都采用同一套统计口径：
+
+| 统计项 | 统计方法 | 说明 |
+|---|---|---|
+| `DMEM access range` | 监控 `dmem_re || dmem_we`，记录 `dmem_addr` 最小值和最大值 | 用来快速判断程序是否访问到预期数据区、栈区或越界地址 |
+| `Stack max used` | 通过层级路径读取 `u_core.u_regfile.gpr_q[2]`，记录 `sp/x2` 的最小值 | 栈向低地址增长，所以 `STACK_TOP - min(sp)` 就是运行期间看到的最大栈深 |
+
+注意：DMEM 地址范围和**真正“用了多少 RAM”**不是完全等价的，因为程序可能访问了高地址和低地址，中间未必全用；而栈深度用 `min(sp)` 统计通常最有价值。
+
+还有两个实现细节：
+
+- `TEST_STATUS_ADDR = DMEM_BASE + 0x100` 是 testbench 的结束标志地址，不计入程序自身的 DMEM 访问范围，否则所有测试的最低访问地址都会被 PASS/FAIL 写状态字污染。
+- 汇编测试通常不初始化 `sp`，这时栈统计会打印 `SP not initialized to stack top`；C 测试由 `crt0.S` 初始化 `sp = __stack_top`，所以更适合观察栈深。
+
+## 第5章 directed test 组织
+
+### 5.1 测试命名
 
 建议测试按功能分组：
 
@@ -241,7 +265,7 @@ sw/asm/
 
 编号能保证回归输出稳定排序。
 
-### 4.2 每个测试只证明少数事情
+### 5.2 每个测试只证明少数事情
 
 | 测试 | 不要混入 |
 |---|---|
@@ -252,7 +276,7 @@ sw/asm/
 
 测试短，失败时才容易定位。
 
-### 4.3 汇编测试模板
+### 5.3 汇编测试模板
 
 ```asm
 .option norvc
@@ -280,9 +304,9 @@ done:
 
 实际测试里可以把写 pass/fail 的代码做成宏，但初期先展开写清楚更直观。
 
-## 第5章 scoreboard 和参考模型
+## 第6章 scoreboard 和参考模型
 
-### 5.1 第一版 scoreboard 可以很简单
+### 6.1 第一版 scoreboard 可以很简单
 
 最简单 scoreboard：
 
@@ -294,7 +318,7 @@ done:
 
 不必一开始写复杂 UVM。第一版 CPU 项目里，清晰的 directed test + commit trace 已经很有价值。
 
-### 5.2 自写简单 reference model
+### 6.2 自写简单 reference model
 
 可以写一个很小的 Python 模型，只支持当前指令子集：
 
@@ -314,7 +338,7 @@ REF trace:        pc instr rd wdata
 
 比较时通常忽略 cycle，因为流水线和单周期模型的 cycle 不同；重点比较提交顺序和架构结果。
 
-### 5.3 使用 ISS
+### 6.3 使用 ISS
 
 后期可以接 Spike、Sail 或其他 RISC-V ISS。但第一版有两个注意点：
 
@@ -325,9 +349,9 @@ REF trace:        pc instr rd wdata
 
 所以前期更实用的是先自写小参考模型或手写 expected trace。
 
-## 第6章 回归脚本思路
+## 第7章 回归脚本思路
 
-### 6.1 单测试流程
+### 7.1 单测试流程
 
 每个测试大致流程：
 
@@ -342,7 +366,7 @@ test.S
 
 命令细节见 `0826`。本篇只强调组织方式。
 
-### 6.2 回归输出
+### 7.2 回归输出
 
 建议回归输出简洁：
 
@@ -365,9 +389,9 @@ test.S
 
 这样才能复现。
 
-## 第7章 最小覆盖清单
+## 第8章 最小覆盖清单
 
-### 7.1 ISA 功能
+### 8.1 ISA 功能
 
 | 类别 | 至少覆盖 |
 |---|---|
@@ -380,7 +404,7 @@ test.S
 | jump | `JAL/JALR`，`rd=x0` 和 `rd!=x0` |
 | unsupported | 非法 opcode 或未支持系统指令 |
 
-### 7.2 pipeline hazard
+### 8.2 pipeline hazard
 
 | 类别 | 至少覆盖 |
 |---|---|
@@ -392,7 +416,7 @@ test.S
 | store data forwarding | store 数据来自前一条 |
 | flush | wrong-path GPR write、wrong-path store |
 
-### 7.3 基础断言
+### 8.3 基础断言
 
 可以在 testbench 或 RTL 中加：
 
@@ -410,7 +434,7 @@ assert property (@(posedge clk) disable iff (!rst_n)
 
 断言要少而准，先盯不变量。
 
-## 第8章 常见测试误区
+## 第9章 常见测试误区
 
 | 误区 | 后果 |
 |---|---|
@@ -422,7 +446,7 @@ assert property (@(posedge clk) disable iff (!rst_n)
 | 测试里用了未支持指令 | 误以为 CPU 错，其实编译产物超出范围 |
 | 没测 wrong-path store | flush bug 可能长期隐藏 |
 
-## 第9章 相关文档
+## 第10章 相关文档
 
 | 文档 | 关系 |
 |---|---|

@@ -124,6 +124,77 @@ module tb_core_single_cycle;
     end
 
     // -------------------------------------------------------------------------
+    // DMEM/stack 使用统计
+    // -------------------------------------------------------------------------
+    // 注意：DMEM 地址范围和**真正“用了多少 RAM”**不是完全等价的，因为程序可能
+    // 访问了高地址和低地址，中间未必全用；而栈深度用 min(sp) 统计通常最有价值。
+    // TEST_STATUS_ADDR 是 testbench 的结束标志地址，不计入程序自身 DMEM 访问范围。
+    localparam logic [core_pkg::XLEN-1:0] TEST_STATUS_ADDR = core_pkg::DMEM_BASE + 32'h0000_0100;
+    localparam logic [core_pkg::XLEN-1:0] TEST_PASS_VALUE  = 32'h0000_0001;
+    localparam logic [core_pkg::XLEN-1:0] DMEM_END_ADDR    = core_pkg::DMEM_BASE + 32'h0000_1000;
+    localparam logic [core_pkg::XLEN-1:0] STACK_TOP_ADDR   = DMEM_END_ADDR;
+    logic                                dmem_access_seen;
+    logic [core_pkg::XLEN-1:0]           dmem_min_addr;
+    logic [core_pkg::XLEN-1:0]           dmem_max_addr;
+    logic                                stack_active;
+    logic                                sp_min_seen;
+    logic [core_pkg::XLEN-1:0]           sp_min_addr;
+
+    wire [core_pkg::XLEN-1:0] current_sp = u_core.u_regfile.gpr_q[2];
+    wire dmem_access_for_stats = rst_n && (dmem_re || dmem_we) && (dmem_addr != TEST_STATUS_ADDR);
+    wire sp_in_dmem_range = (current_sp >= core_pkg::DMEM_BASE) && (current_sp <= STACK_TOP_ADDR);
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            dmem_access_seen <= 1'b0;
+            dmem_min_addr    <= '1;
+            dmem_max_addr    <= '0;
+            stack_active     <= 1'b0;
+            sp_min_seen      <= 1'b0;
+            sp_min_addr      <= '1;
+        end else begin
+            if (dmem_access_for_stats) begin
+                dmem_access_seen <= 1'b1;
+                if (!dmem_access_seen || dmem_addr < dmem_min_addr) begin
+                    dmem_min_addr <= dmem_addr;
+                end
+                if (!dmem_access_seen || dmem_addr > dmem_max_addr) begin
+                    dmem_max_addr <= dmem_addr;
+                end
+            end
+
+            if (current_sp == STACK_TOP_ADDR) begin
+                stack_active <= 1'b1;
+            end
+
+            if ((stack_active || current_sp == STACK_TOP_ADDR) && sp_in_dmem_range) begin
+                sp_min_seen <= 1'b1;
+                if (!sp_min_seen || current_sp < sp_min_addr) begin
+                    sp_min_addr <= current_sp;
+                end
+            end
+        end
+    end
+
+    task automatic print_memory_usage;
+        logic [core_pkg::XLEN-1:0] stack_used;
+        begin
+            if (dmem_access_seen) begin
+                $display("DMEM access range: 0x%08h - 0x%08h", dmem_min_addr, dmem_max_addr);
+            end else begin
+                $display("DMEM access range: no program DMEM access");
+            end
+
+            if (sp_min_seen) begin
+                stack_used = STACK_TOP_ADDR - sp_min_addr;
+                $display("Stack max used:    %0d bytes", stack_used);
+            end else begin
+                $display("Stack max used:    SP not initialized to stack top");
+            end
+        end
+    endtask
+
+    // -------------------------------------------------------------------------
     // 提交监控：在每次提交时打印指令执行情况
     // -------------------------------------------------------------------------
     always_ff @(posedge clk) begin
@@ -152,6 +223,7 @@ module tb_core_single_cycle;
             end else begin
                 $display("FAIL after %0d cycles, status=0x%08h", cycle_cnt, dmem_wdata);
             end
+            print_memory_usage();
             $finish;
         end
     end
@@ -168,8 +240,6 @@ module tb_core_single_cycle;
     // addi x11, x0, 1       # PASS
     // sw   x11, 0x100(x10)  # 写 TEST_STATUS_ADDR
 
-    localparam logic [core_pkg::XLEN-1:0] TEST_STATUS_ADDR = core_pkg::DMEM_BASE + 32'h0000_0100;
-    localparam logic [core_pkg::XLEN-1:0] TEST_PASS_VALUE  = 32'h0000_0001;
     logic test_done;
     logic test_passed;
 

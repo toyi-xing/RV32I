@@ -2,7 +2,7 @@
 
 本仓库是一个 RV32I 教学核实现仓库，包含**单周期**和**五级流水线**两套顶层，均通过 Verilator 仿真验证。
 
-工程架构说明见 `docs/08xx/` 下的 082x 系列文档。
+工程架构说明见 `docs/08xx/` 下的 082x 系列文档。支持的指令见 `docs/08xx/0821 RV32I最小教学核指令集、编码与译码参考.md`。
 
 ---
 
@@ -16,18 +16,16 @@
 | `sw/` | 汇编和 C 裸机测试程序 |
 | `scripts/` | 辅助脚本（bin2mem32 等） |
 | `build/` | 编译产物（.elf、.dump、.bin、.mem） |
-| `docs/` | 架构设计文档 |
+| `docs/` | 说明文档 |
 
 ---
 
 ## 当前状态
 
-| 阶段 | 顶层 | 状态 | git 历史版本 |
-|------|------|------|------|
+| 核 | 顶层 | 状态 | git 历史版本 |
+|---|------|------|------|
 | 单周期 RV32I | `core_single_cycle.sv` | 已完成 | v1.0 |
-| 五级流水线空壳 | `core_pipeline5.sv` | 已完成 | v1.3 |
-| data hazard（forwarding + load-use stall） | `core_pipeline5.sv` | 已完成 | v1.4 |
-| control hazard（redirect flush/kill） | `core_pipeline5.sv` | 待做 | - |
+| 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 |
 
 ---
 
@@ -99,25 +97,34 @@ rtl/common/pipeline_pkg.sv           # 流水线专用类型（struct、fwd_sel 
 rtl/core/core_pipeline5.sv           # 五级流水顶层（代替 core_single_cycle）
 rtl/core/pipe_reg.sv                 # 四组流水线寄存器
 rtl/core/forwarding_unit.sv          # RAW 数据前递
-rtl/core/hazard_unit.sv              # load-use stall 控制
+rtl/core/hazard_unit.sv              # load-use stall + redirect flush/kill 控制
 ```
 
 **Testbench：** `tb/sv/tb_core_pipeline5.sv`
 
 **测试程序：**
 ```
-sw/asm/pipeline5_nofwd_noredirect.S    # 无 forwarding/redirect 基线冒烟
-sw/asm/pipeline5_fwd_noredirect.S      # data hazard 全覆盖
+sw/asm/pipeline5_nofwd_noredirect.S      # 无 forwarding/redirect 基线冒烟
+sw/asm/pipeline5_fwd_noredirect.S        # data hazard 全覆盖
+sw/asm/pipeline5_fwd_redirect.S          # forwarding + control hazard 混合
 ```
 
-**仿真脚本：** `sim/pipeline5_asm/`
+**C 测试程序：**
+```
+sw/c/c_smoke.c                           # 最小冒烟
+sw/c/control_mix.c                       # 综合控制流 + 内存操作
+```
+
+**仿真脚本：** `sim/pipeline5_asm/`、`sim/pipeline5_c/`
 
 ### 仿真命令
 
 ```bash
 # 跑流水线测试
-sim/pipeline5_asm/run_test.sh pipeline5_fwd_noredirect
 sim/pipeline5_asm/run_test.sh pipeline5_nofwd_noredirect
+sim/pipeline5_asm/run_test.sh pipeline5_fwd_noredirect
+sim/pipeline5_asm/run_test.sh pipeline5_fwd_redirect
+sim/pipeline5_c/run_test.sh control_mix
 ```
 
 ---

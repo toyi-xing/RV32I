@@ -14,7 +14,11 @@ sim/single_cycle_c/run_test.sh c_smoke
 
 ```text
 PASS after ... cycles
+DMEM access range: ...
+Stack max used:    ...
 ```
+
+`DMEM access range` 统计仿真期间程序实际 load/store 过的最小和最大 DMEM 地址，已排除 `TEST_STATUS_ADDR` 的 PASS/FAIL 写入。`Stack max used` 通过 `min(sp)` 估算最大栈深；DMEM 地址范围不等价于真实 RAM 占用，因为中间地址未必都被访问。详细口径见 `docs/08xx/0827 Testbench、commit trace与测试集组织.md`。
 
 ## 2. C 流程总览
 

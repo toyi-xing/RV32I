@@ -74,6 +74,7 @@ smoke (addi / lui / sw / jal)
 |------|----------|
 | `pipeline5_nofwd_noredirect.S` | 无 forwarding/redirect 基线冒烟（手插 3 NOP 隔离 RAW） |
 | `pipeline5_fwd_noredirect.S` | data hazard 全覆盖：EX/MEM→EX、MEM/WB→EX、WB_IMM、store data、load-use rs1+rs2 |
+| `pipeline5_fwd_redirect.S` | forwarding + redirect 混合：分支操作数前递、load-use 后紧跟分支、JAL/JALR wrong-path kill、JALR bit0 清零 |
 
 ### 3.1 与单周期测试的差异
 
@@ -86,6 +87,5 @@ smoke (addi / lui / sw / jal)
 
 ### 3.2 流水线测试特有的注意事项
 
-- **不使用 branch/JAL/JALR**：control hazard flush 尚未实现，redirect 后的错误路径指令会干扰测试结果。
 - **nop 指令的使用**：`nop` 是 `addi x0, x0, 0` 的伪指令。在流水线测试中，nop 不再是"做无害操作"的填充，而是**有意控制流水线距离**的手段（例如在无 forwarding 时拉开 producer/consumer 间距）。在 `pipeline5_fwd_noredirect.S` 中，测试全程不用 nop 隔离 RAW，但收尾仍保留若干 nop 作为合法指令填充，防止 testbench 取到空 ROM 产生误报。
-- **测试结果相互独立**：每个测试场景使用不同的寄存器组，避免前一个测试对后一个测试产生 RAW 干扰。
+- **测试结果串成累加链**：各场景结果最终汇总到同一个 PASS 值，任意关键路径出错都会影响最终写入结果。

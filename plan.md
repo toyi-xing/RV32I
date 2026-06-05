@@ -1,91 +1,32 @@
 # 五级流水 RTL 实现计划
 
-依据 `docs/08xx/0820 RISC-V最小教学核设计流程与方案.md:239` 的阶段 4-7：
+当前五级流水线 v2.0 已完成。
 
-## 总体路线
+当前版本：v2.0 — 完整 data hazard + control hazard。
 
-1. ~~**搭五级流水空壳**：pipeline register + valid bit。~~ `已完成 (v1.2-pipe-skeleton)`
-2. ~~**接完整数据通路**：IF/ID/EX/MEM/WB 各级控制信号随指令流动。~~ `已完成 (v1.2-pipe-skeleton)`
-3. ~~**加 data hazard**：forwarding + load-use stall。~~ `已完成`
-4. [ ] **加 control hazard**：branch/JAL/JALR redirect + flush/kill。
+## v2.0 已完成范围
 
----
+- 37 条 RV32I 基础指令主路径。
+- 五级流水 IF/ID/EX/MEM/WB。
+- pipeline register + valid bit。
+- 完整数据通路和控制信号随指令流动。
+- data hazard：forwarding + load-use stall。
+- control hazard：branch/JAL/JALR redirect + wrong-path flush/kill。
+- 单周期和五级流水 testbench 均支持 PASS/FAIL、commit trace、DMEM access range 和 stack max used 统计。
 
-## RTL 已新增
+当前阶段默认前提仍是：程序只使用已支持的合法指令，访存地址满足访问宽度对齐，不测试非法指令异常、mem 不对齐异常、CSR/trap/interrupt。
 
-### 1. `rtl/core/core_pipeline5.sv` `已完成`
+## 后续可选方向
 
-五级流水顶层，保留 `core_single_cycle.sv` 作为 golden/reference。
-它负责实例化：
+以下方向都可以作为下一阶段选择，但当前尚未进入具体规划，也没有排定实现顺序：
 
-- `pc_reg`
-- `if_stage`
-- `id_stage`
-- `ex_stage`
-- `mem_stage`
-- `wb_stage`
-- `regfile`（带 `#(.BYPASS_EN(1))`）
-- 四组流水线寄存器：IF/ID、ID/EX、EX/MEM、MEM/WB
-- `forwarding_unit`
-- `hazard_unit`
+- 更系统的验证收口：补更多 C 程序、随机/参考模型、trace 对比、覆盖率或断言。
+- 最小 CSR/trap：加入 `mstatus/mtvec/mepc/mcause` 等基础 CSR，支持 `ECALL/EBREAK/MRET`、非法指令和访存不对齐 trap。`优先级最高`
+- interrupt：在最小 CSR/trap 基础上加入 timer/software/external interrupt 的入口、屏蔽和返回。`高优先级`
+- MMIO/最小 MCU：增加地址译码，把部分 DMEM 地址映射到 GPIO、UART TX、timer 等外设。
+- 简单总线或 wait state：从固定 1-cycle imem/dmem 扩展到带 ready/valid 的 memory 或外设访问。
+- FPGA 上板：加入 FPGA top wrapper、BRAM 初始化、时钟复位同步和 LED/UART 可观察输出。
+- cache/分支预测：加入 I-cache/D-cache 或简单 branch predictor，降低访存和 control hazard 代价。
+- M 扩展：加入乘除法和多周期执行单元，并处理对应 structural/data hazard。`中低优先级`
 
-### 2. `rtl/core/forwarding_unit.sv` `已完成`
-
-对应 `docs/08xx/0825 Hazard控制：forwarding、stall、flush与kill.md:51`。
-
-核心功能：检测 EX/MEM 和 MEM/WB 两级的 `rd` 是否与当前 EX 输入的 `rs1`/`rs2` 匹配，若匹配则前递对应数据。
-
-模块内部完成 detection + mux，直接输出前递后的数据值，不对外暴露选择信号。
-
-关键规则：
-
-- `rd = x0` 不参与 forwarding。
-- EX/MEM 的 load 不能前递（load 的 ALU 结果是访存地址，不是数据）。
-- EX/MEM 优先于 MEM/WB。
-- 内部 mux 根据 EX/MEM 的 `wb_sel` 选择数据源：`WB_ALU`→alu_result、`WB_IMM`→imm、`WB_PC4`→pc_plus4。
-
-覆盖场景：
-
-- ALU operand forwarding
-- branch 比较 operand forwarding
-- store data forwarding
-
-### 3. `rtl/core/hazard_unit.sv` `已完成`
-
-对应 `docs/08xx/0825 Hazard控制：forwarding、stall、flush与kill.md:185`。
-
-当前实现 load-use stall：
-
-- `stall_if` + `stall_id`：冻结 PC 和 IF/ID 寄存器
-- `bubble_ex`：在 ID/EX 插入 invalid 空槽
-
-待完成（step 4）：
-
-- `flush_if_id`
-- `flush_id_ex`
-
-### 4. 流水线寄存器（四组模块，合并为一个文件 `pipe_reg.sv`） `已完成`
-
-- `pipe_reg_if_id` — IF/ID，含 flush + stall
-- `pipe_reg_id_ex` — ID/EX，含 flush + bubble + stall（优先级 reset > flush > stall > bubble > normal）
-- `pipe_reg_ex_mem` — EX/MEM，含 stall（为后续全流水线暂停预留）
-- `pipe_reg_mem_wb` — MEM/WB，含 stall（同上）
-
----
-
-## RTL 已修改
-
-### 1. `rtl/common/core_pkg.sv` `已完成`
-
-流水线寄存器 struct 和 forwarding 枚举放在独立的 `pipeline_pkg.sv` 中。`core_pkg.sv` 保持 ISA 层级定义不变。
-
-### 2. `rtl/core/regfile.sv` `已完成`
-
-加 `parameter bit BYPASS_EN = 0` 控制同拍写读旁路：
-
-- **单周期**（BYPASS_EN=0，默认）：纯组合读，无旁路。单周期不产生同拍写读窗口，加了反而引入不必要的组合环路。
-- **流水线**（BYPASS_EN=1）：读端口检测 `we_i && rd_addr_i == rs_addr_i` 时直接输出写数据。
-  - 不加旁路时，producer 与 consumer 之间隔恰好 2 条指令时，producer 已离开 MEM/WB（forwarding 来不及），但 ID 读 GPR 时 producer 尚未写回（同步写），consumer 锁存旧值进入 EX → 计算结果错误。
-  - 旁路在 ID 的组合读阶段直接输出写数据，consumer 锁存到正确值。
-
-通过 `generate if (BYPASS_EN)` 在编译期分离两种模式，被禁用分支不生成任何逻辑。
+进入任何一个方向前，应先新建对应计划文档或更新本文件，明确目标范围、接口变化、测试方式和不支持项。

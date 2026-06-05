@@ -207,7 +207,11 @@ sim/single_cycle_asm/06_run_sim.sh <test>
 [2] @ 65: PC=0x00000004 Instr=0x00010537   rd=x10 <= 0x00010000
 [3] @ 75: PC=0x00000008 Instr=0x00100593   rd=x11 <= 0x00000001
 PASS after 4 cycles
+DMEM access range: no program DMEM access
+Stack max used:    SP not initialized to stack top
 ```
+
+仿真结束时会打印 `DMEM access range` 和 `Stack max used`。汇编测试通常不初始化 `sp`，所以栈统计可能显示 `SP not initialized to stack top`；DMEM 范围已排除 `TEST_STATUS_ADDR` 的 PASS/FAIL 写入。详细口径见 `docs/08xx/0827 Testbench、commit trace与测试集组织.md`。
 
 两脚本汇总为一个脚本：
 
