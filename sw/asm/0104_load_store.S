@@ -1,5 +1,5 @@
 #===============================================================================
-# load_store.S — RV32I load/store directed test skeleton
+# 0104_load_store.S — RV32I load/store directed test skeleton
 #
 # 计划覆盖：
 #   LB, LH, LW, LBU, LHU, SB, SH, SW

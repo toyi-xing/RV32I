@@ -5,11 +5,13 @@ set -euo pipefail
 # 用法：
 #   sim/pipeline5_asm/06_run_sim.sh [test_name]
 # 示例：
-#   sim/pipeline5_asm/06_run_sim.sh pipeline5_nofwd_noredirect
+#   sim/pipeline5_asm/06_run_sim.sh 0301
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TEST_NAME="${1:-pipeline5_nofwd_noredirect}"
+source "${REPO_ROOT}/sim/common/resolve_test_name.sh"
+
+TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/asm" "S" "${1:-}" "0301_pipeline5_nofwd_noredirect")"
 MEM_FILE="${REPO_ROOT}/build/${TEST_NAME}.mem"
 
 if [[ ! -f "${MEM_FILE}" ]]; then

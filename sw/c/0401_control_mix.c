@@ -1,5 +1,5 @@
 /*
- * control_mix.c - 稍大一些的 RV32I C bare-metal 测试。
+ * 0401_control_mix.c - 稍大一些的 RV32I C bare-metal 测试。
  *
  * 重点：
  *   - 嵌套循环和 branch 密集的 control flow
@@ -135,4 +135,3 @@ int main(void)
 
     return 0;
 }
-

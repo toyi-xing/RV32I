@@ -1,5 +1,5 @@
 #===============================================================================
-# alu_reg.S — RV32I R-type ALU directed test skeleton
+# 0103_alu_reg.S — RV32I R-type ALU directed test skeleton
 #
 # 计划覆盖：
 #   ADD, SUB, SLL, SLT, SLTU, XOR, SRL, SRA, OR, AND

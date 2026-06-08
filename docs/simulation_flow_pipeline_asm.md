@@ -22,6 +22,13 @@ sim/pipeline5_asm/run_test.sh <test>
 sim/pipeline5_asm/run_all.sh
 ```
 
+`<test>` 可以是四位编号或完整 basename，例如：
+
+```bash
+sim/pipeline5_asm/run_test.sh 0303
+sim/pipeline5_asm/run_test.sh 0303_pipeline5_fwd_redirect
+```
+
 ## 2. 仿真脚本中的 RTL 文件列表
 
 流水线的 Verilator 编译命令比单周期多了以下文件：
@@ -55,9 +62,9 @@ control hazard flush（redirect 时清空 IF/ID、ID/EX）已在 v2.0 实现。b
 
 | 文件 | 前置条件 | 描述 |
 |------|---------|------|
-| `pipeline5_nofwd_noredirect.S` | 空壳数据通路 | 手工 3 NOP 隔离 RAW，验证 pipeline 基础通路 |
-| `pipeline5_fwd_noredirect.S` | forwarding + load-use stall | 所有 data hazard 由硬件解决，无需 RAW 隔离 NOP |
-| `pipeline5_fwd_redirect.S` | forwarding + control hazard | forwarding + redirect 混合：分支操作数前递、load-use 后紧跟分支、JAL/JALR wrong-path kill、JALR bit0 清零 |
+| `0301_pipeline5_nofwd_noredirect.S` | 空壳数据通路 | 手工 3 NOP 隔离 RAW，验证 pipeline 基础通路 |
+| `0302_pipeline5_fwd_noredirect.S` | forwarding + load-use stall | 所有 data hazard 由硬件解决，无需 RAW 隔离 NOP |
+| `0303_pipeline5_fwd_redirect.S` | forwarding + control hazard | forwarding + redirect 混合：分支操作数前递、load-use 后紧跟分支、JAL/JALR wrong-path kill、JALR bit0 清零 |
 
 ## 4. 调试注意事项
 

@@ -1,5 +1,5 @@
 #===============================================================================
-# branch.S — RV32I branch directed test skeleton
+# 0101_branch.S — RV32I branch directed test skeleton
 #
 # 计划覆盖：
 #   BEQ, BNE, BLT, BGE, BLTU, BGEU

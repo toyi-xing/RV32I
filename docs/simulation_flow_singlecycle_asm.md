@@ -17,6 +17,13 @@
 | 5 | 编译软件生成 memory image | 运行 `05_build_mem.sh` | `.S`→`.elf`→`.dump`→`.bin`→`.mem` |
 | 6 | 构建并运行仿真 | 运行 `06_run_sim.sh` | Verilator 编译脚本中列出的 .sv → `+imem=` 加载 .mem → 跑出 PASS/FAIL |
 
+当前测试文件采用四位编号前缀，脚本参数可以写四位编号，也可以写完整 basename：
+
+```bash
+sim/single_cycle_asm/run_test.sh 0102
+sim/single_cycle_asm/run_test.sh 0102_alu_imm
+```
+
 ## 2. 文件总览（按工作顺序）
 
 ```
@@ -182,6 +189,8 @@ fail:
 sim/single_cycle_asm/05_build_mem.sh <test>
 ```
 
+`<test>` 可以是四位编号，如 `0102`；也可以是完整 basename，如 `0102_alu_imm`。
+
 执行流程：
 1. `gcc` 汇编 + 链接（`-T sw/linker/asm_test.ld`）→ `.elf`
 2. `objdump -d` → `.dump`（先检查这个文件确认指令编码正确）
@@ -217,6 +226,13 @@ Stack max used:    SP not initialized to stack top
 
 ```bash
 sim/single_cycle_asm/run_test.sh <test>
+```
+
+例如：
+
+```bash
+sim/single_cycle_asm/run_test.sh 0001
+sim/single_cycle_asm/run_test.sh 0102
 ```
 
 7 个 asm 程序连续测试总脚本：
@@ -267,7 +283,7 @@ TIMEOUT          = 超过 20010 周期未写入
 | 指令编码看起来字节反了 | .mem 格式不对；应用 bin2mem32.py 生成 |
 | ILLEGAL | decoder 不支持该指令，或汇编生成的是伪指令展开后的非预期编码 |
 | MISALIGN | load/store 地址不对齐访问宽度 |
-| u_type.S / branch.S 等复合测试 FAIL | 先查该文件依赖的指令在对应定向测试中是否通过 |
+| 0106_u_type.S / 0101_branch.S 等复合测试 FAIL | 先查该文件依赖的指令在对应定向测试中是否通过 |
 
 ### 7.2 标准检查清单
 
@@ -281,11 +297,13 @@ TIMEOUT          = 超过 20010 周期未写入
 ## 8. 后续添加测试建议
 
 ```text
-sw/asm/alu_imm.S       — 全部 ALU 立即数指令
-sw/asm/alu_reg.S       — 全部 ALU 寄存器指令
-sw/asm/load_store.S    — LB/LH/LW/LBU/LHU + SB/SH/SW
-sw/asm/branch.S        — BEQ/BNE/BLT/BGE/BLTU/BGEU
-sw/asm/jump.S          — JAL/JALR
+sw/asm/0001_smoke.S        — 最小取指/执行/访存/PASS 冒烟
+sw/asm/0101_branch.S       — BEQ/BNE/BLT/BGE/BLTU/BGEU
+sw/asm/0102_alu_imm.S       — 全部 ALU 立即数指令
+sw/asm/0103_alu_reg.S       — 全部 ALU 寄存器指令
+sw/asm/0104_load_store.S    — LB/LH/LW/LBU/LHU + SB/SH/SW
+sw/asm/0105_jump.S          — JAL/JALR
+sw/asm/0106_u_type.S        — LUI/AUIPC
 ```
 
 每文件覆盖少量指令，跑通后再扩展。小测试更容易从 commit trace 定位第一处错误。

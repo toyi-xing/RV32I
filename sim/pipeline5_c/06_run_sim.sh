@@ -5,11 +5,13 @@ set -euo pipefail
 # 用法：
 #   sim/pipeline5_c/06_run_sim.sh [test_name]
 # 示例：
-#   sim/pipeline5_c/06_run_sim.sh c_smoke
+#   sim/pipeline5_c/06_run_sim.sh 0201
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TEST_NAME="${1:-c_smoke}"
+source "${REPO_ROOT}/sim/common/resolve_test_name.sh"
+
+TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/c" "c" "${1:-}" "0201_c_smoke")"
 BUILD_DIR="${REPO_ROOT}/build/pipeline5_c"
 IMEM_FILE="${BUILD_DIR}/${TEST_NAME}_imem.mem"
 DMEM_FILE="${BUILD_DIR}/${TEST_NAME}_dmem.mem"

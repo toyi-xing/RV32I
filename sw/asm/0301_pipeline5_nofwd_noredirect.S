@@ -1,12 +1,11 @@
 #===============================================================================
-# pipeline5_nofwd_noredirect.S - RV32I five-stage pipeline smoke test without hazards
+# 0301_pipeline5_nofwd_noredirect.S - RV32I five-stage pipeline smoke test without hazards
 #
 # 目的：
-#   - 单周期和搭建五级流水空壳冒烟测试。
-#   - 测试 rtl 无 data hazard （无 forewording,不支持 RAW 和 load-use）
-#     无 control hazard（pc redirect 后的指令 kill）。
-#   1. 只使用顺序流，不使用 branch/JAL/JALR，避免当前尚未实现的 flush/kill。
-#   2. 在 producer/consumer 之间插入 3 条 nop，避免当前尚未实现的 forwarding/stall。
+#   - 早期搭建五级流水空壳时的冒烟测试，也可作为当前基础数据通路回归。
+#   - 该测试刻意不依赖 data hazard/control hazard 处理能力。
+#   1. 只使用顺序流，不使用 branch/JAL/JALR。
+#   2. 在 producer/consumer 之间插入 3 条 nop，避免 RAW 依赖需要 forwarding/stall。
 #   3. 通过 ALU 计算出 1，写入 RAM，再 load 回来，最后写 TEST_STATUS_ADDR。
 #
 # PASS 条件：

@@ -5,13 +5,15 @@ set -euo pipefail
 # 用法：
 #   sim/single_cycle_asm/05_build_mem.sh [test_name]
 # 示例：
-#   sim/single_cycle_asm/05_build_mem.sh smoke
+#   sim/single_cycle_asm/05_build_mem.sh 0102
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TOOLCHAIN_ENV="${TOOLCHAIN_ENV:-/home/a/tools/riscv-unknown-elf/env.sh}"
 
-TEST_NAME="${1:-smoke}"
+source "${REPO_ROOT}/sim/common/resolve_test_name.sh"
+
+TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/asm" "S" "${1:-}" "0001_smoke")"
 ASM_FILE="${REPO_ROOT}/sw/asm/${TEST_NAME}.S"
 BUILD_DIR="${REPO_ROOT}/build"
 

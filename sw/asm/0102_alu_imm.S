@@ -1,5 +1,5 @@
 #===============================================================================
-# alu_imm.S — RV32I I-type ALU directed test skeleton
+# 0102_alu_imm.S — RV32I I-type ALU directed test skeleton
 #
 # 计划覆盖：
 #   ADDI, SLTI, SLTIU, XORI, ORI, ANDI, SLLI, SRLI, SRAI

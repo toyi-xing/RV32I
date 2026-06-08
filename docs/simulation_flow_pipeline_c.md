@@ -17,6 +17,13 @@ sim/pipeline5_c/06_run_sim.sh <test>
 sim/pipeline5_c/run_test.sh <test>
 ```
 
+`<test>` 可以是四位编号或完整 basename，例如：
+
+```bash
+sim/pipeline5_c/run_test.sh 0401
+sim/pipeline5_c/run_test.sh 0401_control_mix
+```
+
 ## 2. 与流水线汇编测试的差异
 
 ### 2.1 测试程序结构不同
@@ -39,8 +46,8 @@ Vtb_core_pipeline5 "+imem=build/pipeline5_c/<test>_imem.mem" "+dmem=build/pipeli
 
 | 文件 | 描述 |
 |------|------|
-| `sw/c/c_smoke.c` | 最小冒烟：1+2=3 自检，通过返回 0 |
-| `sw/c/control_mix.c` | 稍复杂 C 程序：.data/.bss/.rodata、嵌套循环冒泡排序、函数调用栈、byte/halfword 访存、分支密集路径 |
+| `sw/c/0201_c_smoke.c` | 最小冒烟：1+2=3 自检，通过返回 0 |
+| `sw/c/0401_control_mix.c` | 稍复杂 C 程序：.data/.bss/.rodata、嵌套循环冒泡排序、函数调用栈、byte/halfword 访存、分支密集路径 |
 
 ## 4. 新建 C 测试
 
@@ -53,11 +60,7 @@ int main(void)
 {
     // 在这里写测试代码
 
-    int result = 1;  // PASS value
-    volatile int *status = (int *)0x00010100;  // TEST_STATUS_ADDR
-    *status = result;
-
-    return 0;
+    return 0;  // 0 表示 PASS；非 0 返回值由 crt0.S 转成 FAIL
 }
 ```
 
@@ -65,7 +68,7 @@ int main(void)
 
 - **入口约定**：`crt0.S` 负责初始化栈指针、清零 `.bss`、加载 `.dmem_image` 到 DMEM 基址，然后调用 `main()`。
 - **全局变量初始化**：若 C 测试需要在 DMEM 中预置数据，定义全局变量并赋初值即可。链接脚本会将这些初始值收集到 `.dmem_image` 段，仿真启动时 `simple_ram` 通过 `$readmemh` 加载。
-- **PASS/FAIL 约定**：向 `DMEM_BASE + 0x100`（即 `0x00010100`）写 1 为 PASS，写其他值为 FAIL。超时（20010 周期）自动判 TIMEOUT。
+- **PASS/FAIL 约定**：C 测试由 `crt0.S` 统一写 `DMEM_BASE + 0x100`（即 `0x00010100`）。`main()` 返回 0 时写 1 表示 PASS，返回非 0 时写 2 表示 FAIL。超时（20010 周期）自动判 TIMEOUT。
 
 ### 4.2 生成 Memory Image
 

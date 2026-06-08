@@ -1,10 +1,10 @@
 #===============================================================================
-# pipeline5_fwd_noredirect.S - RV32I data hazard forwarding + load-use test
+# 0302_pipeline5_fwd_noredirect.S - RV32I data hazard forwarding + load-use test
 #
 # 目的：
-#   - 单周期和搭建五级流水 data hazard 测试。
-#   - 测试 rtl 具备处理 data hazard 能力 （支持 RAW 和 load-use）
-#   - 不具备处理 control hazard 能力（pc redirect 后的指令 kill）。
+#   - 五级流水 data hazard 定向测试。
+#   - 测试 RTL 具备处理 data hazard 的能力（支持 RAW forwarding 和 load-use stall）。
+#   - 该测试刻意不覆盖 control hazard，控制流保持顺序执行。
 #   验证五级流水的 data hazard 处理能力：
 #   1. EX/MEM->EX（WB_ALU）     -> back-to-back RAW
 #   2. MEM/WB->EX（WB_ALU）     -> 间隔 1 条指令的 RAW

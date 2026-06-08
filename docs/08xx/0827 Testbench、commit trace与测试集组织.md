@@ -11,12 +11,25 @@
 
 | 项目 | 假设 |
 |---|---|
-| DUT | `core_top` |
+| DUT | 单周期为 `core_single_cycle`，五级流水为 `core_pipeline5` |
 | imem | `$readmemh` 加载 32 bit word `.mem` |
 | dmem | testbench 可观察内部 memory 或 store 事件 |
-| pass/fail | 支持固定 cycle 检查、tohost 地址或 trace 比对 |
+| pass/fail | 当前实现采用固定 `TEST_STATUS_ADDR` store 检查 |
 | trace | 第一版以 WB 阶段 valid 指令作为 commit |
 | 测试类型 | directed test 优先，后续再加随机/参考模型 |
+
+当前实现状态：
+
+| 项目 | 当前状态 |
+|---|---|
+| PASS/FAIL | 已实现，程序写 `DMEM_BASE + 0x100`，写 1 为 PASS，其他值为 FAIL |
+| timeout | 已实现，超过固定周期未结束则打印 TIMEOUT |
+| commit trace | 已实现，单周期和五级流水 testbench 都打印提交 PC、指令和写回信息 |
+| DMEM/stack 统计 | 已实现，仿真结束时打印运行期 DMEM 访问范围和最大栈深 |
+| directed test 编号分组 | 已实现，测试文件使用四位编号前缀，脚本支持四位编号或完整 basename |
+| scoreboard / reference model / ISS | 选择实现，可暂时不用；当前 directed self-check + commit trace 已满足 v2.0 教学核验证 |
+| unsupported / illegal / misaligned 测试 | 选择实现，可暂时不用；当前 v2.0 假设程序只使用合法指令且访存对齐 |
+| SystemVerilog assertion / coverage | 选择实现，可暂时不用；后续验证收口或加 CSR/trap 时再系统补 |
 
 ## 第1章 testbench 顶层结构
 
@@ -89,46 +102,45 @@ end
 
 优点是简单；缺点是每个测试要写不同检查逻辑，且程序提前失败时不一定能马上停。
 
-### 2.2 tohost 地址
+### 2.2 TEST_STATUS_ADDR 地址
 
-更通用的方式是约定一个 dmem 地址作为 `tohost`：
+更通用的方式是约定一个 dmem 地址作为测试结束状态：
 
 | 地址 | 含义 |
 |---|---|
-| `0x0001_00fc` | 程序写 1 表示 pass，写其他值表示 fail |
+| `0x0001_0100` | 程序写 1 表示 pass，写其他值表示 fail |
 
 testbench 观察 store：
 
 ```systemverilog
-localparam logic [31:0] TOHOST_ADDR = 32'h0001_00fc;
+localparam logic [31:0] TEST_STATUS_ADDR = 32'h0001_0100;
 
 always_ff @(posedge clk) begin
-    if (rst_n && dmem_we && (dmem_addr == TOHOST_ADDR)) begin
+    if (rst_n && dmem_we && (dmem_addr == TEST_STATUS_ADDR)) begin
         if (dmem_wdata == 32'd1) begin
             $display("PASS");
         end else begin
-            $display("FAIL: tohost = %08h", dmem_wdata);
+            $display("FAIL: status = %08h", dmem_wdata);
         end
         $finish;
     end
 end
 ```
 
-为了和本文 DMEM_BASE `0x0001_0000` 保持一致，推荐把 tohost 放在数据区起始处附近，例如：
+为了和本文 DMEM_BASE `0x0001_0000` 保持一致，推荐把 `TEST_STATUS_ADDR` 放在数据区起始处附近，例如：
 
 | 地址 | 用途 |
 |---|---|
 | `0x0001_0000` | 普通测试结果 word0 |
 | `0x0001_0004` | 普通测试结果 word1 |
-| `0x0001_00fc` | `tohost` |
+| `0x0001_0100` | `TEST_STATUS_ADDR` |
 
-汇编中写 `0x0001_00fc`：
+汇编中写 `0x0001_0100`：
 
 ```asm
     lui  x31, 0x10
-    addi x31, x31, 0xfc
     addi x30, x0, 1
-    sw   x30, 0(x31)
+    sw   x30, 0x100(x31)
 ```
 
 ### 2.3 timeout 必须有
@@ -143,7 +155,7 @@ initial begin
 end
 ```
 
-否则 PC 卡死、程序没写 tohost、flush 出错等情况会让回归一直挂着。
+否则 PC 卡死、程序没写 `TEST_STATUS_ADDR`、flush 出错等情况会让回归一直挂着。
 
 ## 第3章 commit trace
 
@@ -246,24 +258,31 @@ Stack max used:    80 bytes
 
 ```text
 sw/asm/
-    001_addi.S
-    002_lui_auipc.S
-    010_rtype_alu.S
-    020_load_store_word.S
-    021_load_ext.S
-    022_store_byte_enable.S
-    030_branch_basic.S
-    031_branch_flush_gpr.S
-    032_branch_flush_store.S
-    040_jal_jalr.S
-    050_forward_exmem.S
-    051_forward_memwb.S
-    052_forward_store_data.S
-    060_load_use_rs1.S
-    061_load_use_rs2.S
+    0001_smoke.S
+    0101_branch.S
+    0102_alu_imm.S
+    0103_alu_reg.S
+    0104_load_store.S
+    0105_jump.S
+    0106_u_type.S
+    0301_pipeline5_nofwd_noredirect.S
+    0302_pipeline5_fwd_noredirect.S
+    0303_pipeline5_fwd_redirect.S
+
+sw/c/
+    0201_c_smoke.c
+    0202_dmem_init.c
+    0401_control_mix.c
 ```
 
-编号能保证回归输出稳定排序。
+当前使用四位编号：前两位表示测试部分，后两位表示该部分内的测试序号。脚本支持两种参数形式：
+
+```bash
+sim/single_cycle_asm/run_test.sh 0102
+sim/single_cycle_asm/run_test.sh 0102_alu_imm
+```
+
+编号能保证回归输出稳定排序，也能让单个测试命令更短。
 
 ### 5.2 每个测试只证明少数事情
 
@@ -275,6 +294,8 @@ sw/asm/
 | `branch_flush_store` | 大量无关 ALU 运算 |
 
 测试短，失败时才容易定位。
+
+当前仓库里有些文件为了减少数量，会把一组相关指令或一组流水线场景合在一起，例如 `0102_alu_imm.S` 覆盖全部 I-type ALU，`0302_pipeline5_fwd_noredirect.S` 覆盖多类 data hazard。这个选择对当前教学阶段是可以接受的；如果后续要做更严格 regression，可再拆成更细的 directed test。
 
 ### 5.3 汇编测试模板
 
@@ -295,8 +316,7 @@ _start:
 
     # pass
     addi x30, x0, 1
-    addi x10, x10, 0xfc
-    sw   x30, 0(x10)
+    sw   x30, 0x100(x10)
 
 done:
     jal  x0, done
@@ -308,17 +328,29 @@ done:
 
 ### 6.1 第一版 scoreboard 可以很简单
 
+当前 v2.0 没有实现独立 scoreboard 类或参考模型。现在采用的是“程序自检 + testbench 观察状态地址 + commit trace 辅助 debug”：
+
+| 检查对象 | 当前实现 |
+|---|---|
+| pass/fail | 已实现，观察 `TEST_STATUS_ADDR` |
+| dmem 结果 | 主要由测试程序自己 load 后比较；testbench 只统计访问范围 |
+| commit trace | 已实现打印，但尚未自动和 expected trace 比较 |
+
+这个强度足够支撑当前合法 RV32I + 对齐访存的教学核验证。它不能替代 reference model；如果后续加入随机测试、CSR/trap、非法指令、不对齐访问、可变延迟 memory 或外设 MMIO，再补 scoreboard/reference model 更合适。
+
 最简单 scoreboard：
 
 | 检查对象 | 方法 |
 |---|---|
-| pass/fail | 观察 `tohost` |
+| pass/fail | 观察 `TEST_STATUS_ADDR` |
 | dmem 结果 | 仿真结束检查指定地址 |
 | commit trace | 与预期文本比较 |
 
 不必一开始写复杂 UVM。第一版 CPU 项目里，清晰的 directed test + commit trace 已经很有价值。
 
 ### 6.2 自写简单 reference model
+
+选择实现，可暂时不用。
 
 可以写一个很小的 Python 模型，只支持当前指令子集：
 
@@ -340,12 +372,14 @@ REF trace:        pc instr rd wdata
 
 ### 6.3 使用 ISS
 
+选择实现，可暂时不用。
+
 后期可以接 Spike、Sail 或其他 RISC-V ISS。但第一版有两个注意点：
 
 | 注意点 | 说明 |
 |---|---|
 | 支持范围 | ISS 默认完整架构，教学核可能不支持 CSR/trap |
-| 环境约定 | tohost、链接脚本、memory map 要匹配 |
+| 环境约定 | `TEST_STATUS_ADDR`、链接脚本、memory map 要匹配 |
 
 所以前期更实用的是先自写小参考模型或手写 expected trace。
 
@@ -366,16 +400,26 @@ test.S
 
 命令细节见 `0826`。本篇只强调组织方式。
 
+当前仓库的单测试脚本支持四位编号或完整 basename：
+
+```bash
+sim/single_cycle_asm/run_test.sh 0102
+sim/single_cycle_asm/run_test.sh 0102_alu_imm
+sim/pipeline5_c/run_test.sh 0401
+```
+
+`run_all.sh` 不扫描目录自动运行所有测试，而是维护阶段专属列表。这样单周期回归、流水线回归和后续 CSR/trap 回归可以有不同范围。
+
 ### 7.2 回归输出
 
 建议回归输出简洁：
 
 ```text
-[PASS] 001_addi
-[PASS] 002_lui_auipc
-[FAIL] 052_forward_store_data
-       see build/052_forward_store_data/wave.vcd
-       see build/052_forward_store_data/commit.trace
+[PASS] 0001_smoke
+[PASS] 0102_alu_imm
+[FAIL] 0302_pipeline5_fwd_noredirect
+       see build/0302_pipeline5_fwd_noredirect/wave.vcd
+       see build/0302_pipeline5_fwd_noredirect/commit.trace
 ```
 
 失败时要保留：
@@ -402,7 +446,7 @@ test.S
 | store | `SB/SH/SW` |
 | branch | taken/not-taken，signed/unsigned |
 | jump | `JAL/JALR`，`rd=x0` 和 `rd!=x0` |
-| unsupported | 非法 opcode 或未支持系统指令 |
+| unsupported | 非法 opcode 或未支持系统指令，选择实现，可暂时不用 |
 
 ### 8.2 pipeline hazard
 
@@ -417,6 +461,8 @@ test.S
 | flush | wrong-path GPR write、wrong-path store |
 
 ### 8.3 基础断言
+
+选择实现，可暂时不用。当前 v2.0 主要靠 directed test 自检和 commit trace；后续做更系统验证时再补断言和覆盖率。
 
 可以在 testbench 或 RTL 中加：
 

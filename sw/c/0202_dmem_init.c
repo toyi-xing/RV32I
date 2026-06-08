@@ -1,5 +1,5 @@
 /*
- * dmem_init.c — 单周期 RV32I C 裸机 dmem 初始化测试。
+ * 0202_dmem_init.c - 单周期 RV32I C 裸机 dmem 初始化测试。
  *
  * main 返回 0 表示测试通过；返回非 0 表示失败。
  * TEST_STATUS_ADDR 的写入由 sw/c_runtime/crt0.S 统一完成。
@@ -71,4 +71,3 @@ int main(void)
 
     return 0;
 }
-

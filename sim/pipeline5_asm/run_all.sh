@@ -11,18 +11,18 @@ SIM="${REPO_ROOT}/obj_dir/Vtb_core_pipeline5"
 
 TESTS=(
     # 单周期指令集全覆盖（验证流水线 ISA 正确性）
-    smoke
-    branch
-    u_type
-    alu_imm
-    alu_reg
-    jump
-    load_store
+    0001_smoke
+    0101_branch
+    0102_alu_imm
+    0103_alu_reg
+    0104_load_store
+    0105_jump
+    0106_u_type
 
     # 流水线专用（验证 data hazard / control hazard）
-    pipeline5_nofwd_noredirect
-    pipeline5_fwd_noredirect
-    pipeline5_fwd_redirect
+    0301_pipeline5_nofwd_noredirect
+    0302_pipeline5_fwd_noredirect
+    0303_pipeline5_fwd_redirect
 )
 
 PASS=0

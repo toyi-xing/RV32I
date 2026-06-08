@@ -1,5 +1,5 @@
 #===============================================================================
-# pipeline5_fwd_redirect.S - RV32I pipeline forwarding + redirect 测试
+# 0303_pipeline5_fwd_redirect.S - RV32I pipeline forwarding + redirect 测试
 #
 # 目的：
 #   - 专门覆盖 data hazard 和 control hazard 叠在一起时的行为。

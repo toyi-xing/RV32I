@@ -9,13 +9,13 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SIM="${REPO_ROOT}/obj_dir/Vtb_core_single_cycle"
 
 TESTS=(
-    smoke
-    branch
-    u_type
-    alu_imm
-    alu_reg
-    jump
-    load_store
+    0001_smoke
+    0101_branch
+    0102_alu_imm
+    0103_alu_reg
+    0104_load_store
+    0105_jump
+    0106_u_type
 )
 
 PASS=0

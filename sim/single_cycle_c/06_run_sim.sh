@@ -5,11 +5,13 @@ set -euo pipefail
 # 用法：
 #   sim/single_cycle_c/06_run_sim.sh [test_name]
 # 示例：
-#   sim/single_cycle_c/06_run_sim.sh c_smoke
+#   sim/single_cycle_c/06_run_sim.sh 0201
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-TEST_NAME="${1:-c_smoke}"
+source "${REPO_ROOT}/sim/common/resolve_test_name.sh"
+
+TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/c" "c" "${1:-}" "0201_c_smoke")"
 BUILD_DIR="${REPO_ROOT}/build/single_cycle_c"
 IMEM_FILE="${BUILD_DIR}/${TEST_NAME}_imem.mem"
 DMEM_FILE="${BUILD_DIR}/${TEST_NAME}_dmem.mem"
@@ -47,4 +49,3 @@ verilator -sv --binary --timing --top-module tb_core_single_cycle \
     tb/sv/tb_core_single_cycle.sv
 
 "${REPO_ROOT}/obj_dir/Vtb_core_single_cycle" "+imem=${IMEM_FILE}" "+dmem=${DMEM_FILE}"
-

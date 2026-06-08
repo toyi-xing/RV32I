@@ -7,8 +7,10 @@
 在仓库根目录执行：
 
 ```bash
-sim/single_cycle_c/run_test.sh c_smoke
+sim/single_cycle_c/run_test.sh 0201
 ```
+
+单测试脚本参数支持四位编号或完整 basename，例如 `0201` 和 `0201_c_smoke` 等价。
 
 期望输出中出现：
 
@@ -48,8 +50,8 @@ Vtb_core_single_cycle +imem=<test>_imem.mem +dmem=<test>_dmem.mem
 
 | 文件 | 角色 |
 |------|------|
-| `sw/c/c_smoke.c` | C 冒烟测试 |
-| `sw/c/dmem_init.c` |检查栈、函数调用、局部变量、全局变量、`.rodata/.data/.bss` |
+| `sw/c/0201_c_smoke.c` | C 冒烟测试 |
+| `sw/c/0202_dmem_init.c` |检查栈、函数调用、局部变量、全局变量、`.rodata/.data/.bss` |
 | `sw/c_runtime/crt0.S` | C 启动代码，设置 `sp`、清零 `.bss`、调用 `main()`、统一写 PASS/FAIL |
 | `sw/linker/c_baremetal.ld` | C 裸机链接脚本，定义 IMEM/DMEM 布局和保留状态地址 |
 | `sim/single_cycle_c/05_build_mem.sh` | 编译 C 测试并生成 IMEM/DMEM 两份 `.mem` |
@@ -121,37 +123,37 @@ main() 返回非 0 -> crt0.S 写 2
 |-----------|----------------------|----------------|----------|
 | `sw/c/<test>.c` | **是** | 否；重跑仿真脚本时 Verilator 会按需增量构建 | `sim/single_cycle_c/run_test.sh <test>` |
 | 新增 `sw/c/<new_test>.c` | **是** | 否；除非 RTL/TB 也改了 | `sim/single_cycle_c/run_test.sh <new_test>` |
-| `sw/c_runtime/crt0.S` | **是** | 否 | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `sw/linker/c_baremetal.ld` | **是** | 否 | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `sim/single_cycle_c/05_build_mem.sh` | **是** | 否 | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `sim/single_cycle_c/06_run_sim.sh` | 否 | **是**，脚本会重新调用 Verilator | `sim/single_cycle_c/06_run_sim.sh c_smoke` |
-| `rtl/core/*.sv`（任意 RTL 模块） | 否 | **是** | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `rtl/mem/simple_rom.sv` / `rtl/mem/simple_ram.sv` | 否 | **是** | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `rtl/common/core_pkg.sv`（改 IMEM_BASE/DMEM_BASE 等） | **是**（同步检查 `c_baremetal.ld`） | **是** | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `tb/sv/tb_core_single_cycle.sv` | 否 | **是** | `sim/single_cycle_c/run_test.sh c_smoke` |
-| 新增 .sv 文件 | 否 | **是**，并且要加到 `06_run_sim.sh` 的 verilator 命令中 | `sim/single_cycle_c/run_test.sh c_smoke` |
-| `scripts/bin2mem32.py` | **是**（已有 `.mem` 是旧转换结果） | 否 | `sim/single_cycle_c/run_test.sh c_smoke` |
+| `sw/c_runtime/crt0.S` | **是** | 否 | `sim/single_cycle_c/run_test.sh 0201` |
+| `sw/linker/c_baremetal.ld` | **是** | 否 | `sim/single_cycle_c/run_test.sh 0201` |
+| `sim/single_cycle_c/05_build_mem.sh` | **是** | 否 | `sim/single_cycle_c/run_test.sh 0201` |
+| `sim/single_cycle_c/06_run_sim.sh` | 否 | **是**，脚本会重新调用 Verilator | `sim/single_cycle_c/06_run_sim.sh 0201` |
+| `rtl/core/*.sv`（任意 RTL 模块） | 否 | **是** | `sim/single_cycle_c/run_test.sh 0201` |
+| `rtl/mem/simple_rom.sv` / `rtl/mem/simple_ram.sv` | 否 | **是** | `sim/single_cycle_c/run_test.sh 0201` |
+| `rtl/common/core_pkg.sv`（改 IMEM_BASE/DMEM_BASE 等） | **是**（同步检查 `c_baremetal.ld`） | **是** | `sim/single_cycle_c/run_test.sh 0201` |
+| `tb/sv/tb_core_single_cycle.sv` | 否 | **是** | `sim/single_cycle_c/run_test.sh 0201` |
+| 新增 .sv 文件 | 否 | **是**，并且要加到 `06_run_sim.sh` 的 verilator 命令中 | `sim/single_cycle_c/run_test.sh 0201` |
+| `scripts/bin2mem32.py` | **是**（已有 `.mem` 是旧转换结果） | 否 | `sim/single_cycle_c/run_test.sh 0201` |
 
 单独拆开运行时：
 
 ```bash
-sim/single_cycle_c/05_build_mem.sh c_smoke   # 只重新编译 C 并生成 _imem.mem/_dmem.mem
-sim/single_cycle_c/06_run_sim.sh c_smoke     # 只使用已有镜像跑仿真
+sim/single_cycle_c/05_build_mem.sh 0201   # 只重新编译 C 并生成 _imem.mem/_dmem.mem
+sim/single_cycle_c/06_run_sim.sh 0201     # 只使用已有镜像跑仿真
 ```
 
-如果 C 测试文件不是 `c_smoke.c`，命令参数要跟文件名去掉 `.c` 后一致。例如：
+如果 C 测试文件不是 `0201_c_smoke.c`，命令参数可以写四位编号，也可以写去掉 `.c` 后的完整 basename。例如：
 
 ```text
-sw/c/c_loop.c
+sw/c/0203_c_loop.c
 ```
 
 对应命令是：
 
 ```bash
-sim/single_cycle_c/run_test.sh <test>
+sim/single_cycle_c/run_test.sh 0203
 ```
 
-**实际操作建议**：拿不准时直接跑 `sim/single_cycle_c/run_test.sh <test>`。它会先重新生成两份 memory image，再构建/运行仿真，最不容易漏步骤。
+**实际操作建议**：拿不准时直接跑 `sim/single_cycle_c/run_test.sh <四位编号或完整basename>`。它会先重新生成两份 memory image，再构建/运行仿真，最不容易漏步骤。
 
 ## 9. 出错时先看什么
 

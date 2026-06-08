@@ -89,7 +89,7 @@ rv32i_teaching_core/
             tb_core.sv
     sw/
         asm/
-            smoke.S
+            0001_smoke.S
         c/
         linker/
             linker.ld
@@ -159,7 +159,7 @@ SECTIONS
 
 建议先从纯汇编开始，不要一上来写 C。汇编能精确控制生成哪些指令，便于确认教学核支持范围。
 
-一个最小 `sw/asm/smoke.S`：
+一个最小 `sw/asm/0001_smoke.S`：
 
 ```asm
 .option norvc
@@ -225,8 +225,8 @@ riscv64-unknown-elf-gcc \
     -ffreestanding \
     -Wl,-T,sw/linker/linker.ld \
     -Wl,--no-relax \
-    -o build/smoke.elf \
-    sw/asm/smoke.S
+    -o build/0001_smoke.elf \
+    sw/asm/0001_smoke.S
 ```
 
 关键选项含义：
@@ -247,7 +247,7 @@ riscv64-unknown-elf-gcc \
 riscv64-unknown-elf-objdump \
     -d \
     -M no-aliases,numeric \
-    build/smoke.elf > build/smoke.dump
+    build/0001_smoke.elf > build/0001_smoke.dump
 ```
 
 反汇编的作用不是“为了好看”，而是确认最终 ELF 里到底有什么指令、地址是多少。早期 debug 时，建议每次都看一眼：
@@ -260,7 +260,7 @@ riscv64-unknown-elf-objdump \
 | 是否出现伪指令别名 | 用 `no-aliases` 尽量显示真实指令 |
 | 分支/跳转目标 | 确认 label 被链接到预期地址 |
 
-例如上面的 `smoke.S` 可能得到类似指令编码：
+例如上面的 `0001_smoke.S` 可能得到类似指令编码：
 
 ```text
 00000000 <_start>:
@@ -301,12 +301,12 @@ assign rdata_o = mem[addr_i[AW+1:2]];
 ```bash
 riscv64-unknown-elf-objcopy \
     -O binary \
-    build/smoke.elf \
-    build/smoke.bin
+    build/0001_smoke.elf \
+    build/0001_smoke.bin
 
 python3 scripts/bin2mem32.py \
-    build/smoke.bin \
-    build/smoke.mem
+    build/0001_smoke.bin \
+    build/0001_smoke.mem
 ```
 
 `scripts/bin2mem32.py` 可以写成：
@@ -342,7 +342,7 @@ module tb_core;
 
     initial begin
         if (!$value$plusargs("imem=%s", imem_file)) begin
-            imem_file = "build/smoke.mem";
+            imem_file = "build/0001_smoke.mem";
         end
 
         $readmemh(imem_file, u_imem.mem);
@@ -396,7 +396,7 @@ verilator \
     --top-module tb_core \
     -f build/files.f
 
-./obj_dir/Vtb_core +imem=build/smoke.mem
+./obj_dir/Vtb_core +imem=build/0001_smoke.mem
 ```
 
 如果你的 testbench 没有使用 Verilator 支持的写法，可能需要调整参数或写 C++ harness。第一版建议先让 testbench 保持简单。
@@ -411,7 +411,7 @@ iverilog \
     -o build/tb_core.vvp \
     -f build/files.f
 
-vvp build/tb_core.vvp +imem=build/smoke.mem
+vvp build/tb_core.vvp +imem=build/0001_smoke.mem
 ```
 
 `iverilog` 对 SystemVerilog 支持不如 Verilator 完整。如果遇到语法支持问题，优先以 Verilator 为主。
