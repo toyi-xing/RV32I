@@ -186,11 +186,9 @@ module csr_file (
 
     assign csr_illegal_o = csr_illegal_r | csr_illegal_w;
 
-
     assign mtvec_o      = mtvec;
     assign mepc_o       = mepc;
     assign mstatus_o    = mstatus;
-
 
 endmodule
 

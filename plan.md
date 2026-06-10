@@ -282,9 +282,9 @@ trap entry 行为：
 - `mstatus.MPIE <= 1`
 - `mstatus.MPP <= M-mode`
 
-## 3. 新增 trap 控制模块
+## 3. 新增 trap 控制模块 `已完成`
 
-### 3.1 新建 `rtl/core/trap_ctrl.sv`
+### 3.1 新建 `rtl/core/trap_ctrl.sv` `已完成`
 
 该模块只做控制选择，不保存 CSR 状态。它汇总 MEM 附近的 exception、CSR illegal、`MRET`，输出 PC redirect、flush/kill 和 CSR 写控制。
 
@@ -295,6 +295,7 @@ module trap_ctrl (
     input  logic                      mem_valid_i,
     input  logic [core_pkg::XLEN-1:0] mem_pc_i,
     input  logic [core_pkg::ILEN-1:0] mem_instr_i,
+    input  logic                      mem_mret_i,
 
     input  logic                      mem_exception_valid_i,
     input  core_pkg::trap_cause_e     mem_exception_cause_i,
@@ -302,17 +303,16 @@ module trap_ctrl (
 
     input  logic                      mem_csr_valid_i,
     input  logic                      mem_csr_illegal_i,
-    input  logic                      mem_mret_i,
 
     input  logic [core_pkg::XLEN-1:0] csr_mtvec_i,
     input  logic [core_pkg::XLEN-1:0] csr_mepc_i,
 
-    output logic                      trap_entry_o,
+    output logic                      trap_valid_o,
     output logic [core_pkg::XLEN-1:0] trap_pc_o,
     output core_pkg::trap_cause_e     trap_cause_o,
     output logic [core_pkg::XLEN-1:0] trap_tval_o,
 
-    output logic                      mret_commit_o,
+    output logic                      mret_valid_o,
 
     output logic                      redirect_valid_o,
     output logic [core_pkg::XLEN-1:0] redirect_pc_o,
@@ -324,7 +324,7 @@ module trap_ctrl (
 );
 ```
 
-### 3.2 trap 选择逻辑
+### 3.2 trap 选择逻辑 `已完成`
 
 exception 来源分两类：
 
@@ -347,16 +347,16 @@ trap entry redirect：
 
 - `redirect_valid_o = 1`
 - `redirect_pc_o = csr_mtvec_i`
-- `trap_entry_o = 1`
+- `trap_valid_o = 1`
 - `trap_pc_o = mem_pc_i`
 
 MRET redirect：
 
 - `redirect_valid_o = 1`
 - `redirect_pc_o = csr_mepc_i`
-- `mret_commit_o = 1`
+- `mret_valid_o = 1`
 
-### 3.3 kill 输出语义
+### 3.3 kill 输出语义 `已完成`
 
 当 trap entry 或 `MRET` 被接受时：
 
@@ -372,7 +372,7 @@ MRET redirect：
 - faulting CSR 不能写 rd。
 - `MRET` 已在 MEM 被接受，不需要作为普通 WB 指令继续提交。
 
-## 4. 扩展译码和 ID 阶段
+## 4. 扩展译码和 ID 阶段 `执行中`
 
 ### 4.1 修改 `rtl/core/decoder.sv`
 
@@ -652,11 +652,11 @@ assign redirect_pc    = trap_redirect_valid ? trap_redirect_pc : ex_redirect_pc;
 
 - `mem_csr_rdata`
 - `mem_csr_illegal`
-- `trap_entry`
+- `trap_valid`
 - `trap_pc`
 - `trap_cause`
 - `trap_tval`
-- `mret_commit`
+- `mret_valid`
 - `kill_ex_mem`
 - `kill_mem_wb_input`
 
@@ -678,14 +678,14 @@ csr_file u_csr_file (...);
 
 trap entry 输入来自 `trap_ctrl`：
 
-- `trap_valid_i = trap_entry`
+- `trap_valid_i = trap_valid`
 - `trap_pc_i = trap_pc`
 - `trap_cause_i = trap_cause`
 - `trap_tval_i = trap_tval`
 
 MRET 输入：
 
-- `mret_valid_i = mret_commit`
+- `mret_valid_i = mret_valid`
 
 输出：
 
@@ -826,11 +826,11 @@ MEM/WB 组包新增：
 
 连接方式：
 
-- `trap_valid_o = trap_entry`
+- `trap_valid_o = trap_valid`
 - `trap_pc_o = trap_pc`
 - `trap_cause_o = trap_cause`
 - `trap_tval_o = trap_tval`
-- `trap_return_o = mret_commit`
+- `trap_return_o = mret_valid`
 - `trap_return_pc_o = csr_mepc`
 
 这些信号只用于观察和后续 testbench trace，不参与功能闭环。
