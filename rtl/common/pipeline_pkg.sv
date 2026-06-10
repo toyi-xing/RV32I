@@ -2,6 +2,8 @@
 // 文件      : rtl/common/pipeline_pkg.sv
 // 用途      : RV32I 五级流水线教学核的流水线专用类型定义。
 //
+//          用来定义中间寄存器的 data 字段（非 valid 字段），避免在 rtl/core/pipe_reg.sv 中反复定义与连线。
+//
 // 规范：
 //   - 本包中的类型由流水线寄存器模块和 core_pipeline5 共享。
 //   - 引用 core_pkg 中的 XLEN、ILEN 和枚举常量。
@@ -40,6 +42,7 @@ package pipeline_pkg;
         logic                       uses_rs1;      // 同样 forwarding 以及 hazard 要用
         logic                       uses_rs2;
         logic                       illegal_instr; // 单周期直接连了，但现在应随指令传递
+        core_pkg::instr_id_e        instr_id;
 
         logic [4:0]                 rd_addr;
         core_pkg::alu_op_e          alu_op;
@@ -61,12 +64,28 @@ package pipeline_pkg;
         logic [core_pkg::XLEN-1:0]  pc;
         logic [core_pkg::XLEN-1:0]  pc_plus4;
         logic [core_pkg::ILEN-1:0]  instr;
+
+        // CSR、trap 相关
+        logic                       exception_valid;        // exception：非法指令、非法 CSR 访问、ECALL、EBREAK、地址不对齐时置位
+        core_pkg::trap_cause_e      exception_cause;
+        logic [core_pkg::XLEN-1:0]  exception_tval;
+        logic                       fence;                  // 仅 FENCE 指令时置位，当前 fence 指令实现为 nop
+        logic                       mret;                   // 仅 MRET 指令时置位
+        logic                       csr_en;                 // 仅 CSR 指令时置位
+        core_pkg::csr_op_e          csr_op;
+        logic [11:0]                csr_addr;
+        logic [4:0]                 csr_uimm;
+        logic                       csr_uses_rs1;           // 用于可能的 EX 阶段 forwarding
+        logic                       csr_writes_rd;          // CSR 旧值写回 rd
+        logic                       csr_write_en;           // 写 CSR 寄存器
+
     } id_ex_reg_t;
 
     // EX/MEM 流水线寄存器：锁存 EX 阶段的 ALU 结果、store 数据和控制信号。
     // 成员顺序对应 core_single_cycle.sv 的 EX/MEM 声明。
     typedef struct packed {
         logic                       illegal_instr;
+        core_pkg::instr_id_e        instr_id;
 
         logic [core_pkg::XLEN-1:0]  alu_result;
         logic [core_pkg::XLEN-1:0]  store_data;
@@ -82,12 +101,26 @@ package pipeline_pkg;
         logic [4:0]                 rd_addr;
         logic [core_pkg::ILEN-1:0]  instr;
         logic [core_pkg::XLEN-1:0]  pc;
+
+        // CSR、trap 相关
+        logic                       exception_valid;
+        core_pkg::trap_cause_e      exception_cause;
+        logic [core_pkg::XLEN-1:0]  exception_tval;
+        logic                       fence;
+        logic                       mret;
+        logic                       csr_en;
+        core_pkg::csr_op_e          csr_op;
+        logic [11:0]                csr_addr;
+        logic [core_pkg::XLEN-1:0]  csr_wdata;
+        logic                       csr_writes_rd;
+        logic                       csr_write_en;
     } ex_mem_reg_t;
 
     // MEM/WB 流水线寄存器：锁存 MEM 阶段的 load 数据、ALU 结果和控制信号。
     // 成员顺序对应 core_single_cycle.sv 的 MEM/WB 声明。
     typedef struct packed {
         logic                       illegal_instr;
+        core_pkg::instr_id_e        instr_id;
 
         logic [core_pkg::XLEN-1:0]  load_data;
 
@@ -99,6 +132,9 @@ package pipeline_pkg;
         logic [4:0]                 rd_addr;
         logic [core_pkg::ILEN-1:0]  instr;
         logic [core_pkg::XLEN-1:0]  pc;
+
+        // CSR、trap 相关
+        logic [core_pkg::XLEN-1:0]  csr_rdata;      // 原子读的旧值，写回给 rd，到 MEM/WB 之后，CSR 指令已经被“翻译”成普通 WB 行为了，因此不需要其他的控制信号了
     } mem_wb_reg_t;
 
 endpackage

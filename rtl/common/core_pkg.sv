@@ -21,6 +21,10 @@ package core_pkg;
     // IMEM_BASE 表示软件可见的指令存储器起始地址。测试平台和链接脚本应把 .text 放在这里。
     parameter logic [XLEN-1:0] IMEM_BASE = 32'h0000_0000;
 
+    // MTVEC_RESET 表示 M-mode trap vector 的平台默认复位值。
+    // 当前采用 direct mode，低 2 bit 必须为 0；软件启动后仍建议显式写 mtvec。
+    parameter logic [XLEN-1:0] MTVEC_RESET = IMEM_BASE + 32'h0000_0080;
+
     // DMEM_BASE 表示软件可见的数据存储器起始地址。简单 RAM 封装模块可把它映射到内部 mem[0]。
     parameter logic [XLEN-1:0] DMEM_BASE = 32'h0001_0000;
 
@@ -36,8 +40,6 @@ package core_pkg;
     typedef enum logic [6:0] {
         OPCODE_LOAD     = 7'b0000011,  // LOAD：LB、LH、LW、LBU、LHU。
                                        //   加扩展：F→FLW/FLD，D→FLD。
-        // OPCODE_MISC_MEM = 7'b0001111,  // MISC-MEM：FENCE 等。暂不实现
-                                       //   加扩展：Zihintpause→PAUSE 等。
         OPCODE_OP_IMM   = 7'b0010011,  // OP-IMM：I 类型 ALU 指令。
                                        //   加扩展：Zb*→位操作立即数变体。
         OPCODE_AUIPC    = 7'b0010111,  // AUIPC：rd = PC + U 类型立即数。
@@ -48,9 +50,12 @@ package core_pkg;
         OPCODE_LUI      = 7'b0110111,  // LUI：rd = U 类型立即数。
         OPCODE_BRANCH   = 7'b1100011,  // BRANCH：条件分支。
         OPCODE_JALR     = 7'b1100111,  // JALR：寄存器间接跳转。
-        OPCODE_JAL      = 7'b1101111   // JAL：PC 相对跳转。
-        //OPCODE_SYSTEM   = 7'b1110011   // SYSTEM：ECALL、EBREAK、CSR。暂不实现
-                                       //   加扩展：Zicsr→CSRRW/CSRRS/CSRRC 等。
+        OPCODE_JAL      = 7'b1101111,  // JAL：PC 相对跳转。
+
+        OPCODE_MISC_MEM = 7'b0001111,  // MISC-MEM：FENCE 等。
+                                       //   加扩展：Zihintpause→PAUSE 等。
+        OPCODE_SYSTEM   = 7'b1110011   // SYSTEM：ECALL、EBREAK、MRET、CSR。
+
         // RV64 新增：
         // OPCODE_OP_IMM_32 = 7'b0011011,  // OP-IMM-32：ADDIW、SLLIW、SRLIW、SRAIW。
         // OPCODE_OP_32     = 7'b0111011,  // OP-32：ADDW、SUBW、SLLW、SRLW、SRAW。
@@ -75,12 +80,23 @@ package core_pkg;
         INSTR_BEQ,  INSTR_BNE,  INSTR_BLT,   INSTR_BGE,  INSTR_BLTU,
         INSTR_BGEU,
 
-        INSTR_JAL,  INSTR_JALR
+        INSTR_JAL,  INSTR_JALR,
 
-        // 以下为暂不实现的标准 RV32I 指令：
-        // INSTR_FENCE,
-        // INSTR_ECALL, INSTR_EBREAK
+        // 补齐 40 条 RV32I 全部指令
+        INSTR_FENCE,
+        INSTR_ECALL, INSTR_EBREAK,
+
+        // 特权架构指令
+        INSTR_MRET,
+
+        // Zicsr 扩展指令，用于 CSR 读/写/置位/清位
+        INSTR_CSRRW,    INSTR_CSRRS,    INSTR_CSRRC,
+        INSTR_CSRRWI,   INSTR_CSRRSI,   INSTR_CSRRCI
     } instr_id_e;
+
+    //-----------------------------------------------
+    // RV32I 基础
+    //-----------------------------------------------
 
     // imm_sel_e 告诉 imm_gen 按哪一种 RISC-V 立即数格式拼接和扩展。
     typedef enum logic [2:0] {
@@ -119,11 +135,12 @@ package core_pkg;
     } branch_op_e;
 
     // wb_sel_e 选择 WB 阶段写回 rd 的数据来源。
-    typedef enum logic [1:0] {
+    typedef enum logic [2:0] {
         WB_ALU,    // 写回 ALU 结果。
         WB_MEM,    // 写回数据存储器读出的访存读数据。
         WB_PC4,    // 写回 PC + 4，用于 JAL/JALR link。
-        WB_IMM     // 写回立即数，用于 LUI。
+        WB_IMM,    // 写回立即数，用于 LUI。
+        WB_CSR     // CSR 原子读写回
     } wb_sel_e;
 
     // mem_size_e 描述 load/store 的访问宽度。
@@ -146,5 +163,76 @@ package core_pkg;
         OP_B_IMM   // 使用 imm_gen 生成的立即数。
         // OP_B_FOUR  // 使用常数 4；保留给需要主 ALU 显式计算加 4 的可选实现，第一版不复用 ALU 进行 PC+4,避免结构冒险。
     } op_b_sel_e;
+
+    //-----------------------------------------------
+    // CSR 、特权级、trap 相关
+    //-----------------------------------------------
+
+    // 本项目规划：
+    // CSR 旧值读出：MEM 级（csr_file 内组合读 mux）；
+    // CSR 写源数据生成：EX 级（rs1 forwarding 或 uimm 扩展，不涉及 CSR 旧值）；
+    // CSR 新值计算 + 写回：MEM 级（csr_file 内读改写原子完成）；
+    // CSR 旧值写回 GPR：WB 级（csr_rdata 经 MEM/WB → wb_stage WB_CSR mux）
+
+    // CSR 地址常量（12 位，对应 RISC-V Privileged Spec 定义的 CSR 地址空间）
+    parameter logic [11:0] CSR_ADDR_MSTATUS    = 12'h300;   // 全局中断、特权栈、各种使能
+    parameter logic [11:0] CSR_ADDR_MTVEC      = 12'h305;   // trap 跳转地址
+    parameter logic [11:0] CSR_ADDR_MSCRATCH   = 12'h340;   // 硬件存在，软件自由读写（便签）
+    parameter logic [11:0] CSR_ADDR_MEPC       = 12'h341;   // trap 返回地址
+    parameter logic [11:0] CSR_ADDR_MCAUSE     = 12'h342;   // trap 原因（值相同时，异常/中断也代表不同原因）
+    parameter logic [11:0] CSR_ADDR_MTVAL      = 12'h343;   // 异常附加信息，不同异常对应不同内容，中断写 0
+
+    parameter logic [11:0] CSR_ADDR_MISA       = 12'h301;   // 只读：ISA 扩展标识（如 RV32I）
+    parameter logic [11:0] CSR_ADDR_MVENDORID  = 12'hF11;   // 只读：厂商 ID
+    parameter logic [11:0] CSR_ADDR_MARCHID    = 12'hF12;   // 只读：架构 ID
+    parameter logic [11:0] CSR_ADDR_MIMPID     = 12'hF13;   // 只读：实现 ID
+    parameter logic [11:0] CSR_ADDR_MHARTID    = 12'hF14;   // 只读：硬件线程 ID
+
+    // mstatus 寄存器关键 bit 位置常量。
+    parameter int MSTATUS_MIE_BIT   = 3;
+    parameter int MSTATUS_MPIE_BIT  = 7;
+    parameter int MSTATUS_MPP_LSB   = 11;
+    parameter int MSTATUS_MPP_MSB   = 12;
+    // MPP 特权级编码。
+    parameter logic [1:0] MSTATUS_MPP_M = 2'b11;    // 特权级编码，当前仅 M mode，由 mstatus 的 MPP 字段存储
+
+    // csr_op_e 指示 CSR 指令在 CSR 文件（csr_file.sv）中执行哪种位操作。
+    // decoder 根据 funct3 产生，经 ID/EX、EX/MEM 传到 MEM/csr_file 用于计算 CSR 新值：
+    //   CSR_OP_RW / RWI：new = wdata
+    //   CSR_OP_RS / RSI：new = old | wdata
+    //   CSR_OP_RC / RCI：new = old & ~wdata
+    typedef enum logic [2:0] {
+        CSR_OP_NONE,  // 非 CSR 指令，不写 CSR。
+        CSR_OP_RW,    // CSRRW：CSR = rs1（总是写）。
+        CSR_OP_RS,    // CSRRS：CSR = CSR | rs1，按位置位；rs1=x0 时不写。
+        CSR_OP_RC,    // CSRRC：CSR = CSR & ~rs1，按位清除；rs1=x0 时不写。
+        CSR_OP_RWI,   // CSRRWI：CSR = uimm（总是写）。
+        CSR_OP_RSI,   // CSRRSI：CSR = CSR | uimm；uimm=0 时不写。
+        CSR_OP_RCI    // CSRRCI：CSR = CSR & ~uimm；uimm=0 时不写。
+    } csr_op_e;
+
+    // trap_cause_e 表示 exception 类型，编码对应 RISC-V Privileged Spec 中 mcause 的 Exception Code。
+    // 注释掉的是本阶段不实现的条目，保留枚举值便于后续扩展。
+    typedef enum logic [4:0] {
+        TRAP_CAUSE_INST_ADDR_MISALIGNED   = 5'd0,    // 触发源：pc 重定向地址非法
+        // TRAP_CAUSE_INST_ACCESS_FAULT   = 5'd1,       // 暂不做：无访问错误模型
+        TRAP_CAUSE_ILLEGAL_INSTR          = 5'd2,    // 触发源：INSTR_INVALID（包含非法 SYSTEM 编码） + 非法 CSR 访问(访问不存在的 CSR 或写只读 CSR)
+        TRAP_CAUSE_BREAKPOINT             = 5'd3,    // 触发源：EBREAK 指令
+        TRAP_CAUSE_LOAD_ADDR_MISALIGNED   = 5'd4,    // 触发源：load 指令给出的 mem 地址不对齐
+        // TRAP_CAUSE_LOAD_ACCESS_FAULT   = 5'd5,       // 暂不做：无 bus error 模型
+        TRAP_CAUSE_STORE_ADDR_MISALIGNED  = 5'd6,    // 触发源：store 指令给出的 mem 地址不对齐
+        // TRAP_CAUSE_STORE_ACCESS_FAULT  = 5'd7,       // 暂不做：无 bus error 模型
+        // TRAP_CAUSE_ECALL_U             = 5'd8,       // 暂不做：只有 M-mode
+        // TRAP_CAUSE_ECALL_S             = 5'd9,       // 暂不做：只有 M-mode
+        // TRAP_CAUSE_RESERVED_10         = 5'd10,   // RISC-V 保留
+        TRAP_CAUSE_ECALL_M                = 5'd11    // 触发源：ECALL 指令
+        // TRAP_CAUSE_INST_PAGE_FAULT     = 5'd12,      // 暂不做：无 MMU
+        // TRAP_CAUSE_LOAD_PAGE_FAULT     = 5'd13,      // 暂不做：无 MMU
+        // TRAP_CAUSE_RESERVED_14         = 5'd14,   // RISC-V 保留
+        // TRAP_CAUSE_STORE_PAGE_FAULT    = 5'd15,      // 暂不做：无 MMU
+    } trap_cause_e;
+
+
+
 
 endpackage

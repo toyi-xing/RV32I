@@ -30,9 +30,9 @@
 
 单周期顶层 `core_single_cycle.sv` 不是本阶段功能目标。但 `id_stage/ex_stage/mem_stage/wb_stage` 是共享模块，新增端口后需要给单周期顶层做最小兼容连接，保证原有单周期合法 RV32I 程序仍可编译。
 
-## 1. 先补公共类型和常量
+## 1. 先补公共类型和常量 `已完成`
 
-### 1.1 修改 `rtl/common/core_pkg.sv`
+### 1.1 修改 `rtl/common/core_pkg.sv` `已完成`
 
 新增或恢复 opcode：
 
@@ -106,12 +106,15 @@ typedef enum logic [4:0] {
 - `MSTATUS_MPP_MSB = 12`
 - `MSTATUS_MPP_M = 2'b11`
 
-### 1.2 修改 `rtl/common/pipeline_pkg.sv`
+### 1.2 修改 `rtl/common/pipeline_pkg.sv` `已完成`
 
 在流水线寄存器 struct 中加入 exception、CSR、`MRET` 相关字段。
 
+同时把现有 `id_stage.instr_id_o` 送入流水线寄存器。`instr_id` 只作为 debug、trace、后续断言和 commit 观察用，不替代 `mret/fence/CSR/exception` 等专用控制信号，避免后级重新按 `instr_id` 分散译码。
+
 `id_ex_reg_t` 新增字段建议放在 `illegal_instr` 附近：
 
+- `core_pkg::instr_id_e instr_id;`
 - `logic exception_valid;`
 - `core_pkg::trap_cause_e exception_cause;`
 - `logic [core_pkg::XLEN-1:0] exception_tval;`
@@ -127,6 +130,7 @@ typedef enum logic [4:0] {
 
 `ex_mem_reg_t` 新增字段：
 
+- `core_pkg::instr_id_e instr_id;`
 - `logic exception_valid;`
 - `core_pkg::trap_cause_e exception_cause;`
 - `logic [core_pkg::XLEN-1:0] exception_tval;`
@@ -141,18 +145,20 @@ typedef enum logic [4:0] {
 
 `mem_wb_reg_t` 新增字段：
 
+- `core_pkg::instr_id_e instr_id;`
 - `logic [core_pkg::XLEN-1:0] csr_rdata;`
 
 说明：
 
+- `instr_id` 从 ID 产生后随指令一直传到 MEM/WB，用于波形观察、commit trace、后续 assertion/统计；功能控制仍然使用已经译码出的专用控制字段。
 - `exception_valid/cause/tval` 从 ID 或 EX 产生后随指令向 MEM 传递。
 - `csr_wdata` 应在 EX 阶段用 forwarding 后的 rs1 数据或 `csr_uimm` 生成，避免 CSR 指令读取到旧 GPR 值。
 - `csr_write_en` 表示这条 CSR 指令是否真的尝试写 CSR。它和 `csr_wdata != 0` 不是一回事：`CSRRS/CSRRC` 看 `rs1_addr != x0`，即使 rs1 数据为 0，也仍然是一次 CSR 写尝试。
 - `csr_rdata` 是 CSR 指令在 MEM 阶段读出的旧 CSR 值，进入 WB 后通过 `WB_CSR` 写回 GPR。
 
-## 2. 新增 CSR 文件
+## 2. 新增 CSR 文件 `已完成`
 
-### 2.1 新建 `rtl/core/csr_file.sv`
+### 2.1 新建 `rtl/core/csr_file.sv` `已完成`
 
 该模块保存 M-mode CSR 状态，并集中处理三类写 CSR 的来源：
 
@@ -170,19 +176,18 @@ module csr_file (
     input  logic                      csr_valid_i,
     input  core_pkg::csr_op_e         csr_op_i,
     input  logic [11:0]               csr_addr_i,
-    input  logic [core_pkg::XLEN-1:0] csr_wdata_i,
-    input  logic                      csr_writes_rd_i,
+    input  logic [core_pkg::XLEN-1:0] csr_operand_i,
     input  logic                      csr_write_en_i,
 
     output logic [core_pkg::XLEN-1:0] csr_rdata_o,
     output logic                      csr_illegal_o,
 
-    input  logic                      trap_entry_i,
+    input  logic                      trap_valid_i,
     input  logic [core_pkg::XLEN-1:0] trap_pc_i,
     input  core_pkg::trap_cause_e     trap_cause_i,
     input  logic [core_pkg::XLEN-1:0] trap_tval_i,
 
-    input  logic                      mret_i,
+    input  logic                      mret_valid_i,
 
     output logic [core_pkg::XLEN-1:0] mtvec_o,
     output logic [core_pkg::XLEN-1:0] mepc_o,
@@ -190,22 +195,32 @@ module csr_file (
 );
 ```
 
-### 2.2 CSR 状态寄存器
+说明：
+
+- `csr_operand_i` 是 CSR 写操作数，来自 EX 阶段 forwarding 后的 `rs1` 数据或零扩展 `uimm`。
+- `csr_file` 不接收 `csr_writes_rd_i`。CSR 旧值是否写回 GPR 属于 WB 阶段行为，应由流水线寄存器继续传递 `csr_writes_rd`。
+
+### 2.2 CSR 状态寄存器 `已完成`
 
 内部寄存器：
 
-- `mstatus_q`
-- `mtvec_q`
-- `mscratch_q`
-- `mepc_q`
-- `mcause_q`
-- `mtval_q`
+- `mstatus`
+- `mtvec`
+- `mscratch`
+- `mepc`
+- `mcause`
+- `mtval`
 
-建议复位值：
+当前实现直接使用 CSR 名作为寄存器名，不强制使用 `_q` 后缀；这些寄存器仍然是同步写状态。
 
-- `mstatus_q` 复位后 `MIE=0`，`MPIE=0`，`MPP=M-mode`。
-- `mtvec_q` 可复位为 0，测试程序在触发 trap 前显式写 `mtvec`。
-- `mscratch_q/mepc_q/mcause_q/mtval_q` 复位为 0。
+复位值：
+
+- `mstatus` 复位后 `MIE=0`，`MPIE=0`，`MPP=M-mode`。
+- `mtvec` 复位为 `core_pkg::MTVEC_RESET`，当前为 `IMEM_BASE + 32'h80`，作为平台默认 direct-mode trap 入口。
+- `mscratch/mepc/mcause/mtval` 复位为 0。
+- RTL 中先将 `mstatus` 整体清 0，再将 `mstatus[12:11]` 写为 `MSTATUS_MPP_M`；这是为了明确保留 M-only 核的 MPP 合法值。
+
+> RTL 之外的配套改动暂不在本步实施：由于 2.2 把 `mtvec` 复位值改为 `MTVEC_RESET`，后续 linker script、启动代码和 trap 测试程序需要约定 `.text.trap`/`__trap_vector`，并在软件启动阶段显式写 `mtvec`。见文末“11. RTL 之外的后续配套改动”。
 
 只读 CSR 可以不建寄存器，直接在读 mux 中返回常量：
 
@@ -215,7 +230,7 @@ module csr_file (
 - `mhartid = 0`
 - `misa = 32'h4000_0100`，表示 RV32 + I
 
-### 2.3 CSR 读、写和非法访问判断
+### 2.3 CSR 读、写和非法访问判断 `已完成`
 
 组合读：
 
@@ -228,14 +243,15 @@ CSR 写使能：
 - `CSRRW/CSRRWI` 总是写 CSR。
 - `CSRRS/CSRRC` 在 `rs1_addr != x0` 时写 CSR，即使 rs1 数据值为 0 也算写尝试。
 - `CSRRSI/CSRRCI` 在 `uimm != 0` 时写 CSR。
-- `csr_valid_i == 0` 或 `csr_illegal_o == 1` 时不写 CSR。
-- 建议由 decoder 直接生成 `csr_write_en_i`，CSR 文件只根据 `csr_write_en_i` 判断是否执行写入和是否触发只读 CSR 写非法。
+- `csr_valid_i == 0` 或当前 CSR 访问非法时不更新 CSR 状态。
+- 建议由 decoder 直接生成 `csr_write_en_i`，CSR 文件使用 `csr_valid_i && csr_write_en_i` 判断当前是否有 CSR 写请求，并组合判断只读 CSR 写入或未支持 CSR 地址。
+- 非法 CSR 写在 CSR 写端口的 `default` 分支中不更新任何状态，非法信息由组合 `csr_illegal_o` 输出。
 
 CSR 新值计算：
 
-- `CSR_OP_RW/RWI`: `csr_new = csr_wdata_i`
-- `CSR_OP_RS/RSI`: `csr_new = csr_old | csr_wdata_i`
-- `CSR_OP_RC/RCI`: `csr_new = csr_old & ~csr_wdata_i`
+- `CSR_OP_RW/RWI`: `csr_new = csr_operand_i`
+- `CSR_OP_RS/RSI`: `csr_new = csr_old | csr_operand_i`
+- `CSR_OP_RC/RCI`: `csr_new = csr_old & ~csr_operand_i`
 
 WARL 处理：
 
@@ -243,12 +259,12 @@ WARL 处理：
 - 写 `mepc` 时低 2 bit 清零，当前不支持 C 扩展，返回地址按 4 字节对齐。
 - 写 `mstatus` 时只保留 `MIE/MPIE/MPP` 相关位，`MPP` 保持 M-mode 合法值。
 
-### 2.4 trap entry 和 MRET 优先级
+### 2.4 trap entry 和 MRET 写 CSR 及优先级处理 `已完成`
 
 同一拍若多个来源同时有效，优先级：
 
 ```text
-trap_entry_i > mret_i > normal csr write
+trap_valid_i > mret_valid_i > normal csr write
 ```
 
 trap entry 行为：
@@ -422,6 +438,7 @@ MRET redirect：
 
 新增输出端口并从 decoder 透传：
 
+- `instr_id_o`
 - `fence_o`
 - `mret_o`
 - `csr_en_o`
@@ -656,20 +673,19 @@ csr_file u_csr_file (...);
 - `csr_valid_i = ex_mem_valid & ex_mem_data_q.csr_en & ~ex_mem_data_q.exception_valid`
 - `csr_op_i = ex_mem_data_q.csr_op`
 - `csr_addr_i = ex_mem_data_q.csr_addr`
-- `csr_wdata_i = ex_mem_data_q.csr_wdata`
-- `csr_writes_rd_i = ex_mem_data_q.csr_writes_rd`
+- `csr_operand_i = ex_mem_data_q.csr_wdata`
 - `csr_write_en_i = ex_mem_data_q.csr_write_en`
 
 trap entry 输入来自 `trap_ctrl`：
 
-- `trap_entry_i = trap_entry`
+- `trap_valid_i = trap_entry`
 - `trap_pc_i = trap_pc`
 - `trap_cause_i = trap_cause`
 - `trap_tval_i = trap_tval`
 
 MRET 输入：
 
-- `mret_i = mret_commit`
+- `mret_valid_i = mret_commit`
 
 输出：
 
@@ -725,6 +741,7 @@ MEM load/store misaligned > EX/ID 已携带 exception
 
 ID/EX 组包新增：
 
+- `instr_id = id_instr_id`
 - `exception_valid`
 - `exception_cause`
 - `exception_tval`
@@ -744,6 +761,7 @@ ID/EX 组包新增：
 
 EX/MEM 组包新增：
 
+- `instr_id = id_ex_data_q.instr_id`
 - `exception_valid = ex_exception_valid`
 - `exception_cause = ex_exception_cause`
 - `exception_tval = ex_exception_tval`
@@ -772,6 +790,7 @@ wire mem_wb_valid_i = mem_valid & ~kill_mem_wb_input;
 
 MEM/WB 组包新增：
 
+- `instr_id = ex_mem_data_q.instr_id`
 - `csr_rdata = mem_csr_rdata`
 
 普通字段需要做副作用屏蔽：
@@ -815,6 +834,8 @@ MEM/WB 组包新增：
 - `trap_return_pc_o = csr_mepc`
 
 这些信号只用于观察和后续 testbench trace，不参与功能闭环。
+
+`instr_id` 已随流水线进入 MEM/WB，可用于后续 commit trace 打印当前提交指令类型，或在 testbench/assertion 中统计 trap/CSR/branch 等指令提交情况。当前功能逻辑仍不依赖 `instr_id` 反推控制信号。
 
 ## 10. 单周期顶层的最小兼容改动
 
@@ -872,6 +893,7 @@ MEM/WB 组包新增：
 目标：
 
 - 所有后续模块需要的 enum、CSR 地址、trap cause 和 struct 字段先定义好。
+- 在 pipeline struct 中加入 `instr_id`，让 `id_stage.instr_id_o` 能随指令一路传到 MEM/WB。
 - 先不连功能，只让后续代码有统一类型可用。
 
 ### Step 2: 写 `csr_file.sv`
@@ -979,6 +1001,7 @@ MEM/WB 组包新增：
 
 - 实例化 `csr_file`。
 - 实例化 `trap_ctrl`。
+- 把 `instr_id` 从 ID/EX、EX/MEM 一路送到 MEM/WB，用于后续 commit/debug 观察。
 - 连接 CSR 指令从 ID 到 MEM 再到 WB 的数据路径。
 - 连接 trap/MRET redirect 到 `pc_reg`。
 - 连接 trap kill 到 IF/ID、ID/EX、EX/MEM、MEM/WB input。
@@ -998,3 +1021,73 @@ MEM/WB 组包新增：
 - 保持原有合法 RV32I 单周期路径不受影响。
 
 完成以上步骤后，再另起验证计划，补测试程序、脚本和文档说明。
+
+## 11. RTL 之外的后续配套改动（暂不实施）
+
+本章记录由 RTL 设计选择带来的软件、linker、仿真流程配套需求。当前先只规划，不修改 `rtl/` 之外的文件；等 RTL 主体完成并确定仿真策略后再统一实施。
+
+### 11.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局
+
+> 来源：见 2.2 “CSR 状态寄存器”。该步把 `mtvec` 的复位值从 0 设置为 `core_pkg::MTVEC_RESET`，当前平台约定为 `IMEM_BASE + 32'h80`。因此 RTL 默认 trap 入口、linker 放置的 handler 地址、软件写入 `mtvec` 的地址需要保持一致。
+
+后续需要修改：
+
+- `sw/linker/asm_test.ld`
+- `sw/linker/c_baremetal.ld`
+- 新增或调整 trap 相关 `.S` 测试程序。
+- 视 C trap 测试需求，新增专用 trap runtime 或独立启动文件；不要直接让当前共享 `sw/c_runtime/crt0.S` 无条件执行 CSR 指令，否则会破坏仍不支持 CSR/trap 的单周期 C 仿真流程。
+- 仿真脚本按最终测试分组决定是否新增 CSR/trap 专用入口，暂不在本步改。
+
+建议 linker 约定：
+
+- 保持 `_start` / `.text.init` 从 `RESET_PC = IMEM_BASE` 开始执行。
+- 在 `IMEM_BASE + 0x80` 放置 `.text.trap`，并导出 `__trap_vector`。
+- `.text.trap` 使用 `KEEP(*(.text.trap))`，避免后续启用 section GC 或链接顺序变化时 handler 被丢弃。
+- 普通 `.text` 放在 `.text.trap` 之后，防止 `*(.text.*)` 提前吞掉 `.text.trap`。
+
+建议软件约定：
+
+- trap 测试程序在 `.text.trap` 中定义 `trap_handler`。
+- 启动阶段显式执行 `csrw mtvec, __trap_vector`，不要长期依赖 CSR reset 默认值。
+- 对于只验证“复位后默认 `mtvec` 可用”的专项测试，可以故意不写 `mtvec`，但这类测试应单独命名和说明。
+- C 侧若要测试 trap，优先使用独立的 trap-aware runtime，或给 pipeline5 CSR/trap 测试单独 build flow；不要影响现有 single-cycle C 测试。
+
+### 11.2 后续统一扩展 IMEM/DMEM 容量与地址图
+
+> 来源：后续若把 `rtl/mem/simple_rom.sv` 和 `rtl/mem/simple_ram.sv` 的 `ADDR_WIDTH` 从当前 10 扩大，需要同步更新软件可见地址图、linker script、testbench 统计和手写汇编常量。该事项暂不在 CSR/trap RTL 主线中实施，后续统一改。
+
+注意：当前 `ADDR_WIDTH` 表示 32-bit word index 宽度，不是 byte 地址宽度。
+
+- `ADDR_WIDTH = 10` 表示 1024 words，即 4 KiB。
+- `ADDR_WIDTH = 14` 表示 16384 words，即 64 KiB。
+- `ADDR_WIDTH = 16` 表示 65536 words，即 256 KiB。
+
+后续建议：
+
+- 在 `rtl/common/core_pkg.sv` 中集中定义 IMEM/DMEM 的地址宽度、byte size 和 base address，避免 `rtl/mem/`、testbench、linker 文档各自硬编码。
+- `simple_rom.sv` 和 `simple_ram.sv` 的 `ADDR_WIDTH` 默认值改为引用 `core_pkg` 中的常量。
+- 保持软件可见地址图不重叠。若 IMEM 从 `0x0000_0000` 开始且 `ADDR_WIDTH = 16`，IMEM byte 范围是 `0x0000_0000` 到 `0x0003_FFFF`，则 `DMEM_BASE` 至少应放到 `0x0004_0000`。
+- 如果只想扩到 64 KiB，可以用 `ADDR_WIDTH = 14`；此时当前 `DMEM_BASE = 0x0001_0000` 正好接在 IMEM 之后，地址图变化最小。
+
+RTL/testbench 需要同步修改：
+
+- `rtl/common/core_pkg.sv`：新增或调整 `IMEM_ADDR_WIDTH/DMEM_ADDR_WIDTH`、`IMEM_SIZE_BYTES/DMEM_SIZE_BYTES`、`DMEM_BASE` 等常量。
+- `rtl/mem/simple_rom.sv`：改用共享 IMEM 地址宽度常量。
+- `rtl/mem/simple_ram.sv`：改用共享 DMEM 地址宽度常量。
+- `tb/sv/tb_core_single_cycle.sv`：`DMEM_END_ADDR/STACK_TOP_ADDR` 不再写死 `DMEM_BASE + 0x1000`，改为 `DMEM_BASE + DMEM_SIZE_BYTES`。
+- `tb/sv/tb_core_pipeline5.sv`：同样更新 DMEM 尾地址和栈顶统计。
+
+软件和仿真流程需要同步修改：
+
+- `sw/linker/asm_test.ld`：更新 `IMEM LENGTH`、`DMEM ORIGIN`、`DMEM LENGTH`。
+- `sw/linker/c_baremetal.ld`：更新 `IMEM/DMEM` memory region；`__stack_bottom` 不再按 4 KiB 写死为 `ORIGIN(DMEM) + 0x0e00`，建议改成 `__stack_top - 固定栈大小`。
+- `sw/asm/*.S`：若 `DMEM_BASE` 改变，所有手写 `lui ..., 0x10` 的地址常量都要同步更新；更推荐逐步改成 `%hi/%lo(__test_status_addr)` 或其他 linker symbol，减少后续地址图变化带来的重复修改。
+- `sw/c_runtime/crt0.S` 当前使用 linker symbol 设置 `sp` 和测试状态地址，原则上随 linker 更新即可，不应硬编码 DMEM 地址。
+- `sim/*/05_build_mem.sh` 当前主要依赖 linker script 和 objcopy，通常不需要因容量扩大单独改；若后续加入镜像大小检查，再统一接入共享容量约束。
+- `docs/simulation_flow_*.md`、`README.md` 和 08xx 中涉及 `4 KiB`、`0x00010000`、`lui ..., 0x10` 的说明需要在最后统一同步。
+
+仿真影响：
+
+- 对 Verilator 仿真来说，`ADDR_WIDTH = 16` 只是把 ROM/RAM 数组扩到每个 256 KiB，通常影响很小。
+- 仿真速度主要取决于执行了多少 cycle、是否打开波形、是否 dump 大量内部信号；单纯扩大未访问的 memory 容量不是主要瓶颈。
+- 综合/FPGA 资源会明显受 memory 容量影响，因此仿真可先放宽，综合目标需要单独评估。
