@@ -115,9 +115,9 @@ module core_pipeline5 (
     wire [core_pkg::XLEN-1:0] id_imm;
     wire [core_pkg::XLEN-1:0] id_rs1_rdata, id_rs2_rdata;
 
-    // forwarding 前递数据直连
-    wire [core_pkg::XLEN-1:0] ex_rs1_data;
-    wire [core_pkg::XLEN-1:0] ex_rs2_data;
+    // forwarding 前递结果 -> EX 操作数
+    wire [core_pkg::XLEN-1:0] ex_rs1_op_data;
+    wire [core_pkg::XLEN-1:0] ex_rs2_op_data;
 
     // EX
     wire [core_pkg::XLEN-1:0] ex_alu_result;
@@ -203,6 +203,7 @@ module core_pipeline5 (
         .mem_unsigned_o (id_mem_unsigned),
 
         .branch_op_o    (id_branch_op),
+        
         .jump_o         (id_jump),
         .jalr_o         (id_jalr),
 
@@ -277,8 +278,8 @@ module core_pipeline5 (
         .ex_mem_imm_i       (ex_mem_data_q.imm),
         .mem_wb_wdata_i     (wb_rd_wdata),
 
-        .rs1_fwd_o          (ex_rs1_data),
-        .rs2_fwd_o          (ex_rs2_data)
+        .rs1_fwd_o          (ex_rs1_op_data),
+        .rs2_fwd_o          (ex_rs2_op_data)
     );
 
     pipe_reg_id_ex u_pipe_reg_id_ex (
@@ -326,8 +327,8 @@ module core_pipeline5 (
     ex_stage u_ex_stage (
         .valid_i            (id_ex_valid),
         .pc_i               (id_ex_data_q.pc),
-        .rs1_data_i         (ex_rs1_data),
-        .rs2_data_i         (ex_rs2_data),
+        .rs1_data_i         (ex_rs1_op_data),
+        .rs2_data_i         (ex_rs2_op_data),
         .imm_i              (id_ex_data_q.imm),
         .alu_op_i           (id_ex_data_q.alu_op),
         .op_a_sel_i         (id_ex_data_q.op_a_sel),

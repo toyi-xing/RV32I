@@ -46,8 +46,25 @@ module id_stage (
     output logic                          mem_unsigned_o,    // load 是否零扩展；为 0 时表示符号扩展。
 
     output core_pkg::branch_op_e          branch_op_o,       // 送入 EX 的条件分支比较类型。
+
+    // instr_ctrl_gen
     output logic                          jump_o,            // 当前指令是否为 JAL/JALR。
     output logic                          jalr_o,            // 当前指令是否为 JALR。
+    output logic                          fence_o,              // 当前有效 ID 指令是否为 FENCE；本阶段作为 NOP 控制标志。
+    output logic                          mret_o,               // 当前有效 ID 指令是否为 MRET；后续传到 MEM/trap 接受点。
+
+    // CSR、trap 相关
+    output logic                          csr_o,                // 当前有效 ID 指令是否为 CSR 指令；后续随流水线传递。
+    output core_pkg::csr_op_e             csr_op_o,             // CSR 操作类型。
+    output logic [11:0]                   csr_addr_o,           // CSR 地址。
+    output logic [4:0]                    csr_uimm_o,           // CSR immediate 操作数字段，后续 EX 阶段零扩展。
+    output logic                          csr_uses_rs1_o,       // CSR register 形式是否读取 rs1。
+    output logic                          csr_writes_rd_o,      // CSR 旧值是否写回 GPR rd。
+    output logic                          csr_write_en_o,       // CSR 指令是否尝试写 CSR。
+
+    output logic                          exception_valid_o,    // ID 阶段发现的 exception 是否有效。
+    output core_pkg::trap_cause_e         exception_cause_o,    // ID 阶段 exception cause。
+    output logic [core_pkg::XLEN-1:0]     exception_tval_o,     // ID 阶段 exception tval。
 
     output logic                          illegal_instr_o,   // 当前指令是否非法或暂未支持。
 
@@ -56,12 +73,10 @@ module id_stage (
     output logic                          id_valid_o,        // 送入 ID/EX 的 valid。
     output logic [core_pkg::XLEN-1:0]     id_rs1_rdata_o,    // 送入 ID/EX 的 rs1 原始读值；单周期可直接送 EX，流水线中可先进入 forwarding mux。
     output logic [core_pkg::XLEN-1:0]     id_rs2_rdata_o     // 送入 ID/EX 的 rs2 原始读值；branch、store data 和 forwarding 都会使用。
-
 );
     import core_pkg::*;
 
     core_pkg::imm_sel_e imm_sel;
-    wire decoder_illegal_instr;
 
     decoder u_decoder (
         .instr_i    (if_instr_i),
@@ -92,13 +107,38 @@ module id_stage (
         .mem_unsigned_o     (mem_unsigned_o),
 
         .branch_op_o        (branch_op_o),
-        .jump_o             (jump_o),
-        .jalr_o             (jalr_o),
+
+        // CSR、trap 相关
+        .csr_o              (decoder_csr),
+        .csr_op_o           (csr_op_o),
+        .csr_addr_o         (csr_addr_o),
+        .csr_uimm_o         (csr_uimm_o),
+        .csr_uses_rs1_o     (csr_uses_rs1_o),
+        .csr_writes_rd_o    (csr_writes_rd_o),
+        .csr_write_en_o     (csr_write_en_o),
+
+        .exception_valid_o  (decoder_exception_valid),
+        .exception_cause_o  (exception_cause_o),
+        .exception_tval_o   (exception_tval_o),
 
         .illegal_instr_o    (decoder_illegal_instr)
     );
 
-    assign illegal_instr_o = if_valid_i & decoder_illegal_instr;
+  
+
+    // 根据 if_valid 输出有效 instr_ctrl_gen
+    assign jump_o   = if_valid_i & ((instr_id_o == INSTR_JAL) | (instr_id_o == INSTR_JALR));
+    assign jalr_o   = if_valid_i & (instr_id_o == INSTR_JALR);
+    assign fence_o  = if_valid_i & (instr_id_o == INSTR_FENCE);
+    assign mret_o   = if_valid_i & (instr_id_o == INSTR_MRET);
+
+    // decoder 输出的部分信号要由 if_valid_i 门控
+    wire decoder_csr;
+    wire decoder_exception_valid;
+    wire decoder_illegal_instr;
+    assign csr_o             = if_valid_i & decoder_csr;
+    assign exception_valid_o = if_valid_i & decoder_exception_valid;
+    assign illegal_instr_o   = if_valid_i & decoder_illegal_instr;
 
     imm_gen u_imm_gen(
         .instr_i    (if_instr_i),
@@ -106,7 +146,7 @@ module id_stage (
         .imm_o      (id_imm_o)
     );
 
-    assign id_valid_o = if_valid_i;
+    assign id_valid_o     = if_valid_i;
     assign id_rs1_rdata_o = rs1_rdata_i;
     assign id_rs2_rdata_o = rs2_rdata_i;
 

@@ -220,6 +220,43 @@ uimm   = instr[19:15]，零扩展到 XLEN
 
 从软件视角看，`Zicsr` 是访问 `mstatus/mtvec/mepc/mcause/mtval` 的入口；从流水线视角看，它给普通 `rd` 写回路径新增了一个来源：CSR 修改前的旧值。也就是说，CSR 指令既是 SYSTEM 类译码问题，也是数据通路写回问题。
 
+### 2.5 当前框架下的译码规则
+
+当前框架中，`decoder.sv` 的职责是识别 `instr_id_o`、生成通用控制信号、CSR 控制候选和 exception 候选。它不需要为每一类简单指令都输出独立布尔端口，例如 `fence_o/ecall_o/ebreak_o/mret_o`；这些需要结合流水线 valid 才有意义的简单标志，可以由 `id_stage.sv` 根据 `instr_id_o` 和 `if_valid_i` 生成。
+
+因此，虽然 `decoder` 不直接输出 `fence_o/mret_o`，但它必须把新增指令识别成对应的 `instr_id_o`。所有不满足完整编码约束的情况都应保持 `INSTR_INVALID`，后续再由 illegal instruction exception 路径处理。
+
+| opcode 分支 | 进一步检查条件 | `instr_id_o` | 说明 |
+|---|---|---|---|
+| `OPCODE_MISC_MEM` | `funct3_o == 3'b000` | `INSTR_FENCE` | 本阶段 `FENCE` 作为 NOP；`fm/pred/succ/rs1/rd` 暂不影响功能。 |
+| `OPCODE_MISC_MEM` | 其他 `funct3_o` | `INSTR_INVALID` | 例如 `FENCE.I` 属于 `Zifencei`，本阶段不支持。 |
+| `OPCODE_SYSTEM` | `instr_i == 32'h0000_0073` | `INSTR_ECALL` | 必须精确匹配整条指令。 |
+| `OPCODE_SYSTEM` | `instr_i == 32'h0010_0073` | `INSTR_EBREAK` | 必须精确匹配整条指令。 |
+| `OPCODE_SYSTEM` | `instr_i == 32'h3020_0073` | `INSTR_MRET` | 特权指令，本阶段只支持 M-mode return。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b001` | `INSTR_CSRRW` | CSR 地址是否合法、只读 CSR 是否被写，交给 `csr_file` 判断。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b010` | `INSTR_CSRRS` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b011` | `INSTR_CSRRC` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b101` | `INSTR_CSRRWI` | immediate 形式使用 `instr_i[19:15]` 作为 `uimm`。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b110` | `INSTR_CSRRSI` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b111` | `INSTR_CSRRCI` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b000` 但不是上述精确编码，或 `funct3_o == 3'b100` | `INSTR_INVALID` | 未支持的 SYSTEM 编码统一作为 illegal instruction。 |
+
+按这个边界划分后：
+
+- `decoder` 只负责“这条编码到底是什么，以及它是否属于本步支持范围”。
+- `id_stage` 可以派生 `fence_o = if_valid_i & (instr_id_o == INSTR_FENCE)`、`mret_o = if_valid_i & (instr_id_o == INSTR_MRET)` 这类简单标志。
+- `ECALL/EBREAK` 不需要作为跨模块布尔端口传递；它们由 ID 阶段形成 `exception_valid/cause/tval`，再随流水线传到统一 trap 接受点。
+- CSR 地址是否存在、只读 CSR 是否被写，不在 decoder 最终裁决，交给 `csr_file` 在 CSR 访问点判断。
+
+现有通用控制信号也要同步扩展：
+
+- `uses_rs1_o` 是通用 RAW hazard 语义信号，CSR register 形式也要计入；`csr_uses_rs1_o` 只是 CSR 专用分类信号。
+- `uses_rs2_o` 不因 CSR 指令置位，CSR 指令不读取 rs2。
+- `reg_we_o` 是通用 GPR 写回语义信号，CSR 写 rd 时也要计入；`csr_writes_rd_o` 只是 CSR 专用分类信号。
+- `wb_sel_o` 对 CSR 写 rd 的指令应选择 `WB_CSR`，表示 WB 阶段写回旧 CSR 值。
+
+CSR register 形式的 operand 虽然后续才用于 CSR 新值计算，但当前数据通路仍然在 ID 阶段读 GPR，并把 rs1 数据随流水线传递。因此对当前实现来说，CSR register 形式必须进入通用 `uses_rs1_o`，让现有 hazard/forwarding 能看到这条 GPR RAW 依赖。后续若专门把 CSR operand 延迟到更晚阶段获取，可以再做更细的 stall 优化。
+
 ## 第3章 最小 CSR 集合
 
 ### 3.1 CSR 集合选择思路
@@ -587,7 +624,7 @@ trap/MRET redirect > EX branch/JAL/JALR redirect > load-use stall
 |---|---|---|---|
 | IF | 暂无复杂变化 | `pc/instr/pc_plus4` | trap/MRET/branch redirect 后更新 PC |
 | ID | 识别 `FENCE/ECALL/EBREAK/MRET/CSR*`；识别普通 illegal encoding | `exception_valid/cause/tval`、`fence`、`mret`、CSR 控制字段 | regfile 读数、指令字段 |
-| EX | 使用 forwarding 后的 rs1 生成 CSR 写源；计算 branch/jump target；检查 redirect target misaligned | `csr_wdata`、EX 产生的 exception 信息 | ID/EX 中的 CSR/exception/control 字段 |
+| EX | 使用 forwarding 后的 rs1 生成 CSR 操作数；计算 branch/jump target；检查 redirect target misaligned | `csr_operand`、EX 产生的 exception 信息 | ID/EX 中的 CSR/exception/control 字段 |
 | MEM | 判断 load/store misaligned；读 CSR 旧值；执行 CSR 写；接受 trap/MRET | `csr_rdata`、trap redirect、mret redirect、side effect gating | EX/MEM 中的 exception/CSR/memory/control 字段 |
 | WB | 把 CSR 旧值通过 `WB_CSR` 写回 rd | GPR writeback data | MEM/WB 中的 `csr_rdata/wb_sel/reg_we/rd` |
 
@@ -626,23 +663,24 @@ CSR 指令同时涉及 CSR 文件和 GPR 写回，所以它的数据流比普通
 
 ```text
 ID:
-    译码 csr_en/csr_op/csr_addr/csr_uimm
+    译码 csr/csr_op/csr_addr/csr_uimm
     判断 csr_uses_rs1/csr_writes_rd/csr_write_en
 
 EX:
-    如果是 register 形式 CSR 指令，使用 forwarding 后的 rs1 作为 CSR 写源
-    如果是 immediate 形式 CSR 指令，使用 zero-extend(uimm) 作为 CSR 写源
+    如果是 register 形式 CSR 指令，使用 forwarding 后的 rs1 作为 CSR 操作数
+    如果是 immediate 形式 CSR 指令，使用 zero-extend(uimm) 作为 CSR 操作数
 
 MEM:
+    用 valid、csr、已有 exception 门控出 mem_csr_valid
     csr_file 组合读出 CSR 旧值 csr_rdata
-    csr_file 根据 csr_op/csr_wdata/csr_write_en 计算新值并写 CSR
+    csr_file 根据 csr_op/csr_operand/csr_write_en 计算新值并写 CSR
     如果 CSR 不存在或写只读 CSR，改为 illegal instruction trap
 
 WB:
     如果 rd != x0 且指令有效，通过 WB_CSR 把 csr_rdata 写入 rd
 ```
 
-这里需要单独保留 `csr_write_en`，不能简单用 `csr_wdata != 0` 替代。原因是：
+这里需要单独保留 `csr_write_en`，不能简单用 `csr_operand != 0` 替代。原因是：
 
 - `CSRRS/CSRRC` 是否写 CSR 看 `rs1_addr != x0`，即使 `rs1` 里的数据是 0，也仍然是一次 CSR 写尝试。
 - `CSRRSI/CSRRCI` 是否写 CSR 看 `uimm != 0`。
@@ -676,7 +714,7 @@ ID 识别 MRET
 | `exception_valid/cause/tval` | ID | EX/MEM/MEM | 携带 ID 已发现的 exception |
 | `fence` | ID | 后级 | 当前先按 NOP，保留可观察/扩展点 |
 | `mret` | ID | MEM/trap 控制 | 到接受点后执行 trap return |
-| `csr_en` | ID | EX/MEM | 标记 CSR 指令 |
+| `csr` | ID | EX/MEM | 标记 CSR 指令 |
 | `csr_op` | ID | MEM/CSR file | 选择 CSR 新值计算方式 |
 | `csr_addr` | ID | MEM/CSR file | 选择访问哪个 CSR |
 | `csr_uimm` | ID | EX | 生成 immediate 形式 CSR 写源 |
@@ -691,10 +729,10 @@ ID 识别 MRET
 | `exception_valid/cause/tval` | ID 或 EX | MEM/trap 控制 | 到接受点写 `mcause/mtval` |
 | `fence` | ID 后传 | MEM | 当前无副作用，保留扩展点 |
 | `mret` | ID 后传 | MEM/trap 控制 | 到接受点 redirect 到 `mepc` |
-| `csr_en` | ID 后传 | MEM/CSR file | 标记 CSR 访问有效 |
+| `csr` | ID 后传 | MEM | 标记 CSR 指令；到 MEM 阶段再结合 valid/exception 生成 `mem_csr_valid` |
 | `csr_op` | ID 后传 | MEM/CSR file | 选择 CSR 写操作 |
 | `csr_addr` | ID 后传 | MEM/CSR file | CSR 地址 |
-| `csr_wdata` | EX | MEM/CSR file | forwarded rs1 或 zero-extend(uimm) |
+| `csr_operand` | EX | MEM/CSR file | forwarded rs1 或 zero-extend(uimm) |
 | `csr_writes_rd` | ID 后传 | MEM/WB | 是否把旧 CSR 值送去 WB |
 | `csr_write_en` | ID 后传 | MEM/CSR file | 是否尝试写 CSR |
 
@@ -731,10 +769,10 @@ ID 识别 MRET
 | `exception_valid` | 当前指令是否已经检测到 exception |
 | `exception_cause` | exception cause code |
 | `exception_tval` | 写入 `mtval` 的附加信息 |
-| `csr_en` | 是否为 CSR 指令 |
+| `csr` | 是否为 CSR 指令 |
 | `csr_op` | `CSRRW/CSRRS/CSRRC` 及 immediate 变体 |
 | `csr_addr` | 12-bit CSR 地址 |
-| `csr_wdata` 或 CSR 源数据 | CSR 写入计算所需数据 |
+| `csr_operand` | CSR 写入计算所需操作数 |
 | `csr_write_en` | CSR 指令是否尝试写 CSR，用于区分读 CSR 和写 CSR |
 | `csr_writes_rd` | CSR 旧值是否需要写回 GPR |
 | `mret` | 当前指令是否为 `MRET` |

@@ -71,7 +71,7 @@ package pipeline_pkg;
         logic [core_pkg::XLEN-1:0]  exception_tval;
         logic                       fence;                  // 仅 FENCE 指令时置位，当前 fence 指令实现为 nop
         logic                       mret;                   // 仅 MRET 指令时置位
-        logic                       csr_en;                 // 仅 CSR 指令时置位
+        logic                       csr;                    // 仅 CSR 指令时置位
         core_pkg::csr_op_e          csr_op;
         logic [11:0]                csr_addr;
         logic [4:0]                 csr_uimm;
@@ -108,7 +108,7 @@ package pipeline_pkg;
         logic [core_pkg::XLEN-1:0]  exception_tval;
         logic                       fence;
         logic                       mret;
-        logic                       csr_en;
+        logic                       csr;
         core_pkg::csr_op_e          csr_op;
         logic [11:0]                csr_addr;
         logic [core_pkg::XLEN-1:0]  csr_wdata;

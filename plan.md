@@ -114,46 +114,53 @@ typedef enum logic [4:0] {
 
 `id_ex_reg_t` 新增字段建议放在 `illegal_instr` 附近：
 
-- `core_pkg::instr_id_e instr_id;`
-- `logic exception_valid;`
-- `core_pkg::trap_cause_e exception_cause;`
-- `logic [core_pkg::XLEN-1:0] exception_tval;`
-- `logic fence;`
-- `logic mret;`
-- `logic csr_en;`
-- `core_pkg::csr_op_e csr_op;`
-- `logic [11:0] csr_addr;`
-- `logic [4:0] csr_uimm;`
-- `logic csr_uses_rs1;`
-- `logic csr_writes_rd;`
-- `logic csr_write_en;`
+| 字段 | 作用 |
+|---|---|
+| `core_pkg::instr_id_e instr_id` | ID 译码出的指令类型，用于 debug/trace/后续 assertion，不作为后级重新译码的唯一依据。 |
+| `logic exception_valid` | 该指令已经在 ID 或更早规划阶段发现 synchronous exception。 |
+| `core_pkg::trap_cause_e exception_cause` | 该 exception 的 cause，后续写入 `mcause`。 |
+| `logic [core_pkg::XLEN-1:0] exception_tval` | 该 exception 的附加信息，后续写入 `mtval`。 |
+| `logic fence` | 该指令是否为 `FENCE`；本阶段作为 NOP 随流水线传递。 |
+| `logic mret` | 该指令是否为 `MRET`；到 MEM/trap 接受点触发返回 redirect。 |
+| `logic csr` | 该指令是否为 6 条 Zicsr CSR 指令之一。它是指令属性，不等同于 `csr_file.csr_valid_i`。 |
+| `core_pkg::csr_op_e csr_op` | CSR 操作类型：RW/RS/RC/RWI/RSI/RCI。 |
+| `logic [11:0] csr_addr` | CSR 地址字段 `instr[31:20]`。 |
+| `logic [4:0] csr_uimm` | CSR immediate 形式的 `uimm` 字段 `instr[19:15]`，送到 EX 后零扩展。 |
+| `logic csr_uses_rs1` | CSR register 形式是否读取 rs1，用于 hazard/forwarding 判断。 |
+| `logic csr_writes_rd` | CSR 旧值是否需要写回 GPR `rd`，即 `rd != x0`。 |
+| `logic csr_write_en` | 该 CSR 指令是否尝试写 CSR；由指令形式和 `rs1/uimm` 编号决定。 |
 
 `ex_mem_reg_t` 新增字段：
 
-- `core_pkg::instr_id_e instr_id;`
-- `logic exception_valid;`
-- `core_pkg::trap_cause_e exception_cause;`
-- `logic [core_pkg::XLEN-1:0] exception_tval;`
-- `logic fence;`
-- `logic mret;`
-- `logic csr_en;`
-- `core_pkg::csr_op_e csr_op;`
-- `logic [11:0] csr_addr;`
-- `logic [core_pkg::XLEN-1:0] csr_wdata;`
-- `logic csr_writes_rd;`
-- `logic csr_write_en;`
+| 字段 | 作用 |
+|---|---|
+| `core_pkg::instr_id_e instr_id` | 指令类型继续向 MEM/WB 传递，用于 debug/trace。 |
+| `logic exception_valid` | ID/EX 阶段已经确认的 exception 是否有效。 |
+| `core_pkg::trap_cause_e exception_cause` | 传到 MEM/trap 接受点的 exception cause。 |
+| `logic [core_pkg::XLEN-1:0] exception_tval` | 传到 MEM/trap 接受点的 exception tval。 |
+| `logic fence` | `FENCE` 标志继续随指令流动；当前无额外副作用。 |
+| `logic mret` | `MRET` 标志传到 MEM/trap 接受点。 |
+| `logic csr` | 该 MEM 槽是否为 CSR 指令；到 MEM 阶段还要结合 valid/exception 门控生成 CSR 文件访问 valid。 |
+| `core_pkg::csr_op_e csr_op` | CSR 操作类型，送入 `csr_file`。 |
+| `logic [11:0] csr_addr` | CSR 地址，送入 `csr_file`。 |
+| `logic [core_pkg::XLEN-1:0] csr_operand` | EX 阶段生成的 CSR 操作数；register 形式来自 forwarding 后 rs1，immediate 形式来自零扩展 `csr_uimm`。 |
+| `logic csr_writes_rd` | CSR 旧值是否需要在 WB 写回 GPR。 |
+| `logic csr_write_en` | 是否尝试写 CSR，送入 `csr_file` 做写使能和非法写判断。 |
 
 `mem_wb_reg_t` 新增字段：
 
-- `core_pkg::instr_id_e instr_id;`
-- `logic [core_pkg::XLEN-1:0] csr_rdata;`
+| 字段 | 作用 |
+|---|---|
+| `core_pkg::instr_id_e instr_id` | 指令类型进入 WB/commit 观察点。 |
+| `logic [core_pkg::XLEN-1:0] csr_rdata` | MEM 阶段从 CSR 文件读出的旧 CSR 值，`WB_CSR` 时写回 GPR。 |
 
 说明：
 
 - `instr_id` 从 ID 产生后随指令一直传到 MEM/WB，用于波形观察、commit trace、后续 assertion/统计；功能控制仍然使用已经译码出的专用控制字段。
 - `exception_valid/cause/tval` 从 ID 或 EX 产生后随指令向 MEM 传递。
-- `csr_wdata` 应在 EX 阶段用 forwarding 后的 rs1 数据或 `csr_uimm` 生成，避免 CSR 指令读取到旧 GPR 值。
-- `csr_write_en` 表示这条 CSR 指令是否真的尝试写 CSR。它和 `csr_wdata != 0` 不是一回事：`CSRRS/CSRRC` 看 `rs1_addr != x0`，即使 rs1 数据为 0，也仍然是一次 CSR 写尝试。
+- `csr` 表示“这条指令是 CSR 指令”；`csr_file.csr_valid_i` 表示“MEM 阶段这一拍实际访问 CSR 文件”。二者不是同一个信号。
+- `csr_operand` 应在 EX 阶段用 forwarding 后的 rs1 数据或 `csr_uimm` 生成，避免 CSR 指令读取到旧 GPR 值。
+- `csr_write_en` 表示这条 CSR 指令是否真的尝试写 CSR。它和 `csr_operand != 0` 不是一回事：`CSRRS/CSRRC` 看 `rs1_addr != x0`，即使 rs1 数据为 0，也仍然是一次 CSR 写尝试。
 - `csr_rdata` 是 CSR 指令在 MEM 阶段读出的旧 CSR 值，进入 WB 后通过 `WB_CSR` 写回 GPR。
 
 ## 2. 新增 CSR 文件 `已完成`
@@ -372,43 +379,63 @@ MRET redirect：
 - faulting CSR 不能写 rd。
 - `MRET` 已在 MEM 被接受，不需要作为普通 WB 指令继续提交。
 
-## 4. 扩展译码和 ID 阶段 `执行中`
+## 4. 扩展译码和 ID 阶段 `已完成`
 
-### 4.1 修改 `rtl/core/decoder.sv`
+### 4.0 调整简单指令标志的生成位置 `已完成`
+
+`decoder.sv` 不再为每一类简单指令都增加独立布尔端口。它负责识别 `instr_id_o`、生成通用控制信号、CSR 控制候选和 exception 候选；需要结合流水线 valid 才有意义的简单指令标志统一放在 `id_stage.sv` 生成。
+
+当前已经按这个规则处理：
+
+- `jump_o = if_valid_i && (instr_id_o == INSTR_JAL || instr_id_o == INSTR_JALR)`
+- `jalr_o = if_valid_i && (instr_id_o == INSTR_JALR)`
+
+后续新增系统指令时也按同一口径处理：
+
+- `fence_o = if_valid_i && (instr_id_o == INSTR_FENCE)`
+- `mret_o = if_valid_i && (instr_id_o == INSTR_MRET)`
+- `ECALL/EBREAK` 不需要作为跨模块布尔端口从 decoder 透传；ID 阶段根据 `instr_id_o` 或 decoder 给出的 exception 候选生成 `exception_valid/cause/tval`。
+
+这样做的原因：
+
+- 这些信号本质上是 `instr_id_o` 的简单别名，还必须被 `if_valid_i` 约束。
+- 放在 `id_stage.sv` 里生成可以减少 `decoder -> id_stage` 的端口搬运。
+- 后续继续增加类似的单指令控制标志时，不需要反复扩展 decoder 端口。
+
+### 4.1 修改 `rtl/core/decoder.sv` `已完成`
 
 新增输出端口：
 
-- `fence_o`
-- `ecall_o`
-- `ebreak_o`
-- `mret_o`
-- `csr_en_o`
-- `core_pkg::csr_op_e csr_op_o`
-- `logic [11:0] csr_addr_o`
-- `logic [4:0] csr_uimm_o`
-- `logic csr_uses_rs1_o`
-- `logic csr_writes_rd_o`
-- `logic csr_write_en_o`
-- `logic exception_valid_o`
-- `core_pkg::trap_cause_e exception_cause_o`
-- `logic [core_pkg::XLEN-1:0] exception_tval_o`
+| 端口 | 作用 |
+|---|---|
+| `csr_o` | 当前译码结果是否为 6 条 Zicsr CSR 指令之一；只是指令属性，不表示已经访问 CSR 文件。 |
+| `core_pkg::csr_op_e csr_op_o` | CSR 操作类型：RW/RS/RC/RWI/RSI/RCI。 |
+| `logic [11:0] csr_addr_o` | CSR 地址字段 `instr_i[31:20]`。 |
+| `logic [4:0] csr_uimm_o` | CSR immediate 形式的 `uimm` 字段 `instr_i[19:15]`。 |
+| `logic csr_uses_rs1_o` | CSR register 形式是否读取 rs1，用于 hazard/forwarding。 |
+| `logic csr_writes_rd_o` | CSR 指令是否把旧 CSR 值写回 GPR `rd`，通常为 `rd_addr_o != x0`。 |
+| `logic csr_write_en_o` | CSR 指令是否尝试写 CSR，用于 CSR 文件写使能和只读 CSR 非法写判断。 |
+| `logic exception_valid_o` | decoder/ID 已能确认的 synchronous exception 是否有效。 |
+| `core_pkg::trap_cause_e exception_cause_o` | decoder/ID exception 的 cause。 |
+| `logic [core_pkg::XLEN-1:0] exception_tval_o` | decoder/ID exception 的 tval。非法指令通常为原始指令，`ECALL/EBREAK` 为 0。 |
 
-`OPCODE_MISC_MEM` 译码：
+补充 `INSTR_ID_GEN` 译码表。`decoder` 虽然不直接输出 `fence_o/ecall_o/ebreak_o/mret_o` 这类简单布尔信号，但必须把新增指令识别成对应的 `instr_id_o`；所有不满足完整编码约束的情况都保持 `INSTR_INVALID`。
 
-- `funct3 == 3'b000` 识别为 `INSTR_FENCE`。
-- `FENCE` 不写 GPR，不访存，不跳转，ALU 可保持 `ALU_NONE`。
-- 其他 `MISC_MEM` 编码先作为 illegal instruction。
+| opcode 分支 | 进一步检查条件 | `instr_id_o` | 说明 |
+|---|---|---|---|
+| `OPCODE_MISC_MEM` | `funct3_o == 3'b000` | `INSTR_FENCE` | 本阶段 `FENCE` 作为 NOP；`fm/pred/succ/rs1/rd` 暂不影响功能。 |
+| `OPCODE_MISC_MEM` | 其他 `funct3_o` | `INSTR_INVALID` | 例如 `FENCE.I` 属于 `Zifencei`，本阶段不支持。 |
+| `OPCODE_SYSTEM` | `instr_i == 32'h0000_0073` | `INSTR_ECALL` | 必须精确匹配整条指令。 |
+| `OPCODE_SYSTEM` | `instr_i == 32'h0010_0073` | `INSTR_EBREAK` | 必须精确匹配整条指令。 |
+| `OPCODE_SYSTEM` | `instr_i == 32'h3020_0073` | `INSTR_MRET` | 特权指令，本阶段只支持 M-mode return。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b001` | `INSTR_CSRRW` | CSR 地址是否合法、只读 CSR 是否被写，交给 `csr_file` 判断。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b010` | `INSTR_CSRRS` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b011` | `INSTR_CSRRC` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b101` | `INSTR_CSRRWI` | immediate 形式使用 `instr_i[19:15]` 作为 `uimm`。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b110` | `INSTR_CSRRSI` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b111` | `INSTR_CSRRCI` | 同上。 |
+| `OPCODE_SYSTEM` | `funct3_o == 3'b000` 但不是上述精确编码，或 `funct3_o == 3'b100` | `INSTR_INVALID` | 未支持的 SYSTEM 编码统一作为 illegal instruction。 |
 
-`OPCODE_SYSTEM` 且 `funct3 == 3'b000`：
-
-- `instr == 32'h0000_0073` 识别为 `ECALL`，产生 exception cause 11，`tval = 0`。
-- `instr == 32'h0010_0073` 识别为 `EBREAK`，产生 exception cause 3，`tval = 0`。
-- `instr == 32'h3020_0073` 识别为 `MRET`，不产生 exception，输出 `mret_o = 1`。
-- 其他编码作为 illegal instruction，产生 exception cause 2，`tval = instr_i`。
-
-`OPCODE_SYSTEM` 且 `funct3 != 3'b000`：
-
-- 根据 `funct3` 识别 6 条 CSR 指令。
 - `csr_addr_o = instr_i[31:20]`。
 - `csr_uimm_o = instr_i[19:15]`。
 - register 形式 `CSRRW/CSRRS/CSRRC`：`csr_uses_rs1_o = 1`。
@@ -418,39 +445,37 @@ MRET redirect：
   - `CSRRW/CSRRWI`：`csr_write_en_o = 1`。
   - `CSRRS/CSRRC`：`csr_write_en_o = (rs1_addr_o != 5'd0)`。
   - `CSRRSI/CSRRCI`：`csr_write_en_o = (csr_uimm_o != 5'd0)`。
-- `reg_we_o` 对 CSR 指令应等于 `csr_writes_rd_o`。
-- `wb_sel_o = WB_CSR`。
+
+**原有信号译码扩展**
+
+- `uses_rs1_o` 是通用 RAW hazard 语义信号，CSR register 形式也要计入；`csr_uses_rs1_o` 保留为 CSR 专用分类信号。
+- `reg_we_o` 是通用 GPR 写回语义信号，CSR 写 rd 时也要计入；`csr_writes_rd_o` 保留为 CSR 专用分类信号。
+- `wb_sel_o` 对 CSR 写 rd 的指令应选择 `WB_CSR`，表示 WB 阶段写回旧 CSR 值。
 
 `illegal_instr_o` 的语义要调整：
 
-- 对无法识别的普通 opcode/funct，仍输出 illegal。
-- 对 `ECALL/EBREAK`，不要输出 `illegal_instr_o`，而是输出 `exception_valid_o`。
 - 对 CSR 地址是否存在、只读 CSR 是否被写，不在 decoder 做最终判断，交给 `csr_file.sv`。
 
-`uses_rs1_o/uses_rs2_o` 要补 CSR 规则：
+补充说明：CSR register 形式的 operand 虽然后续才用于 CSR 新值计算，但当前数据通路仍然在 ID 阶段读 GPR，并把 rs1 数据随流水线传递。因此对当前实现来说，CSR register 形式必须进入通用 `uses_rs1_o`，让现有 hazard/forwarding 能看到这条 GPR RAW 依赖。后续若专门把 CSR operand 延迟到更晚阶段获取，可以再做更细的 stall 优化。
 
-- CSR register 形式使用 rs1。
-- CSR immediate 形式不使用 rs1。
-- CSR 指令不使用 rs2。
-- `ECALL/EBREAK/MRET/FENCE` 不使用 GPR 源寄存器。
+### 4.2 修改 `rtl/core/id_stage.sv` `已完成`
 
-### 4.2 修改 `rtl/core/id_stage.sv`
+新增输出端口。CSR 和 exception 候选从 decoder 透传并在 ID 阶段结合 `if_valid_i` 约束；简单指令标志在 ID 阶段根据 `instr_id_o` 直接生成：
 
-新增输出端口并从 decoder 透传：
-
-- `instr_id_o`
-- `fence_o`
-- `mret_o`
-- `csr_en_o`
-- `csr_op_o`
-- `csr_addr_o`
-- `csr_uimm_o`
-- `csr_uses_rs1_o`
-- `csr_writes_rd_o`
-- `csr_write_en_o`
-- `exception_valid_o`
-- `exception_cause_o`
-- `exception_tval_o`
+| 端口 | 作用 |
+|---|---|
+| `fence_o` | 当前有效 ID 指令是否为 `FENCE`；本阶段作为 NOP 控制标志。 |
+| `mret_o` | 当前有效 ID 指令是否为 `MRET`；后续传到 MEM/trap 接受点。 |
+| `csr_o` | 当前有效 ID 指令是否为 CSR 指令；后续随流水线传递。 |
+| `csr_op_o` | CSR 操作类型。 |
+| `csr_addr_o` | CSR 地址。 |
+| `csr_uimm_o` | CSR immediate 操作数字段，后续 EX 阶段零扩展。 |
+| `csr_uses_rs1_o` | CSR register 形式是否读取 rs1。 |
+| `csr_writes_rd_o` | CSR 旧值是否写回 GPR rd。 |
+| `csr_write_en_o` | CSR 指令是否尝试写 CSR。 |
+| `exception_valid_o` | ID 阶段发现的 exception 是否有效。 |
+| `exception_cause_o` | ID 阶段 exception cause。 |
+| `exception_tval_o` | ID 阶段 exception tval。 |
 
 ID 阶段 exception 初始规则：
 
@@ -458,28 +483,34 @@ ID 阶段 exception 初始规则：
 - `exception_valid_o = if_valid_i & decoder_exception_valid`。
 - 对非法普通指令，`exception_cause_o = TRAP_CAUSE_ILLEGAL_INSTR`，`exception_tval_o = if_instr_i`。
 - 对 `ECALL/EBREAK`，使用 decoder 给出的 cause/tval。
+- `fence_o = if_valid_i & (instr_id_o == INSTR_FENCE)`。
+- `mret_o = if_valid_i & (instr_id_o == INSTR_MRET)`。
 
-## 5. 扩展 EX 阶段
+## 5. 扩展 EX 阶段 `执行中`
 
 ### 5.1 修改 `rtl/core/ex_stage.sv`
 
 新增输入端口：
 
-- `exception_valid_i`
-- `exception_cause_i`
-- `exception_tval_i`
-- `csr_en_i`
-- `csr_op_i`
-- `csr_uimm_i`
-- `mret_i`
+| 端口 | 作用 |
+|---|---|
+| `exception_valid_i` | 前级已发现的 exception 是否有效；有效时 EX 不再产生普通 redirect。 |
+| `exception_cause_i` | 前级 exception cause，EX 透传或在更高优先级时替换。 |
+| `exception_tval_i` | 前级 exception tval，EX 透传或在更高优先级时替换。 |
+| `csr_i` | 当前 EX 指令是否为 CSR 指令。 |
+| `csr_op_i` | CSR 操作类型，用于选择 rs1 还是 uimm 作为 CSR 操作数。 |
+| `csr_uimm_i` | CSR immediate 字段，EX 阶段零扩展后形成 `csr_operand_o`。 |
+| `mret_i` | `MRET` 标志透传到 EX/MEM。 |
 
 新增输出端口：
 
-- `exception_valid_o`
-- `exception_cause_o`
-- `exception_tval_o`
-- `csr_wdata_o`
-- `mret_o`
+| 端口 | 作用 |
+|---|---|
+| `exception_valid_o` | EX 输出的 exception 是否有效，包含前级透传和 target misaligned。 |
+| `exception_cause_o` | EX 输出 exception cause。 |
+| `exception_tval_o` | EX 输出 exception tval。 |
+| `csr_operand_o` | 送入 CSR 文件的操作数；register 形式来自 forwarding 后 rs1，immediate 形式来自零扩展 uimm。 |
+| `mret_o` | `MRET` 标志透传输出。 |
 
 ### 5.2 检查 instruction address misaligned
 
@@ -502,7 +533,7 @@ ID 阶段 exception 初始规则：
 
 ### 5.3 生成 CSR 写源数据
 
-在 EX 阶段生成 `csr_wdata_o`：
+在 EX 阶段生成 `csr_operand_o`：
 
 - `CSR_OP_RW/RS/RC` 使用 forwarding 后的 `rs1_data_i`。
 - `CSR_OP_RWI/RSI/RCI` 使用 `{27'b0, csr_uimm_i}`。
@@ -516,11 +547,13 @@ ID 阶段 exception 初始规则：
 
 保留现有 `mem_misaligned_o`，同时新增更明确的输出：
 
-- `load_misaligned_o`
-- `store_misaligned_o`
-- `exception_valid_o`
-- `exception_cause_o`
-- `exception_tval_o`
+| 端口 | 作用 |
+|---|---|
+| `load_misaligned_o` | 当前有效 load 访问地址不满足访问宽度对齐要求。 |
+| `store_misaligned_o` | 当前有效 store 访问地址不满足访问宽度对齐要求。 |
+| `exception_valid_o` | MEM 阶段产生的 load/store address misaligned exception 是否有效。 |
+| `exception_cause_o` | MEM 阶段 exception cause，load 不对齐为 4，store 不对齐为 6。 |
+| `exception_tval_o` | MEM 阶段 exception tval，填 faulting memory address。 |
 
 ### 6.2 拆分 load/store misaligned
 
@@ -551,7 +584,9 @@ exception 输出：
 
 新增输入：
 
-- `logic [core_pkg::XLEN-1:0] csr_rdata_i`
+| 端口 | 作用 |
+|---|---|
+| `logic [core_pkg::XLEN-1:0] csr_rdata_i` | MEM/WB 携带的 CSR 旧值；当 `wb_sel_i == WB_CSR` 时作为 GPR 写回数据。 |
 
 修改写回 mux：
 
@@ -573,9 +608,11 @@ exception 输出：
 
 新增输入：
 
-- `id_ex_reg_we_i`
-- `id_ex_wb_sel_i`
-- 或者更直接新增 `id_ex_result_late_i`
+| 端口 | 作用 |
+|---|---|
+| `id_ex_reg_we_i` | ID/EX 指令是否会写 GPR，用于判断 late-result-use hazard。 |
+| `id_ex_wb_sel_i` | ID/EX 指令写回来源；用于把 `WB_CSR` 也视为 late result。 |
+| `id_ex_result_late_i` | 可选替代输入。若使用该端口，顶层提前把 load 或 CSR 旧值这类晚结果合成为一个布尔量。 |
 
 扩展 load-use stall 为 late-result-use stall：
 
@@ -595,7 +632,9 @@ stall 条件仍是：
 
 同时增加 trap redirect 输入：
 
-- `trap_redirect_valid_i`
+| 端口 | 作用 |
+|---|---|
+| `trap_redirect_valid_i` | trap/MRET redirect 是否有效；优先级高于普通 EX redirect 和 stall。 |
 
 优先级改为：
 
@@ -650,15 +689,18 @@ assign redirect_pc    = trap_redirect_valid ? trap_redirect_pc : ex_redirect_pc;
 
 新增 trap/CSR 信号：
 
-- `mem_csr_rdata`
-- `mem_csr_illegal`
-- `trap_valid`
-- `trap_pc`
-- `trap_cause`
-- `trap_tval`
-- `mret_valid`
-- `kill_ex_mem`
-- `kill_mem_wb_input`
+| 信号 | 作用 |
+|---|---|
+| `mem_csr_valid` | MEM 阶段这一拍是否实际访问 CSR 文件，通常由 `ex_mem_valid & csr & ~exception_valid` 生成。 |
+| `mem_csr_rdata` | CSR 文件组合读出的旧 CSR 值，送入 MEM/WB。 |
+| `mem_csr_illegal` | CSR 文件判断出的非法 CSR 访问。 |
+| `trap_valid` | trap entry 被接受，驱动 CSR 文件写 `mepc/mcause/mtval/mstatus`。 |
+| `trap_pc` | faulting instruction PC，写入 `mepc`。 |
+| `trap_cause` | trap cause，写入 `mcause`。 |
+| `trap_tval` | trap 附加信息，写入 `mtval`。 |
+| `mret_valid` | `MRET` 被接受，驱动 CSR 文件恢复 `mstatus`。 |
+| `kill_ex_mem` | trap/MRET 接受时杀掉当前 EX 阶段 younger instruction。 |
+| `kill_mem_wb_input` | trap/MRET 接受时阻止当前 MEM 指令作为普通 WB 指令继续提交。 |
 
 ### 9.2 实例化 `csr_file`
 
@@ -670,10 +712,11 @@ csr_file u_csr_file (...);
 
 普通 CSR 指令输入来自 MEM 阶段所在的 `ex_mem_data_q`：
 
-- `csr_valid_i = ex_mem_valid & ex_mem_data_q.csr_en & ~ex_mem_data_q.exception_valid`
+- `csr_valid_i = mem_csr_valid`
+- `mem_csr_valid = ex_mem_valid & ex_mem_data_q.csr & ~ex_mem_data_q.exception_valid`
 - `csr_op_i = ex_mem_data_q.csr_op`
 - `csr_addr_i = ex_mem_data_q.csr_addr`
-- `csr_operand_i = ex_mem_data_q.csr_wdata`
+- `csr_operand_i = ex_mem_data_q.csr_operand`
 - `csr_write_en_i = ex_mem_data_q.csr_write_en`
 
 trap entry 输入来自 `trap_ctrl`：
@@ -709,7 +752,7 @@ trap_ctrl u_trap_ctrl (...);
 - `mem_exception_valid_i = ex_mem_data_q.exception_valid | mem_exception_valid`
 - `mem_exception_cause_i` 需要在 ID/EX/EX exception 和 MEM misaligned exception 间选择。
 - `mem_exception_tval_i` 同上。
-- `mem_csr_valid_i = ex_mem_data_q.csr_en`
+- `mem_csr_valid_i = mem_csr_valid`
 - `mem_csr_illegal_i = mem_csr_illegal`
 - `mem_mret_i = ex_mem_data_q.mret`
 - `csr_mtvec_i = csr_mtvec`
@@ -741,19 +784,21 @@ MEM load/store misaligned > EX/ID 已携带 exception
 
 ID/EX 组包新增：
 
-- `instr_id = id_instr_id`
-- `exception_valid`
-- `exception_cause`
-- `exception_tval`
-- `fence`
-- `mret`
-- `csr_en`
-- `csr_op`
-- `csr_addr`
-- `csr_uimm`
-- `csr_uses_rs1`
-- `csr_writes_rd`
-- `csr_write_en`
+| 字段 | 来源和作用 |
+|---|---|
+| `instr_id = id_instr_id` | ID 译码出的指令类型。 |
+| `exception_valid` | ID 阶段发现的 exception valid。 |
+| `exception_cause` | ID 阶段 exception cause。 |
+| `exception_tval` | ID 阶段 exception tval。 |
+| `fence` | ID 阶段生成的 `FENCE` 标志。 |
+| `mret` | ID 阶段生成的 `MRET` 标志。 |
+| `csr` | ID 阶段生成的 CSR 指令标志。 |
+| `csr_op` | CSR 操作类型。 |
+| `csr_addr` | CSR 地址。 |
+| `csr_uimm` | CSR immediate 字段，后续 EX 使用。 |
+| `csr_uses_rs1` | CSR 是否读取 rs1，用于 hazard/forwarding。 |
+| `csr_writes_rd` | CSR 旧值是否写回 rd。 |
+| `csr_write_en` | CSR 是否尝试写 CSR。 |
 
 若当前 ID 指令 invalid，所有新增控制字段应为 0 或 `*_NONE`。
 
@@ -761,18 +806,20 @@ ID/EX 组包新增：
 
 EX/MEM 组包新增：
 
-- `instr_id = id_ex_data_q.instr_id`
-- `exception_valid = ex_exception_valid`
-- `exception_cause = ex_exception_cause`
-- `exception_tval = ex_exception_tval`
-- `fence = id_ex_data_q.fence`
-- `mret = id_ex_data_q.mret`
-- `csr_en = id_ex_data_q.csr_en`
-- `csr_op = id_ex_data_q.csr_op`
-- `csr_addr = id_ex_data_q.csr_addr`
-- `csr_wdata = ex_csr_wdata`
-- `csr_writes_rd = id_ex_data_q.csr_writes_rd`
-- `csr_write_en = id_ex_data_q.csr_write_en`
+| 字段 | 来源和作用 |
+|---|---|
+| `instr_id = id_ex_data_q.instr_id` | 指令类型继续传递。 |
+| `exception_valid = ex_exception_valid` | EX 处理后的 exception valid。 |
+| `exception_cause = ex_exception_cause` | EX 处理后的 exception cause。 |
+| `exception_tval = ex_exception_tval` | EX 处理后的 exception tval。 |
+| `fence = id_ex_data_q.fence` | `FENCE` 标志透传。 |
+| `mret = id_ex_data_q.mret` | `MRET` 标志透传到 MEM。 |
+| `csr = id_ex_data_q.csr` | CSR 指令标志透传到 MEM。 |
+| `csr_op = id_ex_data_q.csr_op` | CSR 操作类型。 |
+| `csr_addr = id_ex_data_q.csr_addr` | CSR 地址。 |
+| `csr_operand = ex_csr_operand` | EX 生成的 CSR 操作数，送 CSR 文件。 |
+| `csr_writes_rd = id_ex_data_q.csr_writes_rd` | CSR 旧值是否写回 rd。 |
+| `csr_write_en = id_ex_data_q.csr_write_en` | CSR 是否尝试写 CSR。 |
 
 `pipe_reg_ex_mem` 新增：
 
@@ -790,8 +837,10 @@ wire mem_wb_valid_i = mem_valid & ~kill_mem_wb_input;
 
 MEM/WB 组包新增：
 
-- `instr_id = ex_mem_data_q.instr_id`
-- `csr_rdata = mem_csr_rdata`
+| 字段 | 来源和作用 |
+|---|---|
+| `instr_id = ex_mem_data_q.instr_id` | 指令类型进入 WB/commit 观察点。 |
+| `csr_rdata = mem_csr_rdata` | CSR 旧值进入 WB，供 `WB_CSR` 写回。 |
 
 普通字段需要做副作用屏蔽：
 
@@ -949,7 +998,7 @@ MEM/WB 组包新增：
 - 传递已有 exception。
 - 检测 branch/JAL/JALR target misaligned。
 - exception 存在时禁止普通 redirect。
-- 生成 forwarding 后的 `csr_wdata`。
+- 生成 forwarding 后的 `csr_operand`。
 
 ### Step 6: 扩展 MEM
 
