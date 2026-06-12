@@ -340,9 +340,11 @@ exception 来源分两类：
 
 选择规则：
 
-- `mem_valid_i && mem_csr_illegal_i` 时生成 illegal instruction exception，`tval = mem_instr_i`。
-- 否则若 `mem_valid_i && mem_exception_valid_i`，使用随流水线带来的 cause/tval。
+- `mem_valid_i && mem_exception_valid_i` 时，使用随流水线带来的 cause/tval。
+- 否则若 `mem_valid_i && mem_csr_illegal_i`，生成 illegal instruction exception，`tval = mem_instr_i`。
 - 否则若 `mem_valid_i && mem_mret_i`，执行 `MRET` redirect。
+
+这里的优先级仍是防御性写法。正常情况下，`mem_csr_valid_i` 应该已经被已有 exception 门控，CSR illegal 不会和随流水线带来的 exception 同时有效；如果后续 RTL 改动导致二者同时为 1，仍要保持“同一条指令先发现的异常先保持”。
 
 redirect 优先级：
 
@@ -486,9 +488,9 @@ ID 阶段 exception 初始规则：
 - `fence_o = if_valid_i & (instr_id_o == INSTR_FENCE)`。
 - `mret_o = if_valid_i & (instr_id_o == INSTR_MRET)`。
 
-## 5. 扩展 EX 阶段 `执行中`
+## 5. 扩展 EX 阶段 `已完成`
 
-### 5.1 修改 `rtl/core/ex_stage.sv`
+### 5.1 修改 `rtl/core/ex_stage.sv` `已完成`
 
 新增输入端口：
 
@@ -512,7 +514,7 @@ ID 阶段 exception 初始规则：
 | `csr_operand_o` | 送入 CSR 文件的操作数；register 形式来自 forwarding 后 rs1，immediate 形式来自零扩展 uimm。 |
 | `mret_o` | `MRET` 标志透传输出。 |
 
-### 5.2 检查 instruction address misaligned
+### 5.2 检查 instruction address misaligned `已完成`
 
 当前 `ex_stage` 对 branch/JAL/JALR 直接输出 redirect。加入 trap 后要改为：
 
@@ -525,13 +527,21 @@ ID 阶段 exception 初始规则：
   - `redirect_valid_o = 0`
 - 当没有 target misaligned 时，原 branch/JAL/JALR redirect 逻辑保持不变。
 
+实现时需要把“指令原始 redirect 请求”和“最终发给 PC 的 redirect”拆开：
+
+- 原始 redirect 请求只看 `valid_i && (branch_taken || jump_i)`，用于判断这条指令是否本来要改变 PC。
+- instruction address misaligned 必须基于原始 redirect 请求和目标地址低位判断。
+- 最终 `redirect_valid_o` 还要被 `exception_valid_o` 屏蔽，避免已有 exception 或 target misaligned 时继续发普通 branch/JAL/JALR redirect。
+
+这样可以避免 `redirect_valid_o`、`exception_valid_o`、target misaligned 之间形成组合环，也能保证“异常路径”和“普通 redirect 路径”语义分开。
+
 如果输入已经带有 `exception_valid_i`：
 
 - EX 不应再产生普通 redirect。
 - exception 继续向 EX/MEM 传递。
 - ALU 结果可以照常计算，但后续副作用必须由 trap kill 屏蔽。
 
-### 5.3 生成 CSR 写源数据
+### 5.3 生成 CSR 写源数据 `已完成`
 
 在 EX 阶段生成 `csr_operand_o`：
 
@@ -541,7 +551,7 @@ ID 阶段 exception 初始规则：
 
 这样 CSR 指令和普通 ALU 指令共用现有 GPR forwarding 结果，避免 CSR 源寄存器读到旧值。
 
-## 6. 扩展 MEM 阶段
+## 6. 扩展 MEM 阶段 `执行中`
 
 ### 6.1 修改 `rtl/core/mem_stage.sv`
 
@@ -761,7 +771,7 @@ trap_ctrl u_trap_ctrl (...);
 MEM exception 选择优先级：
 
 ```text
-MEM load/store misaligned > EX/ID 已携带 exception
+EX/ID 已携带 exception > MEM load/store misaligned > CSR 非法访问
 ```
 
 正常情况下，带 exception 的指令不应该再发起 dmem 访问；但这个优先级能防止后续改动时出现不明确行为。

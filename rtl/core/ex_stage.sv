@@ -15,6 +15,12 @@
 //   - 使用 branch_op_i 判断条件分支是否 taken。
 //   - 对 taken branch、JAL、JALR 产生 redirect_valid_o 和 redirect_pc_o。
 //   - 传出 store_data_o，供 MEM 阶段执行 store。
+//
+// CSR、trap 相关功能：
+//   - EX 阶段负责识别的异常：instruction address misaligned（pc 重定向目标未 4 字节对齐）
+//   - 使用 forwarding 后的 rs1 或零扩展 uimm 生成 CSR 操作数 csr_operand_o。
+//   - 前级已带 exception 的指令，抑制 redirect 并透传 exception 信息（同一条指令先发现的异常先保持）。
+//   - MRET 标志透传到 EX/MEM。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -33,11 +39,27 @@ module ex_stage (
     input  logic                          jump_i,            // 当前指令是否为 JAL/JALR。
     input  logic                          jalr_i,            // 当前指令是否为 JALR；JALR 目标地址需要清 bit0。
 
+    // CSR、trap 相关
+    input  logic                          exception_valid_i, // 前级已发现的 exception 是否有效；有效时 EX 不再产生普通 redirect。
+    input  core_pkg::trap_cause_e         exception_cause_i, // 前级 exception cause，EX 透传或在更高优先级时替换。
+    input  logic [core_pkg::XLEN-1:0]     exception_tval_i,  // 前级 exception tval，EX 透传或在更高优先级时替换。
+    input  logic                          csr_i,             // 当前 EX 指令是否为 CSR 指令。
+    input  core_pkg::csr_op_e             csr_op_i,          // CSR 操作类型，用于选择 rs1 还是 uimm 作为 CSR 操作数。
+    input  logic [4:0]                    csr_uimm_i,        // CSR immediate 字段，EX 阶段零扩展后形成 csr_operand_o。
+    input  logic                          mret_i,            // MRET 标志透传到 EX/MEM。
+
     output logic                          valid_o,           // 送入 EX/MEM 的 valid；第一版 EX 不主动丢弃指令，直接透传 valid_i。
     output logic [core_pkg::XLEN-1:0]     alu_result_o,      // ALU 计算结果，向 EX/MEM 传递。
     output logic [core_pkg::XLEN-1:0]     store_data_o,      // 传给 MEM 阶段的 store 写数据。
     output logic                          redirect_valid_o,  // 当前 EX 指令是否要求重定向 PC。
-    output logic [core_pkg::XLEN-1:0]     redirect_pc_o      // branch/JAL/JALR 的目标 PC。
+    output logic [core_pkg::XLEN-1:0]     redirect_pc_o,     // branch/JAL/JALR 的目标 PC。
+
+    // CSR、trap 相关
+    output logic                          exception_valid_o, // EX 输出的 exception 是否有效，包含前级透传和 target misaligned。
+    output core_pkg::trap_cause_e         exception_cause_o, // EX 输出 exception cause。
+    output logic [core_pkg::XLEN-1:0]     exception_tval_o,  // EX 输出 exception tval。
+    output logic [core_pkg::XLEN-1:0]     csr_operand_o,     // 送入 CSR 文件的操作数；register 形式来自 forwarding 后 rs1，immediate 形式来自零扩展 uimm。
+    output logic                          mret_o             // MRET 标志透传输出。
 );
     import core_pkg::*;
     
@@ -64,9 +86,23 @@ module ex_stage (
         .branch_taken_o (branch_taken)
     );
 
-    assign redirect_valid_o = valid_i & (branch_taken | jump_i);
+    wire   instr_redirect =  valid_i & (branch_taken | jump_i);     // 指令是否请求 redirect
+    assign redirect_valid_o = instr_redirect & !exception_valid_o;  // 无 exception 时发出最终 redirect
 
     assign redirect_pc_o = jalr_i ? (alu_result_o & ~32'b1) : alu_result_o;
+
+    // csr、trap 相关---------------------------------------------------------------------
+    wire ex_exception_valid;
+    assign ex_exception_valid = valid_i & instr_redirect & (redirect_pc_o[1:0] != 2'b0);    // 指令请求 redirect 但地址非法，则异常
+    assign exception_valid_o = exception_valid_i ? exception_valid_i : ex_exception_valid;
+    assign exception_cause_o = exception_valid_i ? exception_cause_i : TRAP_CAUSE_INST_ADDR_MISALIGNED;
+    assign exception_tval_o = exception_valid_i ? exception_tval_i : redirect_pc_o;
+
+    wire csr_op_reg = (csr_op_i == CSR_OP_RW) || (csr_op_i == CSR_OP_RS) || (csr_op_i == CSR_OP_RC);
+    wire csr_op_uimm = (csr_op_i == CSR_OP_RWI) || (csr_op_i == CSR_OP_RSI) || (csr_op_i == CSR_OP_RCI);
+    assign csr_operand_o = csr_i? (csr_op_reg ? rs1_data_i : csr_op_uimm ? {{(core_pkg::XLEN-5){1'b0}},csr_uimm_i} : '0): '0;
+
+    assign mret_o = mret_i;
 
 endmodule
 

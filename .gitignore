@@ -20,3 +20,6 @@ obj_dir/
 *.swp
 *~
 .DS_Store
+
+# agent.md
+agent.md
