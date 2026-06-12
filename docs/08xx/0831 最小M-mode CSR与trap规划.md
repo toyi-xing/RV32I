@@ -465,17 +465,19 @@ I   = 1，表示支持 RV32I base integer ISA
 
 ### 4.1 支持范围
 
-| exception | `mcause` | `mtval` | 触发来源 | 最早可发现阶段 | 接受点 |
-|---|---:|---|---|---|---|
-| instruction address misaligned | `0` | 目标 PC | taken branch/JAL/JALR 目标不满足 IALIGN=32 | EX | MEM/commit 附近 |
-| illegal instruction | `2` | 原始 instruction | opcode/funct 不支持、非法 SYSTEM 编码 | ID | MEM/commit 附近 |
-| illegal instruction | `2` | 原始 instruction | 非法 CSR 访问，如访问不存在 CSR、写只读 CSR | MEM/CSR read-write 点 | MEM/commit 附近 |
-| breakpoint | `3` | `0` | `EBREAK` | ID | MEM/commit 附近 |
-| load address misaligned | `4` | load 地址 | `LH/LHU/LW` 地址不对齐 | MEM | MEM/commit 附近 |
-| store address misaligned | `6` | store 地址 | `SH/SW` 地址不对齐 | MEM | MEM/commit 附近 |
-| environment call from M-mode | `11` | `0` | `ECALL` | ID | MEM/commit 附近 |
+| exception | `mcause` | `mtval` | 触发来源 | 最早可发现阶段 | 检出阶段 | 接受点 |
+|---|---:|---|---|---|---|---|
+| instruction address misaligned | `0` | 目标 PC | taken branch/JAL/JALR 目标不满足 IALIGN=32 | EX | EX | MEM/commit 附近 |
+| illegal instruction | `2` | 原始 instruction | opcode/funct 不支持、非法 SYSTEM 编码 | ID | ID | MEM/commit 附近 |
+| illegal instruction | `2` | 原始 instruction | 非法 CSR 访问，如访问不存在 CSR、写只读 CSR | MEM/CSR read-write 点 | MEM/CSR read-write 点 | MEM/commit 附近 |
+| breakpoint | `3` | `0` | `EBREAK` | ID | ID | MEM/commit 附近 |
+| load address misaligned | `4` | load 地址 | `LH/LHU/LW` 地址不对齐 | EX | MEM | MEM/commit 附近 |
+| store address misaligned | `6` | store 地址 | `SH/SW` 地址不对齐 | EX | MEM | MEM/commit 附近 |
+| environment call from M-mode | `11` | `0` | `ECALL` | ID | ID | MEM/commit 附近 |
 
-“最早可发现阶段”和“接受点”不是同一个概念。ID 阶段能发现 `ECALL/EBREAK/illegal encoding`，但它们不能立刻改 CSR 和 redirect，否则 older instruction 还没走完；EX 阶段能算出 branch/JAL/JALR target，也不能让 younger 指令继续沿错误路径产生副作用。因此本步建议把 exception 信息先随指令后传，到统一 trap 接受点再真正写 `mepc/mcause/mtval` 和 redirect。
+“检出阶段”和“接受点”不是同一个概念。ID 阶段能发现 `ECALL/EBREAK/illegal encoding`，但它们不能立刻改 CSR 和 redirect，否则 older instruction 还没走完；EX 阶段能算出 branch/JAL/JALR target，也不能让 younger 指令继续沿错误路径产生副作用。因此本步建议把 exception 信息先随指令后传，到统一 trap 接受点再真正写 `mepc/mcause/mtval` 和 redirect。
+
+“最早可发现阶段”指该异常所需信息在哪个阶段已全部就绪，理论上可最早检出；"检出阶段"指本步设计上实际安排在哪一阶段判断。两者不一致的条目（load/store address misaligned），说明该异常在理论上更早就能判断，但出于模块职责划分放在了稍后阶段检测，原因见 4.2 对应小节。两种阶段的区分是为了明确：在较早阶段虽已具备检测能力，但不一定要在那里检出——可以根据模块边界和 side effect gating 的需要灵活选择。
 
 ### 4.2 各异常为什么在这些阶段产生
 
@@ -505,7 +507,7 @@ CSR illegal 有一部分也可以在 ID 阶段预判，例如 `funct3` 不合法
 
 #### load/store address misaligned
 
-load/store 地址来自 `rs1 + imm`，当前设计在 EX 得到 ALU 地址，在 MEM 阶段根据 `mem_size` 和地址低位决定 byte lane、读写数据。为了和现有 `mem_stage.sv` 结构一致，本步建议在 MEM 阶段统一判断：
+load/store 地址来自 `rs1 + imm`，在 EX 阶段 ALU 计算完成后地址就已就绪，因此**最早可发现阶段**为 EX。但 misaligned 判断需要 `mem_size` 信息配合地址低位，且检测到 misaligned 后需要立即禁止对应 side effect（store 禁止 dmem 写、load 禁止 GPR 写回）——这类 gating 逻辑正好在 MEM 阶段处理。为了保持模块职责清晰（EX 管跳转/运算，MEM 管访存），本步设计上将**检出阶段**放在 MEM，不额外把 `mem_size` 传入 EX。
 
 | 访问 | 对齐要求 |
 |---|---|
@@ -630,6 +632,8 @@ trap/MRET redirect > EX branch/JAL/JALR redirect > load-use stall
 
 可以把这一步理解成：ID 负责“看懂这是什么”，EX 负责“准备好要写的数据和目标地址”，MEM/commit 负责“决定它是否真的提交或进入 trap”，WB 负责“把最终结果写回 GPR”。
 
+> 为什么 `csr_operand` 在 EX 阶段生成，而非在 ID 阶段？因为 register 形式 CSR 指令需要 forwarding 后的 rs1 值，而 ID 阶段读到的 rs1_rdata 是 regfile 原始输出，尚未经过 forwarding。放在 EX 生成可以复用现有的 rs1_data_i（来自 forwarding mux），避免给 ID 额外加一套 forwarding。
+
 ### 6.3 exception 信息如何流动
 
 建议把 exception 信息作为指令自身的一部分随流水线移动：
@@ -654,8 +658,16 @@ MEM 发现 load/store misaligned 或 CSR illegal
 
 - ID 已经把某条指令标为 illegal/`ECALL/EBREAK`，后级不应再把它当普通 load/store/branch 产生新的副作用。
 - EX 若发现 target misaligned，应禁止这条 branch/jump 的正常 redirect，转为 exception 后传。
-- MEM 若发现 load/store misaligned，应禁止对应 memory 副作用，并覆盖为 load/store misaligned trap。
+- MEM 若发现 load/store misaligned，应禁止对应 memory 副作用；若这条指令此前没有 exception，才生成 load/store misaligned trap。
 - CSR illegal 在 CSR 访问点产生，表现为 illegal instruction exception，`mtval` 使用原始 instruction。
+
+MEM 阶段本地可能检查到 load/store misaligned 和 CSR illegal 两类异常。正常译码下二者属于不同指令类别：前者只来自 load/store，后者只来自 CSR 指令，因此同一条有效指令不会同时触发这两类异常。实现时仍建议写成防御性优先级：
+
+```text
+已有 exception > load/store misaligned > CSR illegal
+```
+
+其中“已有 exception”必须最高，表示 ID/EX 已经绑定到这条指令上的异常不能被 MEM 阶段重新覆盖；load/store misaligned 和 CSR illegal 的相对顺序主要是防御性写法，不代表正常路径下会同时发生。
 
 ### 6.4 CSR 信息如何流动
 

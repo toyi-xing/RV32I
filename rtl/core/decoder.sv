@@ -14,6 +14,11 @@
 //   - 根据指令编码生成立即数类型、ALU 操作、操作数选择、访存控制、
 //     写回控制、分支比较类型和非法指令标记。
 //   - 第一轮练习建议先实现 ADDI、ADD、SW，再逐步扩展 RV32I 主线指令。
+//
+// CSR、trap 相关功能：
+//   - 支持 FENCE、ECALL、EBREAK、MRET 及 6 条 Zicsr 指令的译码。
+//   - 输出 CSR 指令相关控制字段（csr_op、csr_addr、csr_uimm 等）。
+//   - 产生基础 illegal instruction、EBREAK、ECALL 的 exception cause 和 tval。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -203,11 +208,12 @@ module decoder (
     wire   csr_op_uimm     = instr_id_o == INSTR_CSRRWI || instr_id_o == INSTR_CSRRSI || instr_id_o == INSTR_CSRRCI;
     assign csr_uses_rs1_o  = csr_op_reg;
     assign csr_writes_rd_o = csr_o && (rd_addr_o != '0);
-    assign csr_write_en_o  = instr_id_o == INSTR_CSRRW                         ||
-                             (csr_op_reg  && rs1_addr_o  != '0)               ||
-                             instr_id_o == INSTR_CSRRWI                        ||
+    assign csr_write_en_o  = instr_id_o == INSTR_CSRRW            ||
+                             (csr_op_reg  && rs1_addr_o  != '0)   ||
+                             instr_id_o == INSTR_CSRRWI           ||
                              (csr_op_uimm && csr_uimm_o != '0);
 
+    // 识别异常： 基础非法指令（不包含非法CSR指令），EBREAK，ECALL
     assign exception_valid_o  = instr_id_o == INSTR_INVALID || instr_id_o == INSTR_EBREAK || instr_id_o == INSTR_ECALL;
     assign exception_cause_o  = instr_id_o == INSTR_EBREAK ? TRAP_CAUSE_BREAKPOINT      :
                                 instr_id_o == INSTR_ECALL  ? TRAP_CAUSE_ECALL_M         :
