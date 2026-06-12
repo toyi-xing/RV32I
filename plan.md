@@ -551,9 +551,9 @@ ID 阶段 exception 初始规则：
 
 这样 CSR 指令和普通 ALU 指令共用现有 GPR forwarding 结果，避免 CSR 源寄存器读到旧值。
 
-## 6. 扩展 MEM 阶段 `执行中`
+## 6. 扩展 MEM 阶段 `已完成`
 
-### 6.1 修改 `rtl/core/mem_stage.sv`
+### 6.1 修改 `rtl/core/mem_stage.sv` `已完成`
 
 保留现有 `mem_misaligned_o`，同时新增更明确的输出：
 
@@ -565,7 +565,9 @@ ID 阶段 exception 初始规则：
 | `exception_cause_o` | MEM 阶段 exception cause，load 不对齐为 4，store 不对齐为 6。 |
 | `exception_tval_o` | MEM 阶段 exception tval，填 faulting memory address。 |
 
-### 6.2 拆分 load/store misaligned
+这里的 MEM exception 端口只新增输出，不新增前级 `exception_*_i` 输入。原因是 MEM 已经处在 trap 接受点附近：前级 exception 已经保存在 `ex_mem_data_q.exception_*`，不需要先流过 `mem_stage` 再输出；`mem_stage` 只负责产生本阶段本地的 load/store misaligned exception。后续由顶层把 `ex_mem_data_q.exception_*`、`mem_stage.exception_*` 和 CSR illegal 信息送入 `trap_ctrl`，由 `trap_ctrl` 统一选择最终被接受的 exception。
+
+### 6.2 拆分 load/store misaligned `已完成`
 
 当前 `mem_misaligned_o` 已能判断 half/word 对齐错误。需要拆成：
 
@@ -579,7 +581,7 @@ exception 输出：
 - store 不对齐：cause 6，tval = `alu_result_i`
 - 无不对齐：不产生 MEM exception
 
-### 6.3 保持错误访存副作用屏蔽
+### 6.3 保持错误访存副作用屏蔽 `已完成`
 
 现有逻辑已经有：
 
@@ -588,7 +590,7 @@ exception 输出：
 
 这一点保留。后续顶层还要配合 `trap_ctrl.kill_mem_wb_input_o`，保证 faulting load 不进入 WB 写 rd。
 
-## 7. 扩展 WB 和 forwarding/hazard
+## 7. 扩展 WB 和 forwarding/hazard `执行中`
 
 ### 7.1 修改 `rtl/core/wb_stage.sv`
 

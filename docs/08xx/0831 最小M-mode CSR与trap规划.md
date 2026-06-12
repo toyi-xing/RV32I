@@ -564,7 +564,18 @@ trap 不能只是“另一种跳转”。它必须保证：
 
 如果后续实现时选择 WB 作为唯一 commit 点，则必须额外加入全局 kill/gating，保证 older trap 在 WB 被接受时，younger MEM 阶段 store 不会在同一拍写 memory。这个方案可行，但控制上比 MEM 边界更容易出错。
 
-### 5.3 redirect 和 flush 优先级
+### 5.3 提交点与指令寿命结束
+
+这里的“MEM/commit 附近”不是说所有指令都必须进入 WB 才算提交。当前规划里，指令有两类寿命结束点：
+
+| 指令/事件类型 | 寿命结束点 | 行为 |
+|---|---|---|
+| 普通指令 | WB | `commit_valid_o` 表示普通提交；若需要写 GPR，也在 WB 写回。 |
+| trap entry / `MRET` | MEM 边界的 `trap_ctrl` | `trap_valid_o` 或 `mret_valid_o` 表示 trap 控制事件被接受；同拍更新 CSR 或恢复 `mstatus`、redirect PC、kill younger 指令，并阻止当前 MEM 指令进入 MEM/WB。 |
+
+因此，trap 不是“先进入 WB，再由 WB 提交”的普通指令路径。更准确地说，`mem_stage` 负责访存数据通路和 load/store misaligned 这类 MEM 本地异常检测；`trap_ctrl` 与 MEM 阶段并列放在 MEM 边界，汇总随指令带来的 exception、MEM 本地 exception、CSR illegal 和 `MRET`，决定是否接受 trap/MRET 以及是否 kill 后续流水线。
+
+### 5.4 redirect 和 flush 优先级
 
 当前 `hazard_unit.sv` 的优先级是：
 
@@ -584,7 +595,7 @@ trap/MRET redirect > EX branch/JAL/JALR redirect > load-use stall
 - 如果 older instruction trap，younger branch redirect 必须被 kill，不能改写 PC。
 - load-use stall 不能阻塞 trap redirect，否则错误路径可能继续停在流水线里。
 
-### 5.4 副作用屏蔽
+### 5.5 副作用屏蔽
 
 本步需要明确这些屏蔽规则：
 
@@ -651,6 +662,10 @@ EX 发现 branch/JAL/JALR target misaligned
 MEM 发现 load/store misaligned 或 CSR illegal
     -> MEM 当拍接受 trap
 ```
+
+在这个流动过程中，带 exception 的指令仍然保持 `valid=1`，`exception_valid/cause/tval` 作为这条有效指令的一部分继续后传。前级（ID、EX）不能因为某条指令已经带 exception 就把它变成 bubble（`valid=0`）：如果这样做，流水线中这条指令占据的顺序位置会被抹掉，younger 指令可能提前进入后级并产生错误副作用。
+
+exception 信息随指令流到 MEM 边界（但前级的 expection 信息不会流经 mem_stage，而是直接给 trap_ctrl）后，由 `trap_ctrl` 正式接受 trap。接受 trap 的这一拍，`trap_valid_o` 驱动 `csr_file` 写 `mepc/mcause/mtval/mstatus`，PC redirect 到 `mtvec`，younger 指令被 kill；同时 `kill_mem_wb_input_o` 清零 MEM/WB 输入 valid，阻止 faulting instruction 再作为普通指令进入 WB。
 
 这里的关键点是：exception 一旦和某条指令绑定，就要跟着这条指令一起走，而不是变成一个脱离指令顺序的全局脉冲。否则很容易出现 `mepc` 记错、younger 指令先写 memory、或者 older 指令被错误 kill 的问题。
 

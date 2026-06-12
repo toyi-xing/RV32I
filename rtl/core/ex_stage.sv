@@ -86,21 +86,21 @@ module ex_stage (
         .branch_taken_o (branch_taken)
     );
 
-    wire   instr_redirect =  valid_i & (branch_taken | jump_i);     // 指令是否请求 redirect
+    wire   instr_redirect   =  valid_i & (branch_taken | jump_i);   // 指令是否请求 redirect
     assign redirect_valid_o = instr_redirect & !exception_valid_o;  // 无 exception 时发出最终 redirect
 
-    assign redirect_pc_o = jalr_i ? (alu_result_o & ~32'b1) : alu_result_o;
+    assign redirect_pc_o    = jalr_i ? (alu_result_o & ~32'b1) : alu_result_o;
 
     // csr、trap 相关---------------------------------------------------------------------
     wire ex_exception_valid;
-    assign ex_exception_valid = valid_i & instr_redirect & (redirect_pc_o[1:0] != 2'b0);    // 指令请求 redirect 但地址非法，则异常
-    assign exception_valid_o = exception_valid_i ? exception_valid_i : ex_exception_valid;
-    assign exception_cause_o = exception_valid_i ? exception_cause_i : TRAP_CAUSE_INST_ADDR_MISALIGNED;
-    assign exception_tval_o = exception_valid_i ? exception_tval_i : redirect_pc_o;
+    assign ex_exception_valid   = valid_i & instr_redirect & (redirect_pc_o[1:0] != 2'b0);    // 指令请求 redirect 但地址非法，则异常
+    assign exception_valid_o    = exception_valid_i ? exception_valid_i : ex_exception_valid;
+    assign exception_cause_o    = exception_valid_i ? exception_cause_i : TRAP_CAUSE_INST_ADDR_MISALIGNED;
+    assign exception_tval_o     = exception_valid_i ? exception_tval_i : redirect_pc_o;
 
-    wire csr_op_reg = (csr_op_i == CSR_OP_RW) || (csr_op_i == CSR_OP_RS) || (csr_op_i == CSR_OP_RC);
-    wire csr_op_uimm = (csr_op_i == CSR_OP_RWI) || (csr_op_i == CSR_OP_RSI) || (csr_op_i == CSR_OP_RCI);
-    assign csr_operand_o = csr_i? (csr_op_reg ? rs1_data_i : csr_op_uimm ? {{(core_pkg::XLEN-5){1'b0}},csr_uimm_i} : '0): '0;
+    wire csr_op_reg             = (csr_op_i == CSR_OP_RW)  || (csr_op_i == CSR_OP_RS)  || (csr_op_i == CSR_OP_RC);
+    wire csr_op_uimm            = (csr_op_i == CSR_OP_RWI) || (csr_op_i == CSR_OP_RSI) || (csr_op_i == CSR_OP_RCI);
+    assign csr_operand_o        = !csr_i? '0 : csr_op_reg ? rs1_data_i : csr_op_uimm ? {{(core_pkg::XLEN-5){1'b0}},csr_uimm_i} : '0;
 
     assign mret_o = mret_i;
 
