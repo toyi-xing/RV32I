@@ -90,7 +90,7 @@ package pipeline_pkg;
         logic [core_pkg::XLEN-1:0]  alu_result;
         logic [core_pkg::XLEN-1:0]  store_data;
 
-        logic                       mem_re;
+        logic                       mem_re;     // load 使能，实际用来确定本条为 load 指令
         logic                       mem_we;
         core_pkg::mem_size_e        mem_size;
         logic                       mem_unsigned;

@@ -49,6 +49,7 @@ module trap_ctrl (
     output logic                      redirect_valid_o,          // trap/MRET redirect 是否有效。
     output logic [core_pkg::XLEN-1:0] redirect_pc_o,             // trap/MRET redirect 目标 PC。
 
+    // trap 导致的 control hazard,使用 kill 口径，与普通跳转的 flush 口径区分，且 kill 优先级应当更高
     output logic                      kill_if_id_o,              // 清掉 IF/ID 年轻指令。
     output logic                      kill_id_ex_o,              // 清掉 ID/EX 年轻指令。
     output logic                      kill_ex_mem_o,             // 阻止当前 EX 阶段年轻指令进入 EX/MEM。

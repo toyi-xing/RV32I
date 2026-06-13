@@ -43,7 +43,7 @@ module csr_file (
     input  logic [core_pkg::XLEN-1:0] trap_tval_i,           // 异常附加信息，写入 mtval
 
     // MRET
-    input  logic                      mret_valid_i,                // MRET 提交，恢复 mstatus
+    input  logic                      mret_valid_i,          // MRET 提交，恢复 mstatus
 
     // 输出 CSR 值供 trap_ctrl 和顶层使用
     output logic [core_pkg::XLEN-1:0] mtvec_o,               // mtvec 当前值（trap 跳转基址）
@@ -103,6 +103,7 @@ module csr_file (
             endcase
         end
     end
+
     // CSR WARL 处理（Accept Any Write, Store a Legal Value）
     // 按具体 CSR 的可实现字段将 csr_new 收敛到合法值。
     // 后续扩展 vectored mtvec、C 扩展 mepc 对齐或更多 mstatus 字段等时，只需改这个组合块。
@@ -128,7 +129,6 @@ module csr_file (
             end
         endcase
     end
-
     // CSR 写非法地址检测
     logic csr_illegal_w;      // 写 CSR 地址非法（含只读寄存器和未支持寄存器），但也要组合输出
     always_comb begin : CSR_ILLEGAL_W

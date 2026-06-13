@@ -94,19 +94,19 @@ module id_stage (
 
         .instr_id_o (instr_id_o),
 
-        .uses_rs1_o (uses_rs1_o),
-        .uses_rs2_o (uses_rs2_o),
+        .uses_rs1_o (decoder_uses_rs1),
+        .uses_rs2_o (decoder_uses_rs2),
 
         .imm_sel_o  (imm_sel),
         .alu_op_o   (alu_op_o),
         .op_a_sel_o (op_a_sel_o),
         .op_b_sel_o (op_b_sel_o),
 
-        .reg_we_o   (reg_we_o),
+        .reg_we_o   (decoder_reg_we),
         .wb_sel_o   (wb_sel_o),
 
-        .mem_re_o           (mem_re_o),
-        .mem_we_o           (mem_we_o),
+        .mem_re_o           (decoder_mem_re),
+        .mem_we_o           (decoder_mem_we),
         .mem_size_o         (mem_size_o),
         .mem_unsigned_o     (mem_unsigned_o),
 
@@ -131,15 +131,24 @@ module id_stage (
   
 
     // 根据 if_valid 输出有效 instr_ctrl_gen
+    // 本阶段与 exception 互斥，不必用 exception_valid 门控
     assign jump_o   = if_valid_i & ((instr_id_o == INSTR_JAL) | (instr_id_o == INSTR_JALR));
     assign jalr_o   = if_valid_i & (instr_id_o == INSTR_JALR);
     assign fence_o  = if_valid_i & (instr_id_o == INSTR_FENCE);
     assign mret_o   = if_valid_i & (instr_id_o == INSTR_MRET);
 
     // decoder 输出的部分信号要由 if_valid_i 门控
+    wire decoder_uses_rs1, decoder_uses_rs2;
+    wire decoder_reg_we;
+    wire decoder_mem_re, decoder_mem_we;
     wire decoder_csr;
     wire decoder_exception_valid;
     wire decoder_illegal_instr;
+    assign uses_rs1_o        = if_valid_i & decoder_uses_rs1,   // 本阶段与 exception 互斥，不必用 exception_valid 门控
+           uses_rs2_o        = if_valid_i & decoder_uses_rs2;
+    assign reg_we_o          = if_valid_i & decoder_reg_we;
+    assign mem_re_o          = if_valid_i & decoder_mem_re,
+           mem_we_o          = if_valid_i & decoder_mem_we;
     assign csr_o             = if_valid_i & decoder_csr;
     assign exception_valid_o = if_valid_i & decoder_exception_valid;
     assign illegal_instr_o   = if_valid_i & decoder_illegal_instr;

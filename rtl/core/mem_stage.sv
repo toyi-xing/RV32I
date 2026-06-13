@@ -71,9 +71,9 @@ module mem_stage (
     wire [XLEN-1:0] load_raw = (dmem_rdata_i >> {alu_result_i[1:0], 3'b000}) &
                                (mem_size_i == MEM_WORD ? 32'hffffffff :
                                (mem_size_i == MEM_HALF ? 32'h0000ffff : 32'h000000ff));
-    assign load_data_o       = mem_size_i == MEM_WORD ? load_raw :
-                              (mem_size_i == MEM_HALF ? {{16{~mem_unsigned_i & load_raw[15]}}, load_raw[15:0]} :
-                              (mem_size_i == MEM_BYTE ? {{24{~mem_unsigned_i & load_raw[ 7]}}, load_raw[ 7:0]} : '0));
+    assign load_data_o       =  mem_size_i == MEM_WORD ? load_raw :
+                               (mem_size_i == MEM_HALF ? {{16{~mem_unsigned_i & load_raw[15]}}, load_raw[15:0]} :
+                               (mem_size_i == MEM_BYTE ? {{24{~mem_unsigned_i & load_raw[ 7]}}, load_raw[ 7:0]} : '0));
 
     wire misa_lw            = valid_i && (mem_re_i || mem_we_i) && (mem_size_i == MEM_WORD) && (|alu_result_i[1:0]);
     wire misa_lh            = valid_i && (mem_re_i || mem_we_i) && (mem_size_i == MEM_HALF) && (alu_result_i[0]);

@@ -8,7 +8,7 @@
 //   - 内部根据 fwd_sel 选择前递数据，直接输出到 ALU 操作数。
 //   - EX/MEM 优先级高于 MEM/WB（同一拍内 EX/MEM 数据更新）。
 //   - rd = x0 不参与前递。
-//   - EX/MEM 的 load 结果不能前递（MEM 阶段才从 DMEM 读出数据）。
+//   - EX/MEM 的 load/CSR 结果不能前递（写回数据到 MEM 后才就绪）。
 //
 // 功能：
 //   - rs1 前递检测：比较 id_ex_rs1_addr 与 ex_mem_rd_addr、mem_wb_rd_addr。
@@ -29,7 +29,9 @@ module forwarding_unit (
     input  logic                      ex_mem_valid_i,         // EX/MEM 阶段是否有有效指令。
     input  logic [4:0]                ex_mem_rd_addr_i,       // EX/MEM 指令的写回 rd。
     input  logic                      ex_mem_reg_we_i,        // EX/MEM 指令是否写 GPR。
-    input  logic                      ex_mem_mem_re_i,        // EX/MEM 是否为 load（load 的 ALU 结果是访存地址，不能前递）。
+    // EX/MEM 指令要写回 GPR，但 load/CSR 的写回数据到 MEM 后才就绪，不能走 EX/MEM -> EX。
+    input  logic                      ex_mem_load_re_i,       // EX/MEM 是否为 load。
+    input  logic                      ex_mem_csr_re_i,        // EX/MEM 是否为 CSR。
 
     input  logic                      mem_wb_valid_i,         // MEM/WB 阶段是否有有效指令。
     input  logic [4:0]                mem_wb_rd_addr_i,       // MEM/WB 指令的写回 rd。
@@ -59,8 +61,10 @@ module forwarding_unit (
         // detection
         fwd_rs1_sel = FWD_GPR;
         if (id_ex_valid_i && id_ex_uses_rs1_i && id_ex_rs1_addr_i != '0) begin // 写 x0 会被丢弃，算出来的"错"数不应该被 forwarding
-            if (ex_mem_valid_i && id_ex_rs1_addr_i == ex_mem_rd_addr_i && ex_mem_reg_we_i && !ex_mem_mem_re_i) begin
-                fwd_rs1_sel = FWD_EX_MEM;   // 更新的数优先级更高
+            if (ex_mem_valid_i && id_ex_rs1_addr_i == ex_mem_rd_addr_i && ex_mem_reg_we_i) begin
+                if (!ex_mem_load_re_i && !ex_mem_csr_re_i) begin    // load-use 和 CSR-use 不走 forwarding，等 stall。
+                    fwd_rs1_sel = FWD_EX_MEM;   // 更新的数优先级更高
+                end
             end else if (mem_wb_valid_i && id_ex_rs1_addr_i == mem_wb_rd_addr_i && mem_wb_reg_we_i) begin
                 fwd_rs1_sel = FWD_MEM_WB;
             end
@@ -74,6 +78,7 @@ module forwarding_unit (
                     // WB_MEM 属于 load-use 问题，走 stall，不走 forwarding
                     WB_PC4: rs1_fwd_o = ex_mem_pc_plus4_i;
                     WB_IMM: rs1_fwd_o = ex_mem_imm_i;
+                    // WB_CSR 与 load 一样属于 late result，不从 EX/MEM 前递。
                     default:rs1_fwd_o = ex_mem_alu_result_i;
                 endcase
             end
@@ -85,8 +90,10 @@ module forwarding_unit (
     always_comb begin : rs2_fwd
         fwd_rs2_sel = FWD_GPR;
         if (id_ex_valid_i && id_ex_uses_rs2_i && id_ex_rs2_addr_i != '0) begin
-            if (ex_mem_valid_i && id_ex_rs2_addr_i == ex_mem_rd_addr_i && ex_mem_reg_we_i && !ex_mem_mem_re_i) begin
-                fwd_rs2_sel = FWD_EX_MEM;
+            if (ex_mem_valid_i && id_ex_rs2_addr_i == ex_mem_rd_addr_i && ex_mem_reg_we_i) begin
+                if (!ex_mem_load_re_i && !ex_mem_csr_re_i) begin    // load-use 和 CSR-use 不走 forwarding，等 stall。
+                    fwd_rs2_sel = FWD_EX_MEM;   // 更新的数优先级更高
+                end
             end else if (mem_wb_valid_i && id_ex_rs2_addr_i == mem_wb_rd_addr_i && mem_wb_reg_we_i) begin
                 fwd_rs2_sel = FWD_MEM_WB;
             end
@@ -99,6 +106,7 @@ module forwarding_unit (
                     // WB_MEM 属于 load-use 问题，走 stall，不走 forwarding
                     WB_PC4: rs2_fwd_o = ex_mem_pc_plus4_i;
                     WB_IMM: rs2_fwd_o = ex_mem_imm_i;
+                    // WB_CSR 与 load 一样属于 late result，不从 EX/MEM 前递。
                     default:rs2_fwd_o = ex_mem_alu_result_i;
                 endcase
             end

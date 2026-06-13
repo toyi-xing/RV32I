@@ -590,9 +590,9 @@ exception 输出：
 
 这一点保留。后续顶层还要配合 `trap_ctrl.kill_mem_wb_input_o`，保证 faulting load 不进入 WB 写 rd。
 
-## 7. 扩展 WB 和 forwarding/hazard `执行中`
+## 7. 扩展 WB 和 forwarding/hazard `已完成`
 
-### 7.1 修改 `rtl/core/wb_stage.sv`
+### 7.1 修改 `rtl/core/wb_stage.sv` `已完成`
 
 新增输入：
 
@@ -606,31 +606,35 @@ exception 输出：
 
 `reg_we_o` 仍由 `valid_i & reg_we_i` 控制。faulting instruction 是否进入 WB，由顶层通过 `mem_wb_valid_i` 统一屏蔽。
 
-### 7.2 修改 `rtl/core/forwarding_unit.sv`
+### 7.2 修改 `rtl/core/forwarding_unit.sv` `已完成`
 
-已有 `MEM/WB -> EX` 使用 `mem_wb_wdata_i`，只要 `wb_stage` 支持 `WB_CSR`，这里自然支持 CSR 写 rd 后的前递。
+紧邻的 CSR-use 和 load-use 一样不走 forwarding，而应该 stall，因此在 EX/MEM -> EX 前递检测中做防御性屏蔽。
 
-需要额外修改 EX/MEM 前递 mux：
+隔一条的 CSR-use 和 load-use 则无需 stall，直接走 MEM/WB -> EX 前递即可。CSR 读结果并入 `mem_wb_wdata_i` 后，MEM/WB -> EX 路径可以自然复用。
 
-- `WB_CSR` 不从 EX/MEM 前递。
-- CSR 旧值在 EX/MEM/MEM 阶段才读出，和 load 一样不能作为普通 EX/MEM ALU 结果前递。
-- EX/MEM 命中且 `wb_sel == WB_CSR` 时保持 `FWD_GPR`，由 hazard_unit 插入一拍 stall 后走 MEM/WB 前递。
+这里的 EX/MEM 屏蔽属于防御性写法：正常 back-to-back 场景会被 `hazard_unit` 先插入 bubble，`forwarding_unit` 的 `id_ex_valid_i` 检测也会让错误前递自动失效。但显式屏蔽 load/CSR late result 更直观，也能避免后续改动时误把未就绪数据从 EX/MEM 前递出去。
 
-### 7.3 修改 `rtl/core/hazard_unit.sv`
+- 将原 `ex_mem_mem_re_i` 改成 `ex_mem_load_re_i`，语义更明确：EX/MEM 指令是否为 load。
+- 新增 `ex_mem_csr_re_i`，语义为 EX/MEM 指令是否为 CSR late result。
+- EX/MEM 命中时，只有 `!ex_mem_load_re_i && !ex_mem_csr_re_i` 才允许选择 `FWD_EX_MEM`。
+
+### 7.3 修改 `rtl/core/hazard_unit.sv` `已完成`
 
 新增输入：
 
 | 端口 | 作用 |
 |---|---|
 | `id_ex_reg_we_i` | ID/EX 指令是否会写 GPR，用于判断 late-result-use hazard。 |
-| `id_ex_wb_sel_i` | ID/EX 指令写回来源；用于把 `WB_CSR` 也视为 late result。 |
-| `id_ex_result_late_i` | 可选替代输入。若使用该端口，顶层提前把 load 或 CSR 旧值这类晚结果合成为一个布尔量。 |
+| `id_ex_load_re_i` | ID/EX 指令是否为 load；load 写回数据到 MEM 后才就绪。 |
+| `id_ex_csr_re_i` | ID/EX 指令是否为 CSR；CSR 旧值到 MEM 后才就绪。 |
 
 扩展 load-use stall 为 late-result-use stall：
 
 ```text
-late_result = id_ex_mem_re_i || (id_ex_reg_we_i && id_ex_wb_sel_i == WB_CSR)
+late_result = id_ex_load_re_i || id_ex_csr_re_i
 ```
+
+当前实现选择显式传入 `id_ex_load_re_i/id_ex_csr_re_i`，而不是让 `hazard_unit` 解析 `wb_sel_i`。这样 `hazard_unit` 只关心“这条生产指令的 rd 是否晚就绪”，不用知道完整写回 mux 编码。
 
 stall 条件仍是：
 
@@ -642,24 +646,15 @@ stall 条件仍是：
 
 这样 back-to-back `csrr x1, ...; add x2, x1, x3` 会 stall 一拍，等 CSR 旧值进入 MEM/WB 后再前递。
 
-同时增加 trap redirect 输入：
-
-| 端口 | 作用 |
-|---|---|
-| `trap_redirect_valid_i` | trap/MRET redirect 是否有效；优先级高于普通 EX redirect 和 stall。 |
-
-优先级改为：
+`hazard_unit` 不接入 trap/MRET redirect。trap/MRET 属于 MEM 边界的精确提交控制，后续由 `trap_ctrl.kill_if_id_o/kill_id_ex_o/kill_ex_mem_o` 直接连到流水线寄存器 kill 入口处理。
 
 ```text
-trap_redirect_valid_i > ex_redirect_valid_i > late-result-use stall
+EX branch/JAL/JALR redirect > late-result-use stall
 ```
 
-输出策略：
+也就是说，`hazard_unit` 继续只产生普通 control hazard 的 flush：EX redirect 时 flush IF/ID 和 ID/EX；trap/MRET 导致的 control hazard 统一使用 kill 口径，不混入 `hazard_unit`。
 
-- trap redirect 时至少 flush IF/ID 和 ID/EX。
-- EX/MEM 的 younger kill 由 `trap_ctrl.kill_ex_mem_o` 直接连到 EX/MEM 寄存器，不建议混在 hazard_unit 里。
-
-## 8. 扩展流水线寄存器 kill 能力
+## 8. 扩展流水线寄存器 kill 能力 `执行中`
 
 ### 8.1 修改 `rtl/core/pipe_reg.sv`
 
@@ -697,7 +692,7 @@ assign redirect_valid = trap_redirect_valid | ex_redirect_valid;
 assign redirect_pc    = trap_redirect_valid ? trap_redirect_pc : ex_redirect_pc;
 ```
 
-注意：`hazard_unit` 也要看到 trap redirect 优先级，不能让 load-use stall 卡住 trap/MRET redirect。
+注意：trap/MRET redirect 的优先级由顶层 redirect mux 和流水线寄存器 kill 入口保证，不再让 `hazard_unit` 参与 trap 精确提交控制。
 
 新增 trap/CSR 信号：
 
@@ -785,12 +780,11 @@ EX/ID 已携带 exception > MEM load/store misaligned > CSR 非法访问
 - `.redirect_pc_i(redirect_pc)`
 - `.redirect_valid_i(redirect_valid)`
 
-`hazard_unit` 增加：
+`hazard_unit` 仍只接普通 EX redirect：
 
-- `.trap_redirect_valid_i(trap_redirect_valid)`
 - `.redirect_valid_i(ex_redirect_valid)`
 
-`stall_if` 不能在 trap redirect 时冻结 PC。trap redirect 的优先级必须高于 stall。
+`stall_if` 不能在 trap redirect 时冻结 PC。实现上由 `pc_reg` 的 `redirect > stall` 优先级保证：只要顶层最终 `redirect_valid` 包含 trap/MRET redirect，PC 就会优先跳到 trap/MRET 目标。
 
 ### 9.5 修改 IF/ID、ID/EX 组包
 
@@ -1038,7 +1032,7 @@ MEM/WB 组包新增：
 - MEM/WB -> EX forwarding 自然支持 CSR 写 rd。
 - EX/MEM 不前递 CSR 旧值。
 - hazard 增加 CSR-use stall。
-- hazard 优先级改成 trap redirect > EX redirect > late-result-use stall。
+- hazard 仍只处理普通 EX redirect，优先级为 EX redirect > late-result-use stall；trap/MRET redirect 由 `trap_ctrl` 的 kill 口径处理。
 
 ### Step 8: 扩展 pipeline register kill
 

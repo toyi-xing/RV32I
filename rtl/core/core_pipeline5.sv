@@ -241,7 +241,7 @@ module core_pipeline5 (
 
         .id_ex_valid_i      (id_ex_valid),
         .id_ex_rd_addr_i    (id_ex_data_q.rd_addr),
-        .id_ex_mem_re_i     (id_ex_data_q.mem_re),
+        .id_ex_load_re_i    (id_ex_data_q.mem_re),
 
         .stall_if_o         (stall_if),
         .stall_id_o         (stall_id),
@@ -264,7 +264,7 @@ module core_pipeline5 (
         .ex_mem_valid_i     (ex_mem_valid),
         .ex_mem_rd_addr_i   (ex_mem_data_q.rd_addr),
         .ex_mem_reg_we_i    (ex_mem_data_q.reg_we),
-        .ex_mem_mem_re_i    (ex_mem_data_q.mem_re),
+        .ex_mem_load_re_i   (ex_mem_data_q.mem_re),
 
         .mem_wb_valid_i     (mem_wb_valid),
         .mem_wb_rd_addr_i   (mem_wb_data_q.rd_addr),

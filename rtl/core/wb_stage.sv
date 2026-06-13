@@ -24,6 +24,7 @@ module wb_stage (
     input  logic [core_pkg::XLEN-1:0]      load_data_i,
     input  logic [core_pkg::XLEN-1:0]      pc_plus4_i,
     input  logic [core_pkg::XLEN-1:0]      imm_i,
+    input  logic [core_pkg::XLEN-1:0]      csr_rdata_i,
 
     output logic                           valid_o,
     output logic                           reg_we_o,
@@ -41,6 +42,7 @@ module wb_stage (
             WB_MEM: wb_wdata_o = load_data_i;
             WB_PC4: wb_wdata_o = pc_plus4_i;
             WB_IMM: wb_wdata_o = imm_i; 
+            WB_CSR: wb_wdata_o = csr_rdata_i;
             default: wb_wdata_o = '0;
         endcase
     end
