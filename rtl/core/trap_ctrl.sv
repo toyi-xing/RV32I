@@ -15,7 +15,7 @@
 //   - 接受随流水线传到 MEM 的 exception，并生成 trap entry。
 //   - 接受 MEM 阶段提交的 MRET，并生成返回 redirect。
 //   - trap entry 时跳转到 mtvec，MRET 时跳转到 mepc。
-//   - trap entry 或 MRET 被接受时，kill IF/ID、ID/EX、EX/MEM 和 MEM/WB input。
+//   - trap entry 或 MRET 被接受时，kill IF/ID、ID/EX、EX/MEM 和 MEM/WB。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -53,7 +53,7 @@ module trap_ctrl (
     output logic                      kill_if_id_o,              // 清掉 IF/ID 年轻指令。
     output logic                      kill_id_ex_o,              // 清掉 ID/EX 年轻指令。
     output logic                      kill_ex_mem_o,             // 阻止当前 EX 阶段年轻指令进入 EX/MEM。
-    output logic                      kill_mem_wb_input_o        // 阻止当前 MEM 指令作为普通指令进入 MEM/WB。
+    output logic                      kill_mem_wb_o              // 阻止当前 MEM 指令作为普通指令进入 MEM/WB。
 );
 
     import core_pkg::*;
@@ -65,15 +65,16 @@ module trap_ctrl (
         trap_pc_o    = mem_pc_i;
         trap_cause_o = TRAP_CAUSE_ILLEGAL_INSTR;    // 用非法指令做统一默认值
         trap_tval_o  = '0;
-        // 正常情况下 pipeline_exception 与 csr_illegal_exception 互斥；若 rtl 错误导致同时为 1，这里确定优先级。
-        if (csr_illegal_exception) begin
+        // 正常情况下 pipeline_exception 与 csr_illegal_exception 互斥；
+        // 若 rtl 错误导致同时为 1，这里确定优先级。（与0831规划文档一致）
+        if (pipeline_exception) begin
+            trap_cause_o = mem_exception_cause_i;
+            trap_tval_o  = mem_exception_tval_i;
+        end
+        else if (csr_illegal_exception) begin
             // CSR 访问非法：cause - 非法指令，tval - 原始指令编码
             trap_cause_o = TRAP_CAUSE_ILLEGAL_INSTR;
             trap_tval_o  = mem_instr_i;
-        end
-        else if (pipeline_exception) begin
-            trap_cause_o = mem_exception_cause_i;
-            trap_tval_o  = mem_exception_tval_i;
         end
     end
 
@@ -86,7 +87,7 @@ module trap_ctrl (
     assign kill_if_id_o         = redirect_valid_o;
     assign kill_id_ex_o         = redirect_valid_o;
     assign kill_ex_mem_o        = redirect_valid_o;
-    assign kill_mem_wb_input_o  = redirect_valid_o;
+    assign kill_mem_wb_o        = redirect_valid_o;
 
 endmodule
 

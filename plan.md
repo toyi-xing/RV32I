@@ -28,7 +28,7 @@
 - vectored `mtvec`。第一版只支持 direct mode，`mtvec[1:0]` 写入后按 WARL 归零。
 - `mcycle/minstret` 可先不做，后续单独补。
 
-单周期顶层 `core_single_cycle.sv` 不是本阶段功能目标。但 `id_stage/ex_stage/mem_stage/wb_stage` 是共享模块，新增端口后需要给单周期顶层做最小兼容连接，保证原有单周期合法 RV32I 程序仍可编译。
+单周期顶层 `core_single_cycle.sv` 不再作为后续维护目标。本阶段允许共享 stage 新增端口后只保证五级流水顶层可用；单周期相关 RTL、testbench、仿真脚本和现行流程文档后续统一清理或改为历史说明。
 
 ## 1. 先补公共类型和常量 `已完成`
 
@@ -227,7 +227,7 @@ module csr_file (
 - `mscratch/mepc/mcause/mtval` 复位为 0。
 - RTL 中先将 `mstatus` 整体清 0，再将 `mstatus[12:11]` 写为 `MSTATUS_MPP_M`；这是为了明确保留 M-only 核的 MPP 合法值。
 
-> RTL 之外的配套改动暂不在本步实施：由于 2.2 把 `mtvec` 复位值改为 `MTVEC_RESET`，后续 linker script、启动代码和 trap 测试程序需要约定 `.text.trap`/`__trap_vector`，并在软件启动阶段显式写 `mtvec`。见文末“11. RTL 之外的后续配套改动”。
+> RTL 之外的配套改动暂不在本步实施：由于 2.2 把 `mtvec` 复位值改为 `MTVEC_RESET`，后续 linker script、启动代码和 trap 测试程序需要约定 `.text.trap`/`__trap_vector`，并在软件启动阶段显式写 `mtvec`。见文末“12. RTL 之外的后续配套改动”。
 
 只读 CSR 可以不建寄存器，直接在读 mux 中返回常量：
 
@@ -293,7 +293,7 @@ trap entry 行为：
 
 ### 3.1 新建 `rtl/core/trap_ctrl.sv` `已完成`
 
-该模块只做控制选择，不保存 CSR 状态。它汇总 MEM 附近的 exception、CSR illegal、`MRET`，输出 PC redirect、flush/kill 和 CSR 写控制。
+该模块只做控制选择，不保存 CSR 状态。它汇总 MEM 附近的 exception、CSR illegal、`MRET`，输出 PC redirect、kill 和 CSR 写控制。
 
 建议端口：
 
@@ -327,7 +327,7 @@ module trap_ctrl (
     output logic                      kill_if_id_o,
     output logic                      kill_id_ex_o,
     output logic                      kill_ex_mem_o,
-    output logic                      kill_mem_wb_input_o
+    output logic                      kill_mem_wb_o
 );
 ```
 
@@ -372,14 +372,16 @@ MRET redirect：
 - `kill_if_id_o = 1`，杀掉 IF/ID 年轻指令。
 - `kill_id_ex_o = 1`，杀掉 ID/EX 年轻指令。
 - `kill_ex_mem_o = 1`，阻止当前 EX 阶段年轻指令进入 EX/MEM。
-- `kill_mem_wb_input_o = 1`，阻止当前 MEM 指令作为普通指令进入 MEM/WB。
+- `kill_mem_wb_o = 1`，阻止当前 MEM 指令作为普通指令进入 MEM/WB。
 
-`kill_mem_wb_input_o` 很关键：
+`kill_mem_wb_o` 很关键：
 
 - faulting load 不能写 rd。
 - faulting JAL/JALR 不能写 link rd。
 - faulting CSR 不能写 rd。
 - `MRET` 已在 MEM 被接受，不需要作为普通 WB 指令继续提交。
+
+这里的 `kill_mem_wb_o` 不是杀掉已经处在 WB 阶段的 older instruction，而是让 MEM/WB 寄存器在本拍写入 invalid bubble。也就是说，它结束当前 MEM 指令的普通 WB 路径；trap/MRET 本身已经在 MEM 边界由 `trap_ctrl` 接受。
 
 ## 4. 扩展译码和 ID 阶段 `已完成`
 
@@ -588,7 +590,7 @@ exception 输出：
 - `dmem_re_o = valid_i & ~mem_misaligned_o & mem_re_i`
 - `dmem_we_o = valid_i & ~mem_misaligned_o & mem_we_i`
 
-这一点保留。后续顶层还要配合 `trap_ctrl.kill_mem_wb_input_o`，保证 faulting load 不进入 WB 写 rd。
+这一点保留。后续顶层还要配合 `trap_ctrl.kill_mem_wb_o`，保证 faulting load 不进入 WB 写 rd。
 
 ## 7. 扩展 WB 和 forwarding/hazard `已完成`
 
@@ -604,7 +606,7 @@ exception 输出：
 
 - `WB_CSR: wb_wdata_o = csr_rdata_i`
 
-`reg_we_o` 仍由 `valid_i & reg_we_i` 控制。faulting instruction 是否进入 WB，由顶层通过 `mem_wb_valid_i` 统一屏蔽。
+`reg_we_o` 仍由 `valid_i & reg_we_i` 控制。faulting instruction 是否进入 WB，由 MEM/WB 寄存器的 `kill_i` 统一屏蔽。
 
 ### 7.2 修改 `rtl/core/forwarding_unit.sv` `已完成`
 
@@ -646,7 +648,7 @@ stall 条件仍是：
 
 这样 back-to-back `csrr x1, ...; add x2, x1, x3` 会 stall 一拍，等 CSR 旧值进入 MEM/WB 后再前递。
 
-`hazard_unit` 不接入 trap/MRET redirect。trap/MRET 属于 MEM 边界的精确提交控制，后续由 `trap_ctrl.kill_if_id_o/kill_id_ex_o/kill_ex_mem_o` 直接连到流水线寄存器 kill 入口处理。
+`hazard_unit` 不接入 trap/MRET redirect。trap/MRET 属于 MEM 边界的精确提交控制，后续由 `trap_ctrl.kill_if_id_o/kill_id_ex_o/kill_ex_mem_o/kill_mem_wb_o` 直接连到流水线寄存器 kill 入口处理。
 
 ```text
 EX branch/JAL/JALR redirect > late-result-use stall
@@ -654,287 +656,421 @@ EX branch/JAL/JALR redirect > late-result-use stall
 
 也就是说，`hazard_unit` 继续只产生普通 control hazard 的 flush：EX redirect 时 flush IF/ID 和 ID/EX；trap/MRET 导致的 control hazard 统一使用 kill 口径，不混入 `hazard_unit`。
 
-## 8. 扩展流水线寄存器 kill 能力 `执行中`
+## 8. 扩展流水线寄存器 kill 能力 `已完成`
 
-### 8.1 修改 `rtl/core/pipe_reg.sv`
+### 8.1 修改 `rtl/core/pipe_reg.sv` `已完成`
 
-`pipe_reg_if_id` 和 `pipe_reg_id_ex` 已有 flush，可继续使用。
+`pipe_reg_if_id` 和 `pipe_reg_id_ex` 保留普通 redirect 使用的 `flush_i`，同时新增 trap/MRET 使用的 `kill_i`。
 
-`pipe_reg_ex_mem` 需要新增 `flush_i` 或 `kill_i`：
+`pipe_reg_ex_mem` 和 `pipe_reg_mem_wb` 新增 `kill_i`：
 
-- 优先级：reset > flush/kill > stall > normal advance。
+- 优先级：reset > kill > flush/stall/bubble > normal advance。具体到各寄存器，`kill_i` 都高于普通 `flush_i`、`stall_i` 和 `bubble_i`。
 - trap/MRET 在 MEM 被接受时，当前 EX 阶段指令是 younger instruction，不能在同一拍进入 EX/MEM。
+- trap/MRET 在 MEM 被接受时，当前 MEM 指令已经由 `trap_ctrl` 接受，不能再作为普通指令进入 MEM/WB。
 
-`pipe_reg_mem_wb` 可以不新增 flush 端口，顶层用 `valid_i = mem_valid & ~kill_mem_wb_input` 即可。
+`pipe_reg_mem_wb.kill_i` 的语义是清掉下一拍进入 WB 的槽位，不是取消已经在 WB 的 older instruction。
 
-### 8.2 修改注释
+### 8.2 修改注释 `已完成`
 
-当前 `pipe_reg.sv` 注释写着 EX/MEM 和 MEM/WB 不需要 flush。加入 trap 后这句话过时，需要改成：
+`pipe_reg.sv` 文件头和各寄存器附近需要直接说明 flush/kill 口径，避免只看 RTL 时误把两类控制混在一起：
 
 - branch/JAL/JALR 的 EX redirect 仍只需要 flush IF/ID 和 ID/EX。
 - trap/MRET 在 MEM 接受时，需要额外 kill 当前 EX -> EX/MEM 的年轻指令。
-- MEM/WB 输入由 `kill_mem_wb_input` 屏蔽，避免 faulting instruction 作为普通指令写回。
+- MEM/WB 使用 `kill_i` 写入 invalid bubble，避免 faulting/MRET 指令作为普通指令进入 WB。
 
-## 9. 集成到 `core_pipeline5.sv`
+## 9. 集成到 `core_pipeline5.sv` `执行中`
 
-### 9.1 新增顶层信号
+本步以当前已经落地的 1～8 步 RTL 接口为准，不再沿用最初“顶层门控 MEM/WB valid”或“单周期最小兼容”的旧方案。
 
-PC redirect 信号拆分：
+### 9.1 顶层新增 wire 分组
 
-- `ex_redirect_valid/ex_redirect_pc`
-- `trap_redirect_valid/trap_redirect_pc`
-- `redirect_valid/redirect_pc`
+PC redirect 分成两类来源：
 
-最终 PC redirect 选择：
+| 信号 | 来源 | 去向 | 说明 |
+|---|---|---|---|
+| `ex_redirect_valid/ex_redirect_pc` | `ex_stage` | `hazard_unit`、最终 PC mux | 普通 branch/JAL/JALR redirect，只负责 flush IF/ID、ID/EX。 |
+| `trap_redirect_valid/trap_redirect_pc` | `trap_ctrl.redirect_*` | 最终 PC mux | trap/MRET redirect，优先级高于 EX redirect。 |
+| `redirect_valid/redirect_pc` | 顶层 mux | `pc_reg` | 最终 PC 重定向请求。 |
+
+最终 redirect 选择：
 
 ```systemverilog
 assign redirect_valid = trap_redirect_valid | ex_redirect_valid;
 assign redirect_pc    = trap_redirect_valid ? trap_redirect_pc : ex_redirect_pc;
 ```
 
-注意：trap/MRET redirect 的优先级由顶层 redirect mux 和流水线寄存器 kill 入口保证，不再让 `hazard_unit` 参与 trap 精确提交控制。
+trap/MRET kill 信号：
 
-新增 trap/CSR 信号：
+| 信号 | 来源 | 去向 | 说明 |
+|---|---|---|---|
+| `kill_if_id` | `trap_ctrl.kill_if_id_o` | `pipe_reg_if_id.kill_i` | 清掉 IF/ID younger instruction。 |
+| `kill_id_ex` | `trap_ctrl.kill_id_ex_o` | `pipe_reg_id_ex.kill_i` | 清掉 ID/EX younger instruction。 |
+| `kill_ex_mem` | `trap_ctrl.kill_ex_mem_o` | `pipe_reg_ex_mem.kill_i` | 阻止当前 EX younger instruction 进入 EX/MEM。 |
+| `kill_mem_wb` | `trap_ctrl.kill_mem_wb_o` | `pipe_reg_mem_wb.kill_i` | 阻止当前 MEM 指令进入普通 WB 路径。 |
+
+CSR/trap 数据信号：
 
 | 信号 | 作用 |
 |---|---|
-| `mem_csr_valid` | MEM 阶段这一拍是否实际访问 CSR 文件，通常由 `ex_mem_valid & csr & ~exception_valid` 生成。 |
-| `mem_csr_rdata` | CSR 文件组合读出的旧 CSR 值，送入 MEM/WB。 |
-| `mem_csr_illegal` | CSR 文件判断出的非法 CSR 访问。 |
-| `trap_valid` | trap entry 被接受，驱动 CSR 文件写 `mepc/mcause/mtval/mstatus`。 |
-| `trap_pc` | faulting instruction PC，写入 `mepc`。 |
-| `trap_cause` | trap cause，写入 `mcause`。 |
-| `trap_tval` | trap 附加信息，写入 `mtval`。 |
-| `mret_valid` | `MRET` 被接受，驱动 CSR 文件恢复 `mstatus`。 |
-| `kill_ex_mem` | trap/MRET 接受时杀掉当前 EX 阶段 younger instruction。 |
-| `kill_mem_wb_input` | trap/MRET 接受时阻止当前 MEM 指令作为普通 WB 指令继续提交。 |
+| `id_instr_id` | 接 `id_stage.instr_id_o`，随流水线传到 MEM/WB，用于 debug/trace。 |
+| `id_fence/id_mret` | ID 阶段简单指令标志。 |
+| `id_csr/id_csr_op/id_csr_addr/id_csr_uimm` | CSR 指令属性和字段。 |
+| `id_csr_uses_rs1/id_csr_writes_rd/id_csr_write_en` | CSR hazard、WB 和 CSR 写控制。 |
+| `id_exception_valid/id_exception_cause/id_exception_tval` | ID 阶段发现的 exception。 |
+| `ex_exception_valid/ex_exception_cause/ex_exception_tval` | EX 阶段输出的最终 exception。 |
+| `ex_csr_operand` | EX 阶段生成的 CSR 操作数。 |
+| `mem_exception_valid/mem_exception_cause/mem_exception_tval` | MEM 阶段 load/store misaligned exception。 |
+| `pipe_exception_valid/pipe_exception_cause/pipe_exception_tval` | 顶层合并后送 `trap_ctrl` 的 exception。 |
+| `mem_csr_valid/mem_csr_rdata/mem_csr_illegal` | MEM 阶段 CSR 文件访问结果。 |
+| `csr_mtvec/csr_mepc/csr_mstatus` | CSR 文件输出，其中 `mtvec/mepc` 送 `trap_ctrl`。 |
+| `trap_valid/trap_pc/trap_cause/trap_tval` | trap entry 被接受后写 CSR 的信息。 |
+| `mret_valid` | MRET 被接受，驱动 CSR 文件恢复 `mstatus`。 |
 
-### 9.2 实例化 `csr_file`
+### 9.2 修改 `id_stage` 实例连接
 
-在 `core_pipeline5.sv` 中实例化：
+`id_stage` 新增或原先悬空的端口需要全部接到顶层 wire：
+
+| `id_stage` 端口 | 顶层信号 |
+|---|---|
+| `.instr_id_o` | `id_instr_id` |
+| `.fence_o` | `id_fence` |
+| `.mret_o` | `id_mret` |
+| `.csr_o` | `id_csr` |
+| `.csr_op_o` | `id_csr_op` |
+| `.csr_addr_o` | `id_csr_addr` |
+| `.csr_uimm_o` | `id_csr_uimm` |
+| `.csr_uses_rs1_o` | `id_csr_uses_rs1` |
+| `.csr_writes_rd_o` | `id_csr_writes_rd` |
+| `.csr_write_en_o` | `id_csr_write_en` |
+| `.exception_valid_o` | `id_exception_valid` |
+| `.exception_cause_o` | `id_exception_cause` |
+| `.exception_tval_o` | `id_exception_tval` |
+
+`id_uses_rs1` 已经包含 CSR register 形式的 rs1 使用信息，后续 hazard 和 forwarding 继续使用 `id_uses_rs1/id_uses_rs2` 即可，不需要单独把 `csr_uses_rs1` 再接到 `hazard_unit`。
+
+### 9.3 修改 hazard/forwarding 连接
+
+`hazard_unit` 继续只处理普通 EX redirect 和 late-result-use stall。新增端口连接：
+
+| `hazard_unit` 端口 | 顶层连接 |
+|---|---|
+| `.id_ex_reg_we_i` | `id_ex_data_q.reg_we` |
+| `.id_ex_load_re_i` | `id_ex_data_q.mem_re` |
+| `.id_ex_csr_re_i` | `id_ex_data_q.csr` |
+| `.redirect_valid_i` | `ex_redirect_valid` |
+
+`forwarding_unit` 新增 CSR late-result 屏蔽：
+
+| `forwarding_unit` 端口 | 顶层连接 |
+|---|---|
+| `.ex_mem_load_re_i` | `ex_mem_data_q.mem_re` |
+| `.ex_mem_csr_re_i` | `ex_mem_data_q.csr` |
+| `.mem_wb_wdata_i` | `wb_rd_wdata` |
+
+注意：trap/MRET redirect 不接入 `hazard_unit`。trap/MRET 由 `trap_ctrl` 通过四路 kill 直接处理，PC redirect 通过顶层最终 redirect mux 进入 `pc_reg`。
+
+### 9.4 修改四个 pipeline register 实例
+
+新增 kill 连接：
+
+| pipeline register | 新增连接 |
+|---|---|
+| `u_pipe_reg_if_id` | `.kill_i(kill_if_id)` |
+| `u_pipe_reg_id_ex` | `.kill_i(kill_id_ex)` |
+| `u_pipe_reg_ex_mem` | `.kill_i(kill_ex_mem)` |
+| `u_pipe_reg_mem_wb` | `.kill_i(kill_mem_wb)` |
+
+普通 branch/JAL/JALR redirect 仍只使用 `flush_if_id/flush_id_ex`；trap/MRET 统一使用 kill。`pipe_reg_mem_wb.valid_i` 继续接 `mem_valid`，不要在顶层额外写 `mem_valid & ~kill_mem_wb`。
+
+### 9.5 修改 `pc_reg` 连接
+
+`pc_reg` 改接最终 redirect：
+
+| `pc_reg` 端口 | 顶层连接 |
+|---|---|
+| `.redirect_pc_i` | `redirect_pc` |
+| `.redirect_valid_i` | `redirect_valid` |
+| `.stall_pc_i` | `stall_if` |
+
+依赖 `pc_reg` 内部 `redirect > stall` 的优先级：即使同拍有 late-result-use stall，只要 trap/MRET redirect 有效，PC 也必须跳到 `mtvec/mepc`。
+
+### 9.6 修改 ID/EX 组包
+
+ID/EX 组包新增字段：
+
+| 字段 | 来源 |
+|---|---|
+| `instr_id` | `id_instr_id` |
+| `exception_valid` | `id_exception_valid` |
+| `exception_cause` | `id_exception_cause` |
+| `exception_tval` | `id_exception_tval` |
+| `fence` | `id_fence` |
+| `mret` | `id_mret` |
+| `csr` | `id_csr` |
+| `csr_op` | `id_csr_op` |
+| `csr_addr` | `id_csr_addr` |
+| `csr_uimm` | `id_csr_uimm` |
+| `csr_uses_rs1` | `id_csr_uses_rs1` |
+| `csr_writes_rd` | `id_csr_writes_rd` |
+| `csr_write_en` | `id_csr_write_en` |
+
+`id_valid` 为 0 时，字段值不会产生副作用；为了波形整洁，可以仍按 ID 输出组包，也可以在后续统一清零，不影响功能。
+
+### 9.7 修改 `ex_stage` 实例连接
+
+新增输入连接：
+
+| `ex_stage` 端口 | 顶层连接 |
+|---|---|
+| `.exception_valid_i` | `id_ex_data_q.exception_valid` |
+| `.exception_cause_i` | `id_ex_data_q.exception_cause` |
+| `.exception_tval_i` | `id_ex_data_q.exception_tval` |
+| `.csr_i` | `id_ex_data_q.csr` |
+| `.csr_op_i` | `id_ex_data_q.csr_op` |
+| `.csr_uimm_i` | `id_ex_data_q.csr_uimm` |
+| `.mret_i` | `id_ex_data_q.mret` |
+
+新增输出连接：
+
+| `ex_stage` 端口 | 顶层信号 |
+|---|---|
+| `.exception_valid_o` | `ex_exception_valid` |
+| `.exception_cause_o` | `ex_exception_cause` |
+| `.exception_tval_o` | `ex_exception_tval` |
+| `.csr_operand_o` | `ex_csr_operand` |
+| `.mret_o` | `ex_mret` |
+
+CSR register 形式的 operand 使用 forwarding 后的 `ex_rs1_op_data`，因此不需要给 CSR 再做单独的 forwarding mux。
+
+### 9.8 修改 EX/MEM 组包
+
+EX/MEM 组包新增字段：
+
+| 字段 | 来源 |
+|---|---|
+| `instr_id` | `id_ex_data_q.instr_id` |
+| `exception_valid` | `ex_exception_valid` |
+| `exception_cause` | `ex_exception_cause` |
+| `exception_tval` | `ex_exception_tval` |
+| `fence` | `id_ex_data_q.fence` |
+| `mret` | `ex_mret` |
+| `csr` | `id_ex_data_q.csr` |
+| `csr_op` | `id_ex_data_q.csr_op` |
+| `csr_addr` | `id_ex_data_q.csr_addr` |
+| `csr_wdata` | `ex_csr_operand` |
+| `csr_writes_rd` | `id_ex_data_q.csr_writes_rd` |
+| `csr_write_en` | `id_ex_data_q.csr_write_en` |
+
+当前 `ex_mem_reg_t` 字段名是 `csr_wdata`，但语义上就是 CSR operand；连接 `csr_file.csr_operand_i` 时使用 `ex_mem_data_q.csr_wdata`。
+
+### 9.9 修改 `mem_stage` 实例连接和 exception 合并
+
+`mem_stage` 新增输出全部接顶层 wire：
+
+| `mem_stage` 端口 | 顶层信号 |
+|---|---|
+| `.load_misaligned_o` | `mem_load_misaligned` |
+| `.store_misaligned_o` | `mem_store_misaligned` |
+| `.exception_valid_o` | `mem_exception_valid` |
+| `.exception_cause_o` | `mem_exception_cause` |
+| `.exception_tval_o` | `mem_exception_tval` |
+
+送入 `trap_ctrl` 前合并前级 exception 和 MEM 本地 exception：
+
+```systemverilog
+assign pipe_exception_valid = ex_mem_data_q.exception_valid | mem_exception_valid;
+assign pipe_exception_cause = ex_mem_data_q.exception_valid ? ex_mem_data_q.exception_cause
+                                                            : mem_exception_cause;
+assign pipe_exception_tval  = ex_mem_data_q.exception_valid ? ex_mem_data_q.exception_tval
+                                                            : mem_exception_tval;
+```
+
+这个优先级体现“同一条指令先发现的异常先保持”。CSR illegal 不在这里合并，它仍作为 `trap_ctrl` 的第二类输入。
+
+### 9.10 实例化 `csr_file`
+
+在 MEM/trap 组合控制附近实例化：
 
 ```systemverilog
 csr_file u_csr_file (...);
 ```
 
-普通 CSR 指令输入来自 MEM 阶段所在的 `ex_mem_data_q`：
+CSR 指令访问：
 
-- `csr_valid_i = mem_csr_valid`
-- `mem_csr_valid = ex_mem_valid & ex_mem_data_q.csr & ~ex_mem_data_q.exception_valid`
-- `csr_op_i = ex_mem_data_q.csr_op`
-- `csr_addr_i = ex_mem_data_q.csr_addr`
-- `csr_operand_i = ex_mem_data_q.csr_operand`
-- `csr_write_en_i = ex_mem_data_q.csr_write_en`
+| `csr_file` 端口 | 顶层连接 |
+|---|---|
+| `.csr_valid_i` | `mem_csr_valid` |
+| `.csr_op_i` | `ex_mem_data_q.csr_op` |
+| `.csr_addr_i` | `ex_mem_data_q.csr_addr` |
+| `.csr_operand_i` | `ex_mem_data_q.csr_wdata` |
+| `.csr_write_en_i` | `ex_mem_data_q.csr_write_en` |
+| `.csr_rdata_o` | `mem_csr_rdata` |
+| `.csr_illegal_o` | `mem_csr_illegal` |
 
-trap entry 输入来自 `trap_ctrl`：
+`mem_csr_valid` 建议生成：
 
-- `trap_valid_i = trap_valid`
-- `trap_pc_i = trap_pc`
-- `trap_cause_i = trap_cause`
-- `trap_tval_i = trap_tval`
+```systemverilog
+assign mem_csr_valid = mem_valid
+                     & ex_mem_data_q.csr
+                     & ~pipe_exception_valid;
+```
 
-MRET 输入：
+trap/MRET 硬件写 CSR：
 
-- `mret_valid_i = mret_valid`
+| `csr_file` 端口 | 顶层连接 |
+|---|---|
+| `.trap_valid_i` | `trap_valid` |
+| `.trap_pc_i` | `trap_pc` |
+| `.trap_cause_i` | `trap_cause` |
+| `.trap_tval_i` | `trap_tval` |
+| `.mret_valid_i` | `mret_valid` |
+| `.mtvec_o` | `csr_mtvec` |
+| `.mepc_o` | `csr_mepc` |
+| `.mstatus_o` | `csr_mstatus` |
 
-输出：
+### 9.11 实例化 `trap_ctrl`
 
-- `csr_rdata_o` 接到 `mem_wb_data_d.csr_rdata`。
-- `csr_illegal_o` 接到 `trap_ctrl`。
-- `mtvec_o/mepc_o` 接到 `trap_ctrl`。
-
-### 9.3 实例化 `trap_ctrl`
-
-在 MEM 阶段组合结果之后实例化：
+在 `mem_stage` 和 `csr_file` 组合输出之后实例化：
 
 ```systemverilog
 trap_ctrl u_trap_ctrl (...);
 ```
 
-输入来源：
+连接清单：
 
-- `mem_valid_i = ex_mem_valid`
-- `mem_pc_i = ex_mem_data_q.pc`
-- `mem_instr_i = ex_mem_data_q.instr`
-- `mem_exception_valid_i = ex_mem_data_q.exception_valid | mem_exception_valid`
-- `mem_exception_cause_i` 需要在 ID/EX/EX exception 和 MEM misaligned exception 间选择。
-- `mem_exception_tval_i` 同上。
-- `mem_csr_valid_i = mem_csr_valid`
-- `mem_csr_illegal_i = mem_csr_illegal`
-- `mem_mret_i = ex_mem_data_q.mret`
-- `csr_mtvec_i = csr_mtvec`
-- `csr_mepc_i = csr_mepc`
-
-MEM exception 选择优先级：
-
-```text
-EX/ID 已携带 exception > MEM load/store misaligned > CSR 非法访问
-```
-
-正常情况下，带 exception 的指令不应该再发起 dmem 访问；但这个优先级能防止后续改动时出现不明确行为。
-
-### 9.4 修改 PC 和 hazard 连接
-
-`pc_reg` 改为接最终 redirect：
-
-- `.redirect_pc_i(redirect_pc)`
-- `.redirect_valid_i(redirect_valid)`
-
-`hazard_unit` 仍只接普通 EX redirect：
-
-- `.redirect_valid_i(ex_redirect_valid)`
-
-`stall_if` 不能在 trap redirect 时冻结 PC。实现上由 `pc_reg` 的 `redirect > stall` 优先级保证：只要顶层最终 `redirect_valid` 包含 trap/MRET redirect，PC 就会优先跳到 trap/MRET 目标。
-
-### 9.5 修改 IF/ID、ID/EX 组包
-
-ID/EX 组包新增：
-
-| 字段 | 来源和作用 |
+| `trap_ctrl` 端口 | 顶层连接 |
 |---|---|
-| `instr_id = id_instr_id` | ID 译码出的指令类型。 |
-| `exception_valid` | ID 阶段发现的 exception valid。 |
-| `exception_cause` | ID 阶段 exception cause。 |
-| `exception_tval` | ID 阶段 exception tval。 |
-| `fence` | ID 阶段生成的 `FENCE` 标志。 |
-| `mret` | ID 阶段生成的 `MRET` 标志。 |
-| `csr` | ID 阶段生成的 CSR 指令标志。 |
-| `csr_op` | CSR 操作类型。 |
-| `csr_addr` | CSR 地址。 |
-| `csr_uimm` | CSR immediate 字段，后续 EX 使用。 |
-| `csr_uses_rs1` | CSR 是否读取 rs1，用于 hazard/forwarding。 |
-| `csr_writes_rd` | CSR 旧值是否写回 rd。 |
-| `csr_write_en` | CSR 是否尝试写 CSR。 |
+| `.mem_valid_i` | `mem_valid` |
+| `.mem_pc_i` | `ex_mem_data_q.pc` |
+| `.mem_instr_i` | `ex_mem_data_q.instr` |
+| `.mem_mret_i` | `ex_mem_data_q.mret` |
+| `.mem_exception_valid_i` | `pipe_exception_valid` |
+| `.mem_exception_cause_i` | `pipe_exception_cause` |
+| `.mem_exception_tval_i` | `pipe_exception_tval` |
+| `.mem_csr_valid_i` | `mem_csr_valid` |
+| `.mem_csr_illegal_i` | `mem_csr_illegal` |
+| `.csr_mtvec_i` | `csr_mtvec` |
+| `.csr_mepc_i` | `csr_mepc` |
+| `.trap_valid_o` | `trap_valid` |
+| `.trap_pc_o` | `trap_pc` |
+| `.trap_cause_o` | `trap_cause` |
+| `.trap_tval_o` | `trap_tval` |
+| `.mret_valid_o` | `mret_valid` |
+| `.redirect_valid_o` | `trap_redirect_valid` |
+| `.redirect_pc_o` | `trap_redirect_pc` |
+| `.kill_if_id_o` | `kill_if_id` |
+| `.kill_id_ex_o` | `kill_id_ex` |
+| `.kill_ex_mem_o` | `kill_ex_mem` |
+| `.kill_mem_wb_o` | `kill_mem_wb` |
 
-若当前 ID 指令 invalid，所有新增控制字段应为 0 或 `*_NONE`。
+`csr_file` 和 `trap_ctrl` 之间有组合读取 `csr_illegal/mtvec/mepc`，但 `trap_valid/mret_valid` 只影响 `csr_file` 的同步写状态，不应形成组合环。
 
-### 9.6 修改 EX/MEM 组包
+### 9.12 修改 MEM/WB 组包和 WB 实例
 
-EX/MEM 组包新增：
+MEM/WB 组包新增字段：
 
-| 字段 | 来源和作用 |
+| 字段 | 来源 |
 |---|---|
-| `instr_id = id_ex_data_q.instr_id` | 指令类型继续传递。 |
-| `exception_valid = ex_exception_valid` | EX 处理后的 exception valid。 |
-| `exception_cause = ex_exception_cause` | EX 处理后的 exception cause。 |
-| `exception_tval = ex_exception_tval` | EX 处理后的 exception tval。 |
-| `fence = id_ex_data_q.fence` | `FENCE` 标志透传。 |
-| `mret = id_ex_data_q.mret` | `MRET` 标志透传到 MEM。 |
-| `csr = id_ex_data_q.csr` | CSR 指令标志透传到 MEM。 |
-| `csr_op = id_ex_data_q.csr_op` | CSR 操作类型。 |
-| `csr_addr = id_ex_data_q.csr_addr` | CSR 地址。 |
-| `csr_operand = ex_csr_operand` | EX 生成的 CSR 操作数，送 CSR 文件。 |
-| `csr_writes_rd = id_ex_data_q.csr_writes_rd` | CSR 旧值是否写回 rd。 |
-| `csr_write_en = id_ex_data_q.csr_write_en` | CSR 是否尝试写 CSR。 |
+| `instr_id` | `ex_mem_data_q.instr_id` |
+| `csr_rdata` | `mem_csr_rdata` |
 
-`pipe_reg_ex_mem` 新增：
-
-- `.flush_i(kill_ex_mem)`
-
-### 9.7 修改 MEM/WB 组包
-
-MEM/WB valid 输入：
+`pipe_reg_mem_wb` 连接：
 
 ```systemverilog
-wire mem_wb_valid_i = mem_valid & ~kill_mem_wb_input;
+.valid_i(mem_valid),
+.kill_i (kill_mem_wb)
 ```
-
-`pipe_reg_mem_wb.valid_i` 改接 `mem_wb_valid_i`。
-
-MEM/WB 组包新增：
-
-| 字段 | 来源和作用 |
-|---|---|
-| `instr_id = ex_mem_data_q.instr_id` | 指令类型进入 WB/commit 观察点。 |
-| `csr_rdata = mem_csr_rdata` | CSR 旧值进入 WB，供 `WB_CSR` 写回。 |
-
-普通字段需要做副作用屏蔽：
-
-- faulting instruction 不进入 MEM/WB，所以 `reg_we` 可以继续从 `ex_mem_data_q.reg_we` 透传。
-- 如果后续选择让 trap 指令进入 MEM/WB 做 trace，也必须强制 `reg_we = 0`，当前计划不采用这个做法。
-
-### 9.8 修改 WB 实例
 
 `wb_stage` 新增端口连接：
 
-- `.csr_rdata_i(mem_wb_data_q.csr_rdata)`
+```systemverilog
+.csr_rdata_i(mem_wb_data_q.csr_rdata)
+```
 
-`wb_stage` 内部支持 `WB_CSR` 后，commit 写回信号保持原有路径。
+faulting/MRET 指令会被 `kill_mem_wb` 清成 invalid bubble，因此 `mem_wb_data_d.reg_we` 可以继续从 `ex_mem_data_q.reg_we` 透传。
 
-### 9.9 修改顶层调试输出
+### 9.13 调整顶层观察输出
 
-现有端口：
+现有 `illegal_instr_o` 和 `mem_misaligned_o` 不应再作为“遇到错误立即停机”的语义：
 
-- `illegal_instr_o`
-- `mem_misaligned_o`
+- `mem_misaligned_o` 可以继续接 `mem_stage.mem_misaligned_o`，作为 MEM 当拍观察信号。
+- `illegal_instr_o` 若继续保留，建议改为 `trap_valid && trap_cause == TRAP_CAUSE_ILLEGAL_INSTR`，因为非法指令不会再进入普通 WB。
 
-保留，但语义调整为观察信号，不再代表 testbench 必须停机。
+建议新增或后续在 testbench 层观察这些 trap 信号：
 
-建议新增顶层输出：
+| 信号 | 来源 |
+|---|---|
+| `trap_valid_o` | `trap_valid` |
+| `trap_pc_o` | `trap_pc` |
+| `trap_cause_o` | `trap_cause` |
+| `trap_tval_o` | `trap_tval` |
+| `trap_return_o` | `mret_valid` |
+| `trap_return_pc_o` | `csr_mepc` |
 
-- `trap_valid_o`
-- `trap_pc_o`
-- `trap_cause_o`
-- `trap_tval_o`
-- `trap_return_o`
-- `trap_return_pc_o`
+这些信号只用于 debug/trace/testbench，不参与 core 内部功能闭环。
 
-连接方式：
+## 10. 清理单周期相关文件和流程
 
-- `trap_valid_o = trap_valid`
-- `trap_pc_o = trap_pc`
-- `trap_cause_o = trap_cause`
-- `trap_tval_o = trap_tval`
-- `trap_return_o = mret_valid`
-- `trap_return_pc_o = csr_mepc`
+单周期顶层不再随共享 stage 继续维护。本步目标不是保持单周期可编译，而是把现行流程切换为五级流水为唯一维护对象，并删除或标注单周期路径。
 
-这些信号只用于观察和后续 testbench trace，不参与功能闭环。
+### 10.1 建议删除的 RTL/TB 文件
 
-`instr_id` 已随流水线进入 MEM/WB，可用于后续 commit trace 打印当前提交指令类型，或在 testbench/assertion 中统计 trap/CSR/branch 等指令提交情况。当前功能逻辑仍不依赖 `instr_id` 反推控制信号。
+| 文件 | 处理 |
+|---|---|
+| `rtl/core/core_single_cycle.sv` | 删除或移动到历史归档目录；不再接共享 stage 新端口。 |
+| `tb/sv/tb_core_single_cycle.sv` | 删除或移动到历史归档目录；后续只维护流水线 testbench。 |
 
-## 10. 单周期顶层的最小兼容改动
+不删除共享模块，例如 `id_stage/ex_stage/mem_stage/wb_stage/regfile/pc_reg`。这些模块继续服务五级流水顶层。
 
-修改 `rtl/core/core_single_cycle.sv`，只处理共享 stage 新增端口导致的编译影响。
+### 10.2 建议删除的单周期仿真脚本
 
-### 10.1 `id_stage` 新端口
+| 文件/目录 | 处理 |
+|---|---|
+| `sim/single_cycle_asm/05_build_mem.sh` | 删除。 |
+| `sim/single_cycle_asm/06_run_sim.sh` | 删除。 |
+| `sim/single_cycle_asm/run_test.sh` | 删除。 |
+| `sim/single_cycle_asm/run_all.sh` | 删除。 |
+| `sim/single_cycle_c/05_build_mem.sh` | 删除。 |
+| `sim/single_cycle_c/06_run_sim.sh` | 删除。 |
+| `sim/single_cycle_c/run_test.sh` | 删除。 |
 
-新增 wire 接住或悬空：
+`sim/common/resolve_test_name.sh` 仍被流水线脚本使用，应保留。
 
-- CSR 控制输出可声明本地 wire。
-- exception 输出可接本地 wire。
-- 单周期当前不实例化 `csr_file/trap_ctrl`，这些 wire 暂不参与 PC redirect。
+生成物不需要入库清理，但本地可按需删除：
 
-### 10.2 `ex_stage` 新端口
+- `build/single_cycle_asm/`
+- `build/single_cycle_c/`
+- `obj_dir/Vtb_core_single_cycle`
 
-输入：
+### 10.3 建议删除或改写的现行流程文档
 
-- ID exception wire 接入。
-- CSR 控制 wire 接入。
-- `mret` wire 接入。
+| 文件 | 处理 |
+|---|---|
+| `docs/simulation_flow_singlecycle_asm.md` | 删除，或改成历史说明并从 README 中移除现行入口。 |
+| `docs/simulation_flow_singlecycle_c.md` | 删除，或改成历史说明并从 README 中移除现行入口。 |
+| `docs/simulation_flow_pipeline_asm.md` | 改为自包含文档，不再写“只说明与单周期流程的差异”。 |
+| `docs/simulation_flow_pipeline_c.md` | 改为自包含文档，不再引用单周期 C 流程作为通用说明。 |
+| `README.md` | 删除“单周期核”现行章节，仓库状态改成以五级流水为唯一维护 core。 |
 
-输出：
+`docs/08xx/0823 从单周期语义模型到五级流水线.md` 等早期规划文档可以保留为历史背景，但如果其中有“当前仍维护单周期”的说法，需要加注说明它不再代表现行工程状态。
 
-- EX exception wire 接住。
-- CSR 写源 wire 接住。
-- `mret_o` wire 接住。
+### 10.4 需要同步改掉的单周期措辞
 
-### 10.3 `mem_stage` 新端口
+这些文件不一定删除，但有单周期现行口径，需要后续统一改：
 
-新增 load/store misaligned 和 exception 输出 wire。
+| 文件 | 需要改的典型表述 |
+|---|---|
+| `rtl/common/pipeline_pkg.sv` | “成员顺序对应 core_single_cycle.sv” 等注释改为“五级流水寄存器字段顺序”。 |
+| `rtl/core/regfile.sv` | `BYPASS_EN` 注释中“单周期顶层保持默认 0”改成泛化说明。 |
+| `rtl/core/id_stage.sv`、`rtl/core/ex_stage.sv`、`rtl/core/pc_reg.sv` | “单周期 demo”措辞改成“非流水/组合路径历史用法”或直接删除。 |
+| `sim/pipeline5_asm/run_all.sh` | “单周期指令集全覆盖”改为“基础 RV32I 指令集测试”。 |
+| `sw/asm/0001_smoke.S` | 文件头“单周期 core”改为“基础 RV32I smoke”。 |
+| `sw/c/0202_dmem_init.c` | 文件头“单周期 RV32I C”改为“RV32I C 裸机”。 |
+| `docs/08xx/0827 Testbench、commit trace与测试集组织.md` | 当前命令和 DUT 描述改成流水线为现行路径，单周期作为历史阶段。 |
 
-保持原有：
+### 10.5 测试程序和软件目录保留
 
-- `mem_misaligned_o` 继续接顶层输出。
-- dmem 读写门控仍由 `mem_stage` 内部完成。
-
-### 10.4 `wb_stage` 新端口
-
-`csr_rdata_i` 先接 `'0`。
-
-说明：
-
-- 单周期顶层本阶段不支持 CSR/trap 程序。
-- 这个兼容改动只保证原有 37 条合法 RV32I 单周期测试不因共享模块端口变化而破坏。
+`sw/asm/`、`sw/c/`、`sw/c_runtime/`、`sw/linker/` 不因删除单周期顶层而删除。基础 ISA 测试仍然用于流水线回归；只是脚本入口从 `sim/single_cycle_*` 迁移为 `sim/pipeline5_*`。
 
 ## 11. 推荐施工顺序
 
@@ -976,7 +1112,7 @@ MEM/WB 组包新增：
 
 - 汇总 MEM 阶段 exception、CSR illegal 和 `MRET`。
 - 产生 trap/MRET redirect。
-- 产生 kill IF/ID、ID/EX、EX/MEM、MEM/WB input 的控制。
+- 产生 kill IF/ID、ID/EX、EX/MEM、MEM/WB 的控制。
 - 明确 trap/MRET 优先于普通 EX redirect。
 
 ### Step 4: 扩展 decoder 和 ID
@@ -1042,8 +1178,8 @@ MEM/WB 组包新增：
 
 目标：
 
-- `pipe_reg_ex_mem` 增加 `flush_i/kill_i`。
-- trap/MRET 在 MEM 接受时能杀掉当前 EX 年轻指令。
+- `pipe_reg_if_id`、`pipe_reg_id_ex`、`pipe_reg_ex_mem`、`pipe_reg_mem_wb` 增加或使用 `kill_i`。
+- trap/MRET 在 MEM 接受时能杀掉当前 EX 年轻指令，并阻止当前 MEM 指令进入普通 WB。
 - 更新过时注释。
 
 ### Step 9: 集成 `core_pipeline5.sv`
@@ -1059,29 +1195,34 @@ MEM/WB 组包新增：
 - 把 `instr_id` 从 ID/EX、EX/MEM 一路送到 MEM/WB，用于后续 commit/debug 观察。
 - 连接 CSR 指令从 ID 到 MEM 再到 WB 的数据路径。
 - 连接 trap/MRET redirect 到 `pc_reg`。
-- 连接 trap kill 到 IF/ID、ID/EX、EX/MEM、MEM/WB input。
+- 连接 trap kill 到 IF/ID、ID/EX、EX/MEM、MEM/WB。
 - 连接 `WB_CSR` 写回路径。
 - 保留并调整 commit/debug 输出。
 
-### Step 10: 做单周期最小兼容
+### Step 10: 清理单周期相关文件和流程
 
 修改：
 
 - `rtl/core/core_single_cycle.sv`
+- `tb/sv/tb_core_single_cycle.sv`
+- `sim/single_cycle_asm/`
+- `sim/single_cycle_c/`
+- 单周期现行流程文档和 README 入口
 
 目标：
 
-- 接上共享 stage 新增端口。
-- 不在单周期里实现完整 CSR/trap。
-- 保持原有合法 RV32I 单周期路径不受影响。
+- 不再维护单周期顶层和单周期 testbench。
+- 删除或归档单周期仿真脚本。
+- 把现行说明改成五级流水为唯一维护 core。
+- 保留基础 ISA 测试程序，但只通过 pipeline5 脚本回归。
 
 完成以上步骤后，再另起验证计划，补测试程序、脚本和文档说明。
 
-## 11. RTL 之外的后续配套改动（暂不实施）
+## 12. RTL 之外的后续配套改动（暂不实施）
 
 本章记录由 RTL 设计选择带来的软件、linker、仿真流程配套需求。当前先只规划，不修改 `rtl/` 之外的文件；等 RTL 主体完成并确定仿真策略后再统一实施。
 
-### 11.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局
+### 12.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局
 
 > 来源：见 2.2 “CSR 状态寄存器”。该步把 `mtvec` 的复位值从 0 设置为 `core_pkg::MTVEC_RESET`，当前平台约定为 `IMEM_BASE + 32'h80`。因此 RTL 默认 trap 入口、linker 放置的 handler 地址、软件写入 `mtvec` 的地址需要保持一致。
 
@@ -1090,7 +1231,7 @@ MEM/WB 组包新增：
 - `sw/linker/asm_test.ld`
 - `sw/linker/c_baremetal.ld`
 - 新增或调整 trap 相关 `.S` 测试程序。
-- 视 C trap 测试需求，新增专用 trap runtime 或独立启动文件；不要直接让当前共享 `sw/c_runtime/crt0.S` 无条件执行 CSR 指令，否则会破坏仍不支持 CSR/trap 的单周期 C 仿真流程。
+- 视 C trap 测试需求，新增专用 trap runtime 或独立启动文件；不要直接让当前共享 `sw/c_runtime/crt0.S` 无条件执行 CSR 指令，否则会影响现有 pipeline5 C 基础回归。
 - 仿真脚本按最终测试分组决定是否新增 CSR/trap 专用入口，暂不在本步改。
 
 建议 linker 约定：
@@ -1105,9 +1246,9 @@ MEM/WB 组包新增：
 - trap 测试程序在 `.text.trap` 中定义 `trap_handler`。
 - 启动阶段显式执行 `csrw mtvec, __trap_vector`，不要长期依赖 CSR reset 默认值。
 - 对于只验证“复位后默认 `mtvec` 可用”的专项测试，可以故意不写 `mtvec`，但这类测试应单独命名和说明。
-- C 侧若要测试 trap，优先使用独立的 trap-aware runtime，或给 pipeline5 CSR/trap 测试单独 build flow；不要影响现有 single-cycle C 测试。
+- C 侧若要测试 trap，优先使用独立的 trap-aware runtime，或给 pipeline5 CSR/trap 测试单独 build flow；不要影响现有 pipeline5 C 基础测试。
 
-### 11.2 后续统一扩展 IMEM/DMEM 容量与地址图
+### 12.2 后续统一扩展 IMEM/DMEM 容量与地址图
 
 > 来源：后续若把 `rtl/mem/simple_rom.sv` 和 `rtl/mem/simple_ram.sv` 的 `ADDR_WIDTH` 从当前 10 扩大，需要同步更新软件可见地址图、linker script、testbench 统计和手写汇编常量。该事项暂不在 CSR/trap RTL 主线中实施，后续统一改。
 
@@ -1129,7 +1270,6 @@ RTL/testbench 需要同步修改：
 - `rtl/common/core_pkg.sv`：新增或调整 `IMEM_ADDR_WIDTH/DMEM_ADDR_WIDTH`、`IMEM_SIZE_BYTES/DMEM_SIZE_BYTES`、`DMEM_BASE` 等常量。
 - `rtl/mem/simple_rom.sv`：改用共享 IMEM 地址宽度常量。
 - `rtl/mem/simple_ram.sv`：改用共享 DMEM 地址宽度常量。
-- `tb/sv/tb_core_single_cycle.sv`：`DMEM_END_ADDR/STACK_TOP_ADDR` 不再写死 `DMEM_BASE + 0x1000`，改为 `DMEM_BASE + DMEM_SIZE_BYTES`。
 - `tb/sv/tb_core_pipeline5.sv`：同样更新 DMEM 尾地址和栈顶统计。
 
 软件和仿真流程需要同步修改：
@@ -1138,8 +1278,8 @@ RTL/testbench 需要同步修改：
 - `sw/linker/c_baremetal.ld`：更新 `IMEM/DMEM` memory region；`__stack_bottom` 不再按 4 KiB 写死为 `ORIGIN(DMEM) + 0x0e00`，建议改成 `__stack_top - 固定栈大小`。
 - `sw/asm/*.S`：若 `DMEM_BASE` 改变，所有手写 `lui ..., 0x10` 的地址常量都要同步更新；更推荐逐步改成 `%hi/%lo(__test_status_addr)` 或其他 linker symbol，减少后续地址图变化带来的重复修改。
 - `sw/c_runtime/crt0.S` 当前使用 linker symbol 设置 `sp` 和测试状态地址，原则上随 linker 更新即可，不应硬编码 DMEM 地址。
-- `sim/*/05_build_mem.sh` 当前主要依赖 linker script 和 objcopy，通常不需要因容量扩大单独改；若后续加入镜像大小检查，再统一接入共享容量约束。
-- `docs/simulation_flow_*.md`、`README.md` 和 08xx 中涉及 `4 KiB`、`0x00010000`、`lui ..., 0x10` 的说明需要在最后统一同步。
+- `sim/pipeline5_*/05_build_mem.sh` 当前主要依赖 linker script 和 objcopy，通常不需要因容量扩大单独改；若后续加入镜像大小检查，再统一接入共享容量约束。
+- 保留的 `docs/simulation_flow_pipeline_*.md`、`README.md` 和 08xx 中涉及 `4 KiB`、`0x00010000`、`lui ..., 0x10` 的说明需要在最后统一同步。
 
 仿真影响：
 
