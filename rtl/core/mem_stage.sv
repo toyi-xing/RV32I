@@ -20,7 +20,8 @@
 // CSR、trap 相关功能：
 //   - MEM 阶段负责识别的异常：load address misaligned、store address misaligned
 //   - 检出不对齐时产生对应 exception cause（load=4, store=6）和 tval（faulting address）
-//   - 不接收前级 exception，前级、本级以及与本级同拍的 CSR 异常信息统一由 trap_ctrl 选择最终 exception
+//   - 接收前级已经发现的 exception，并按“先发现先保持”的规则优先输出前级 exception
+//   - 如果前级已有 exception，本模块会屏蔽 dmem 访问副作用
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -35,6 +36,11 @@ module mem_stage (
     input  logic                          mem_unsigned_i,  // load 是否零扩展；为 0 时表示符号扩展。
     input  logic [core_pkg::XLEN-1:0]     dmem_rdata_i,    // dmem 返回的 32 bit 读数据。
 
+    // trap 相关
+    input  logic                          exception_valid_i,   // 前级已经发现的 exception 是否有效。
+    input  core_pkg::trap_cause_e         exception_cause_i,   // 前级 exception cause。
+    input  logic [core_pkg::XLEN-1:0]     exception_tval_i,    // 前级 exception tval。
+
     output logic                          valid_o,         // 送入 MEM/WB 的 valid；第一版 MEM 不主动丢弃指令，直接透传 valid_i。
     output logic                          dmem_re_o,       // 输出到 dmem 的 load 读使能；地址不对齐时不发起读访问。
                                                            // 实际上 RAM 无需读使能，但此处可以作为 wb 阶段写回确定
@@ -48,16 +54,16 @@ module mem_stage (
     output logic                          mem_misaligned_o, // 为 1 时表示当前 load/store 地址不满足访问宽度对齐要求
     output logic                          load_misaligned_o,    // 当前有效 load 访问地址不满足访问宽度对齐要求。
     output logic                          store_misaligned_o,   // 当前有效 store 访问地址不满足访问宽度对齐要求。
-    output logic                          exception_valid_o,    // MEM 阶段产生的 load/store address misaligned exception 是否有效。
-    output core_pkg::trap_cause_e         exception_cause_o,    // MEM 阶段 exception cause，load 不对齐为 4，store 不对齐为 6。
-    output logic [core_pkg::XLEN-1:0]     exception_tval_o      // MEM 阶段 exception tval，填 faulting memory address。
+    output logic                          exception_valid_o,    // MEM 边界最终 exception 是否有效，包含前级透传和本级 misaligned。
+    output core_pkg::trap_cause_e         exception_cause_o,    // MEM 边界最终 exception cause。
+    output logic [core_pkg::XLEN-1:0]     exception_tval_o      // MEM 边界最终 exception tval。
 );
     import core_pkg::*;
 
     assign valid_o = valid_i;
 
-    assign dmem_re_o = valid_i & ~mem_misaligned_o & mem_re_i;
-    assign dmem_we_o = valid_i & ~mem_misaligned_o & mem_we_i;
+    assign dmem_re_o = valid_i & ~exception_valid_i & ~mem_misaligned_o & mem_re_i;
+    assign dmem_we_o = valid_i & ~exception_valid_i & ~mem_misaligned_o & mem_we_i;
 
     assign dmem_be_o = ~dmem_we_o ? 4'b0000 : ( (mem_size_i == MEM_WORD ? 4'b1111 : 4'b0000) |
                                                 (mem_size_i == MEM_HALF ? 4'b0011 << alu_result_i[1:0] : 4'b0000) |
@@ -82,10 +88,12 @@ module mem_stage (
     assign load_misaligned_o    = valid_i & mem_misaligned_o & mem_re_i;
     assign store_misaligned_o   = valid_i & mem_misaligned_o & mem_we_i;
 
-    assign exception_valid_o    = mem_misaligned_o;
-    assign exception_cause_o    = load_misaligned_o  ? TRAP_CAUSE_LOAD_ADDR_MISALIGNED  :
-                                  store_misaligned_o ? TRAP_CAUSE_STORE_ADDR_MISALIGNED : TRAP_CAUSE_ILLEGAL_INSTR; // 默认值设为非法指令，此处无实意
-    assign exception_tval_o     = mem_misaligned_o ? alu_result_i : '0;
+    assign exception_valid_o    = exception_valid_i | mem_misaligned_o;
+    assign exception_cause_o    = exception_valid_i   ? exception_cause_i                  :
+                                  load_misaligned_o   ? TRAP_CAUSE_LOAD_ADDR_MISALIGNED    :
+                                  store_misaligned_o  ? TRAP_CAUSE_STORE_ADDR_MISALIGNED   : TRAP_CAUSE_ILLEGAL_INSTR; // 默认值设为非法指令，此处无实意
+    assign exception_tval_o     = exception_valid_i ? exception_tval_i :
+                                  mem_misaligned_o  ? alu_result_i      : '0;
 
 endmodule
 

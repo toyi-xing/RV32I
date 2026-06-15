@@ -39,6 +39,7 @@ module trap_ctrl (
     input  logic [core_pkg::XLEN-1:0] csr_mtvec_i,               // 当前 mtvec，trap entry redirect 目标。
     input  logic [core_pkg::XLEN-1:0] csr_mepc_i,                // 当前 mepc，MRET redirect 目标。
 
+    // 根据是否异常，请求系统 trap
     output logic                      trap_valid_o,              // trap entry 被接受，驱动 csr_file 更新 trap CSR。
     output logic [core_pkg::XLEN-1:0] trap_pc_o,                 // fault 指令 PC，写入 mepc。
     output core_pkg::trap_cause_e     trap_cause_o,              // trap cause，写入 mcause。

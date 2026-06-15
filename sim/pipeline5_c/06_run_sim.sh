@@ -47,6 +47,8 @@ verilator -sv --binary --timing --top-module tb_core_pipeline5 \
     rtl/core/mem_stage.sv \
     rtl/core/wb_stage.sv \
     rtl/core/pipe_reg.sv \
+    rtl/core/csr_file.sv \
+    rtl/core/trap_ctrl.sv \
     rtl/core/core_pipeline5.sv \
     rtl/mem/simple_rom.sv \
     rtl/mem/simple_ram.sv \

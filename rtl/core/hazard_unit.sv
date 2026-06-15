@@ -34,8 +34,8 @@ module hazard_unit (
     input  logic                      id_uses_rs2_i,          // ID 指令是否真实使用 rs2。
 
     input  logic                      id_ex_valid_i,          // ID/EX 阶段是否有有效指令（load-use 检测的前提）。
-    input  logic                      id_ex_reg_we_i,         // ID/EX 指令是否写 GPR。
     input  logic [4:0]                id_ex_rd_addr_i,        // ID/EX 指令的写回 rd 地址。
+    input  logic                      id_ex_reg_we_i,         // ID/EX 指令是否写 GPR。
     input  logic                      id_ex_load_re_i,        // ID/EX 是否为 load（rd 数据尚未就绪）。
     input  logic                      id_ex_csr_re_i,         // ID/EX 是否为 csr（rd 数据尚未就绪）。
 

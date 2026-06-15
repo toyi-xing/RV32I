@@ -36,13 +36,13 @@ module csr_file (
     output logic [core_pkg::XLEN-1:0] csr_rdata_o,           // CSR 组合读出的旧值
     output logic                      csr_illegal_o,         // 非法 CSR 访问指示
 
-    // trap entry 接口
+    // trap entry 接口，非指令，而是系统 trap 时，csr 自动做的事情
     input  logic                      trap_valid_i,          // trap 提交，需更新 mepc/mcause/mtval/mstatus
     input  logic [core_pkg::XLEN-1:0] trap_pc_i,             // fault 指令的 PC，写入 mepc
     input  core_pkg::trap_cause_e     trap_cause_i,          // trap 原因，写入 mcause
     input  logic [core_pkg::XLEN-1:0] trap_tval_i,           // 异常附加信息，写入 mtval
 
-    // MRET
+    // MRET，同上，csr 自动做的事情
     input  logic                      mret_valid_i,          // MRET 提交，恢复 mstatus
 
     // 输出 CSR 值供 trap_ctrl 和顶层使用

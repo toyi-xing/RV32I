@@ -53,6 +53,10 @@ module core_pipeline5 (
     wire [core_pkg::XLEN-1:0] pc;
     wire [core_pkg::XLEN-1:0] ex_redirect_pc;
     wire                      ex_redirect_valid;
+    wire                      trap_redirect_valid;
+    wire [core_pkg::XLEN-1:0] trap_redirect_pc;
+    wire                      redirect_valid = trap_redirect_valid | ex_redirect_valid;
+    wire [core_pkg::XLEN-1:0] redirect_pc    = trap_redirect_valid ? trap_redirect_pc : ex_redirect_pc;
 
     // 做 data hazard，接 hazard_unit。
     wire stall_if;
@@ -65,6 +69,12 @@ module core_pipeline5 (
     // 做 control hazard flush/kill，接 hazard_unit。
     wire flush_if_id;
     wire flush_id_ex;
+
+    // trap/MRET kill 信号
+    wire kill_if_id;
+    wire kill_id_ex;
+    wire kill_ex_mem;
+    wire kill_mem_wb;
 
     // 各 valid 信号，中间 data。由中间寄存器寄存
     wire pc_valid;
@@ -114,6 +124,19 @@ module core_pipeline5 (
     wire                      id_jalr;
     wire [core_pkg::XLEN-1:0] id_imm;
     wire [core_pkg::XLEN-1:0] id_rs1_rdata, id_rs2_rdata;
+    core_pkg::instr_id_e      id_instr_id;
+    wire                      id_fence;
+    wire                      id_mret;
+    wire                      id_csr;
+    core_pkg::csr_op_e        id_csr_op;
+    wire [11:0]               id_csr_addr;
+    wire [4:0]                id_csr_uimm;
+    wire                      id_csr_uses_rs1;
+    wire                      id_csr_writes_rd;
+    wire                      id_csr_write_en;
+    wire                      id_exception_valid;
+    core_pkg::trap_cause_e    id_exception_cause;
+    wire [core_pkg::XLEN-1:0] id_exception_tval;
 
     // forwarding 前递结果 -> EX 操作数
     wire [core_pkg::XLEN-1:0] ex_rs1_op_data;
@@ -122,9 +145,34 @@ module core_pipeline5 (
     // EX
     wire [core_pkg::XLEN-1:0] ex_alu_result;
     wire [core_pkg::XLEN-1:0] ex_store_data;
+    wire                      ex_exception_valid;
+    core_pkg::trap_cause_e    ex_exception_cause;
+    wire [core_pkg::XLEN-1:0] ex_exception_tval;
+    wire [core_pkg::XLEN-1:0] ex_csr_operand;
+    wire                      ex_mret;
 
     // MEM
     wire [core_pkg::XLEN-1:0] mem_load_data;
+    wire                      mem_load_misaligned;
+    wire                      mem_store_misaligned;
+    wire                      mem_exception_valid;
+    core_pkg::trap_cause_e    mem_exception_cause;
+    wire [core_pkg::XLEN-1:0] mem_exception_tval;
+
+    // CSR 信号
+    wire                      mem_csr_valid;    // 当前 MEM 阶段的 csr 指令控制信号
+    wire [core_pkg::XLEN-1:0] mem_csr_rdata;
+    wire                      mem_csr_illegal;
+    wire [core_pkg::XLEN-1:0] csr_mtvec;        // 恒为当前对于 csr 寄存器值
+    wire [core_pkg::XLEN-1:0] csr_mepc;
+    wire [core_pkg::XLEN-1:0] csr_mstatus;
+
+    // 系统级 trap 信号
+    wire                      trap_valid;
+    wire [core_pkg::XLEN-1:0] trap_pc;
+    core_pkg::trap_cause_e    trap_cause;
+    wire [core_pkg::XLEN-1:0] trap_tval;
+    wire                      mret_valid;
 
     // WB 随指令输出 -> commit
     wire [core_pkg::ILEN-1:0] wb_instr          = mem_wb_data_q.instr;
@@ -137,8 +185,8 @@ module core_pipeline5 (
         .rst_n_i            (rst_n_i),
 
         .pc_plus4_i         (if_pc_plus4),
-        .redirect_pc_i      (ex_redirect_pc),
-        .redirect_valid_i   (ex_redirect_valid),
+        .redirect_pc_i      (redirect_pc),
+        .redirect_valid_i   (redirect_valid),
         .stall_pc_i         (stall_if), // if 要 stall 一拍，让 pc 保持不变
 
         .pc_o               (pc),
@@ -163,8 +211,9 @@ module core_pipeline5 (
 
         .data_i     (if_id_data_d),
         .valid_i    (if_valid),
-        .flush_i    (flush_if_id),
-        .stall_i    (stall_id), // id 要 stall 一拍，让 IF/ID 保持不变
+        .kill_i     (kill_if_id),       // trap control hazard
+        .flush_i    (flush_if_id),      // base control hazard
+        .stall_i    (stall_id), // late_result_use_stall 时 id 要 stall 一拍
 
         .data_o     (if_id_data_q),
         .valid_o    (if_id_valid)
@@ -185,7 +234,7 @@ module core_pipeline5 (
         .rs2_addr_o     (id_rs2_addr),
         .rd_addr_o      (id_rd_addr),
 
-        .instr_id_o     (),     // 调试用，暂不连
+        .instr_id_o     (id_instr_id),     // 调试用,送到流水线结束
 
         .uses_rs1_o     (id_uses_rs1),
         .uses_rs2_o     (id_uses_rs2),
@@ -203,9 +252,23 @@ module core_pipeline5 (
         .mem_unsigned_o (id_mem_unsigned),
 
         .branch_op_o    (id_branch_op),
-        
+
         .jump_o         (id_jump),
         .jalr_o         (id_jalr),
+        .fence_o        (id_fence),
+        .mret_o         (id_mret),
+
+        .csr_o              (id_csr),
+        .csr_op_o           (id_csr_op),
+        .csr_addr_o         (id_csr_addr),
+        .csr_uimm_o         (id_csr_uimm),
+        .csr_uses_rs1_o     (id_csr_uses_rs1),
+        .csr_writes_rd_o    (id_csr_writes_rd),     // csr 指令写 gpr
+        .csr_write_en_o     (id_csr_write_en),      // csr 指令写 csr
+
+        .exception_valid_o  (id_exception_valid),
+        .exception_cause_o  (id_exception_cause),
+        .exception_tval_o   (id_exception_tval),
 
         .illegal_instr_o(id_illegal_instr),
 
@@ -231,7 +294,7 @@ module core_pipeline5 (
         .rd_wdata_i     (wb_rd_wdata)
     );
 
-    // hazard_unit 统一产生 data hazard stall/bubble 和 control hazard flush/kill。
+    // hazard_unit 统一产生 data hazard stall/bubble 和 base control hazard flush/kill。
     hazard_unit u_hazard_unit (
         .if_id_valid_i      (if_id_valid),
         .id_rs1_addr_i      (id_rs1_addr),
@@ -241,13 +304,15 @@ module core_pipeline5 (
 
         .id_ex_valid_i      (id_ex_valid),
         .id_ex_rd_addr_i    (id_ex_data_q.rd_addr),
+        .id_ex_reg_we_i     (id_ex_data_q.reg_we),
         .id_ex_load_re_i    (id_ex_data_q.mem_re),
+        .id_ex_csr_re_i     (id_ex_data_q.csr_writes_rd),
 
         .stall_if_o         (stall_if),
         .stall_id_o         (stall_id),
         .bubble_ex_o        (bubble_ex),
 
-        .redirect_valid_i   (ex_redirect_valid),
+        .redirect_valid_i   (ex_redirect_valid),    // hazard_unit 只负责 branch/jump 产生的 control hazard
 
         .flush_if_id_o      (flush_if_id),
         .flush_id_ex_o      (flush_id_ex)
@@ -265,6 +330,7 @@ module core_pipeline5 (
         .ex_mem_rd_addr_i   (ex_mem_data_q.rd_addr),
         .ex_mem_reg_we_i    (ex_mem_data_q.reg_we),
         .ex_mem_load_re_i   (ex_mem_data_q.mem_re),
+        .ex_mem_csr_re_i    (ex_mem_data_q.csr_writes_rd),
 
         .mem_wb_valid_i     (mem_wb_valid),
         .mem_wb_rd_addr_i   (mem_wb_data_q.rd_addr),
@@ -288,7 +354,8 @@ module core_pipeline5 (
 
         .data_i     (id_ex_data_d),
         .valid_i    (id_valid),
-        .flush_i    (flush_id_ex),
+        .kill_i     (kill_id_ex),     // trap control hazard
+        .flush_i    (flush_id_ex),    // base control hazard
         .bubble_i   (bubble_ex),
         .stall_i    (1'b0), // EX 在当前设计不会 stall，为后续扩展保留（比如可变延迟 memory 需要全流水线暂停时）
 
@@ -302,6 +369,7 @@ module core_pipeline5 (
     assign id_ex_data_d.uses_rs1      = id_uses_rs1;
     assign id_ex_data_d.uses_rs2      = id_uses_rs2;
     assign id_ex_data_d.illegal_instr = id_illegal_instr;
+    assign id_ex_data_d.instr_id      = id_instr_id;
 
     assign id_ex_data_d.rd_addr       = id_rd_addr;
     assign id_ex_data_d.alu_op        = id_alu_op;
@@ -320,9 +388,22 @@ module core_pipeline5 (
     assign id_ex_data_d.rs1_rdata     = id_rs1_rdata;
     assign id_ex_data_d.rs2_rdata     = id_rs2_rdata;
 
-    assign id_ex_data_d.pc            = if_id_data_q.pc;
+    assign id_ex_data_d.pc            = if_id_data_q.pc;        // 此类为中间寄存器直接透传
     assign id_ex_data_d.pc_plus4      = if_id_data_q.pc_plus4;
     assign id_ex_data_d.instr         = if_id_data_q.instr;
+
+    assign id_ex_data_d.exception_valid = id_exception_valid;
+    assign id_ex_data_d.exception_cause = id_exception_cause;
+    assign id_ex_data_d.exception_tval  = id_exception_tval;
+    assign id_ex_data_d.fence           = id_fence;
+    assign id_ex_data_d.mret            = id_mret;
+    assign id_ex_data_d.csr             = id_csr;
+    assign id_ex_data_d.csr_op          = id_csr_op;
+    assign id_ex_data_d.csr_addr        = id_csr_addr;
+    assign id_ex_data_d.csr_uimm        = id_csr_uimm;
+    assign id_ex_data_d.csr_uses_rs1    = id_csr_uses_rs1;
+    assign id_ex_data_d.csr_writes_rd   = id_csr_writes_rd;
+    assign id_ex_data_d.csr_write_en    = id_csr_write_en;
 
     ex_stage u_ex_stage (
         .valid_i            (id_ex_valid),
@@ -337,11 +418,25 @@ module core_pipeline5 (
         .jump_i             (id_ex_data_q.jump),
         .jalr_i             (id_ex_data_q.jalr),
 
+        .exception_valid_i  (id_ex_data_q.exception_valid),
+        .exception_cause_i  (id_ex_data_q.exception_cause),
+        .exception_tval_i   (id_ex_data_q.exception_tval),
+        .csr_i              (id_ex_data_q.csr),
+        .csr_op_i           (id_ex_data_q.csr_op),
+        .csr_uimm_i         (id_ex_data_q.csr_uimm),
+        .mret_i             (id_ex_data_q.mret),
+
         .valid_o            (ex_valid),
         .alu_result_o       (ex_alu_result),
         .store_data_o       (ex_store_data),
         .redirect_valid_o   (ex_redirect_valid),
-        .redirect_pc_o      (ex_redirect_pc)
+        .redirect_pc_o      (ex_redirect_pc),
+
+        .exception_valid_o  (ex_exception_valid),
+        .exception_cause_o  (ex_exception_cause),
+        .exception_tval_o   (ex_exception_tval),
+        .csr_operand_o      (ex_csr_operand),
+        .mret_o             (ex_mret)
     );
 
     pipe_reg_ex_mem u_pipe_reg_ex_mem (
@@ -350,6 +445,7 @@ module core_pipeline5 (
 
         .data_i     (ex_mem_data_d),
         .valid_i    (ex_valid),
+        .kill_i     (kill_ex_mem),     // trap control hazard
         .stall_i    (1'b0), // 为后续扩展保留
 
         .data_o     (ex_mem_data_q),
@@ -357,7 +453,10 @@ module core_pipeline5 (
     );
 
     // EX/MEM 输入组包。EX 结果和仍需后传的控制信号在这里汇总。
-    assign ex_mem_data_d.alu_result    = ex_alu_result;
+    assign ex_mem_data_d.illegal_instr = id_ex_data_q.illegal_instr;    // 此类为中间寄存器透传
+    assign ex_mem_data_d.instr_id      = id_ex_data_q.instr_id;
+
+    assign ex_mem_data_d.alu_result    = ex_alu_result;     // 此类为上一阶段结果
     assign ex_mem_data_d.store_data    = ex_store_data;
 
     assign ex_mem_data_d.mem_re        = id_ex_data_q.mem_re;
@@ -371,7 +470,18 @@ module core_pipeline5 (
     assign ex_mem_data_d.rd_addr       = id_ex_data_q.rd_addr;
     assign ex_mem_data_d.instr         = id_ex_data_q.instr;
     assign ex_mem_data_d.pc            = id_ex_data_q.pc;
-    assign ex_mem_data_d.illegal_instr = id_ex_data_q.illegal_instr;
+
+    assign ex_mem_data_d.exception_valid = ex_exception_valid;
+    assign ex_mem_data_d.exception_cause = ex_exception_cause;
+    assign ex_mem_data_d.exception_tval  = ex_exception_tval;
+    assign ex_mem_data_d.fence           = id_ex_data_q.fence;
+    assign ex_mem_data_d.mret            = ex_mret;
+    assign ex_mem_data_d.csr             = id_ex_data_q.csr;
+    assign ex_mem_data_d.csr_op          = id_ex_data_q.csr_op;
+    assign ex_mem_data_d.csr_addr        = id_ex_data_q.csr_addr;
+    assign ex_mem_data_d.csr_operand     = ex_csr_operand;
+    assign ex_mem_data_d.csr_writes_rd   = id_ex_data_q.csr_writes_rd;
+    assign ex_mem_data_d.csr_write_en    = id_ex_data_q.csr_write_en;
 
     mem_stage u_mem_stage (
         .valid_i            (ex_mem_valid),
@@ -383,14 +493,84 @@ module core_pipeline5 (
         .mem_unsigned_i     (ex_mem_data_q.mem_unsigned),
         .dmem_rdata_i       (dmem_rdata_i),
 
+        .exception_valid_i  (ex_mem_data_q.exception_valid),
+        .exception_cause_i  (ex_mem_data_q.exception_cause),
+        .exception_tval_i   (ex_mem_data_q.exception_tval),
+
         .valid_o            (mem_valid),
-        .mem_misaligned_o   (mem_misaligned_o),
         .dmem_re_o          (dmem_re_o),
+
         .dmem_we_o          (dmem_we_o),
         .dmem_be_o          (dmem_be_o),
         .dmem_addr_o        (dmem_addr_o),
         .dmem_wdata_o       (dmem_wdata_o),
-        .load_data_o        (mem_load_data)
+        .load_data_o        (mem_load_data),
+
+        .mem_misaligned_o   (mem_misaligned_o),
+        .load_misaligned_o  (mem_load_misaligned),
+        .store_misaligned_o (mem_store_misaligned),
+        .exception_valid_o  (mem_exception_valid),
+        .exception_cause_o  (mem_exception_cause),
+        .exception_tval_o   (mem_exception_tval)
+    );
+
+    // 与 mem_stage “并连”
+    assign mem_csr_valid = ex_mem_valid & ex_mem_data_q.csr & ~mem_exception_valid;
+    csr_file u_csr_file (
+        .clk_i              (clk_i),
+        .rst_n_i            (rst_n_i),
+
+        .csr_valid_i        (mem_csr_valid),
+        .csr_op_i           (ex_mem_data_q.csr_op),
+        .csr_addr_i         (ex_mem_data_q.csr_addr),
+        .csr_operand_i      (ex_mem_data_q.csr_operand),
+        .csr_write_en_i     (ex_mem_data_q.csr_write_en),
+
+        .csr_rdata_o        (mem_csr_rdata),
+        .csr_illegal_o      (mem_csr_illegal),
+
+        .trap_valid_i       (trap_valid),
+        .trap_pc_i          (trap_pc),
+        .trap_cause_i       (trap_cause),
+        .trap_tval_i        (trap_tval),
+
+        .mret_valid_i       (mret_valid),
+
+        .mtvec_o            (csr_mtvec),
+        .mepc_o             (csr_mepc),
+        .mstatus_o          (csr_mstatus)
+    );
+
+    trap_ctrl u_trap_ctrl (
+        .mem_valid_i            (ex_mem_valid),
+        .mem_pc_i               (ex_mem_data_q.pc),
+        .mem_instr_i            (ex_mem_data_q.instr),
+        .mem_mret_i             (ex_mem_data_q.mret),
+
+        .mem_exception_valid_i  (mem_exception_valid),
+        .mem_exception_cause_i  (mem_exception_cause),
+        .mem_exception_tval_i   (mem_exception_tval),
+
+        .mem_csr_valid_i        (mem_csr_valid),
+        .mem_csr_illegal_i      (mem_csr_illegal),
+
+        .csr_mtvec_i            (csr_mtvec),
+        .csr_mepc_i             (csr_mepc),
+
+        .trap_valid_o           (trap_valid),
+        .trap_pc_o              (trap_pc),
+        .trap_cause_o           (trap_cause),
+        .trap_tval_o            (trap_tval),
+
+        .mret_valid_o           (mret_valid),
+
+        .redirect_valid_o       (trap_redirect_valid),
+        .redirect_pc_o          (trap_redirect_pc),
+
+        .kill_if_id_o           (kill_if_id),
+        .kill_id_ex_o           (kill_id_ex),
+        .kill_ex_mem_o          (kill_ex_mem),
+        .kill_mem_wb_o          (kill_mem_wb)
     );
 
     pipe_reg_mem_wb u_pipe_reg_mem_wb (
@@ -399,6 +579,7 @@ module core_pipeline5 (
 
         .data_i     (mem_wb_data_d),
         .valid_i    (mem_valid),
+        .kill_i     (kill_mem_wb),     // trap control hazard，终止改指令生命周期（已被 trap 提交）
         .stall_i    (1'b0), // 为后续扩展保留
 
         .data_o     (mem_wb_data_q),
@@ -406,6 +587,9 @@ module core_pipeline5 (
     );
 
     // MEM/WB 输入组包。WB 使用这里保存的最终写回选择和数据。
+    assign mem_wb_data_d.illegal_instr = ex_mem_data_q.illegal_instr;
+    assign mem_wb_data_d.instr_id      = ex_mem_data_q.instr_id;
+
     assign mem_wb_data_d.load_data     = mem_load_data;
 
     assign mem_wb_data_d.reg_we        = ex_mem_data_q.reg_we;
@@ -416,7 +600,8 @@ module core_pipeline5 (
     assign mem_wb_data_d.rd_addr       = ex_mem_data_q.rd_addr;
     assign mem_wb_data_d.instr         = ex_mem_data_q.instr;
     assign mem_wb_data_d.pc            = ex_mem_data_q.pc;
-    assign mem_wb_data_d.illegal_instr = ex_mem_data_q.illegal_instr;
+
+    assign mem_wb_data_d.csr_rdata     = mem_csr_rdata;
 
     wb_stage u_wb_stage (
         .valid_i        (mem_wb_valid),
@@ -426,6 +611,7 @@ module core_pipeline5 (
         .load_data_i    (mem_wb_data_q.load_data),
         .pc_plus4_i     (mem_wb_data_q.pc_plus4),
         .imm_i          (mem_wb_data_q.imm),
+        .csr_rdata_i    (mem_wb_data_q.csr_rdata),
 
         .valid_o        (wb_valid),
         .reg_we_o       (wb_rd_we),

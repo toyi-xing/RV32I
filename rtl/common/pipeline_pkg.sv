@@ -111,7 +111,7 @@ package pipeline_pkg;
         logic                       csr;
         core_pkg::csr_op_e          csr_op;
         logic [11:0]                csr_addr;
-        logic [core_pkg::XLEN-1:0]  csr_wdata;
+        logic [core_pkg::XLEN-1:0]  csr_operand;
         logic                       csr_writes_rd;
         logic                       csr_write_en;
     } ex_mem_reg_t;

@@ -92,8 +92,7 @@ module ex_stage (
     assign redirect_pc_o    = jalr_i ? (alu_result_o & ~32'b1) : alu_result_o;
 
     // csr、trap 相关---------------------------------------------------------------------
-    wire ex_exception_valid;
-    assign ex_exception_valid   = valid_i & instr_redirect & (redirect_pc_o[1:0] != 2'b0);    // 指令请求 redirect 但地址非法，则异常
+    wire   ex_exception_valid   = valid_i & instr_redirect & (redirect_pc_o[1:0] != 2'b0);    // 指令请求 redirect 但地址非法，则异常
     assign exception_valid_o    = exception_valid_i ? exception_valid_i : ex_exception_valid;
     assign exception_cause_o    = exception_valid_i ? exception_cause_i : TRAP_CAUSE_INST_ADDR_MISALIGNED;
     assign exception_tval_o     = exception_valid_i ? exception_tval_i : redirect_pc_o;
