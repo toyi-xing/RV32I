@@ -1,6 +1,6 @@
 # 五级流水线 C 仿真流程
 
-> 本文档只写与单周期 C 仿真流程的差异，以及流水线 C 测试的注意事项。通用内容参见 `simulation_flow_singlecycle_asm.md`。
+本文档说明当前五级流水线 core 的 C 裸机测试如何编译、生成 IMEM/DMEM 镜像并通过 Verilator 运行。
 
 ---
 
@@ -108,3 +108,4 @@ Stack max used:    80 bytes
 - C 测试的 commit trace 比汇编更晚出现，因为 `crt0.S` 在进入 `main()` 前做了栈和 bss 初始化。
 - `sw/linker/c_baremetal.ld` 中 `_stack_end` 的值和栈指针初始化代码（`crt0.S`）必须一致，否则 `main()` 内的函数调用会异常。
 - 全局变量的 dmem 地址可通过 `.map` 文件或 `.dump` 中的符号地址确认。
+- RTL 文件由 `sim/pipeline5_c/06_run_sim.sh` 按 `rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/mem/*.sv` 收集；testbench 仍固定为 `tb/sv/tb_core_pipeline5.sv`。

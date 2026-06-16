@@ -19,7 +19,7 @@
 `default_nettype none
 
 module regfile #(
-    parameter bit BYPASS_EN = 0     // 同拍写读旁路，流水线核开启，单周期核保持关闭。
+    parameter bit BYPASS_EN = 0     // 同拍写读旁路；五级流水线核打开以覆盖 WB->ID 边界窗口。
 ) (
     input  logic                         clk_i,
     input  logic                         rst_n_i,
@@ -76,7 +76,7 @@ module regfile #(
                 end
             end
 
-        // 单周期模式：纯组合读，无旁路。
+        // 无同拍写读旁路：纯组合读存储阵列。
         end else begin : bypass_off
             always_comb begin
                 if (rs1_addr_i == 5'd0) begin
@@ -102,10 +102,8 @@ endmodule
 
 //------------------------------------------------------------------------------
 // BYPASS_EN 参数说明：
-//   - 单周期顶层（core_single_cycle）保持默认 0。
-//     单周期中 regfile 读数据会继续组合经过 EX/MEM/WB，最后又回到 regfile 写端口。
-//     如果在这里打开同拍旁路，某些 rd == rs 的指令（例如 addi x1, x1, 1）会形成
-//     “读口 -> ALU -> WB -> 写口 -> 读口”的组合反馈路径。因此单周期不使用该旁路。
+//   - BYPASS_EN=0 时，读口只看 gpr_q 数组，不看本拍写端口。
+//     这种模式适合不需要 WB->ID 边界旁路的用法，也避免在组合路径里把读口和写口闭环。
 //
 //   - 五级流水线顶层（core_pipeline5）建议打开为 1。
 //     可以把这个旁路理解成：“我这一拍正要写 x1，你这一拍也正要读 x1，那你到底是

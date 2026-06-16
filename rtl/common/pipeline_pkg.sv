@@ -7,7 +7,7 @@
 // 规范：
 //   - 本包中的类型由流水线寄存器模块和 core_pipeline5 共享。
 //   - 引用 core_pkg 中的 XLEN、ILEN 和枚举常量。
-//   - 结构体成员顺序与 core_single_cycle.sv 各阶段信号声明顺序一致。
+//   - 结构体成员顺序按 IF/ID、ID/EX、EX/MEM、MEM/WB 的数据流分组维护。
 //------------------------------------------------------------------------------
 
 package pipeline_pkg;
@@ -25,23 +25,20 @@ package pipeline_pkg;
     // ── 流水线寄存器结构体 ──
 
     // IF/ID 流水线寄存器：锁存 IF 阶段的 PC、指令、PC+4。
-    // 成员顺序对应 core_single_cycle.sv 的 IF/ID 声明。
     typedef struct packed {
-        // 声明顺序和单周期时保持一致
         logic [core_pkg::XLEN-1:0] pc;
         logic [core_pkg::ILEN-1:0] instr;
         logic [core_pkg::XLEN-1:0] pc_plus4;
     } if_id_reg_t;
 
     // ID/EX 流水线寄存器：锁存 ID 阶段输出的全部控制信号和数据通路值。
-    // 成员顺序对应 core_single_cycle.sv 的 ID/EX 声明。
     // rs1_addr/rs2_addr 来自 decoder 输出，置于 rd_addr 之前以对应端口顺序。
     typedef struct packed {
         logic [4:0]                 rs1_addr;      // rs_addr本身不会再EX阶段用，但 step 3 加 forwarding_unit 时需要
         logic [4:0]                 rs2_addr;
         logic                       uses_rs1;      // 同样 forwarding 以及 hazard 要用
         logic                       uses_rs2;
-        logic                       illegal_instr; // 单周期直接连了，但现在应随指令传递
+        logic                       illegal_instr; // 非法/暂未支持指令标志，随指令传到后级用于调试观察
         core_pkg::instr_id_e        instr_id;
 
         logic [4:0]                 rd_addr;
@@ -82,7 +79,6 @@ package pipeline_pkg;
     } id_ex_reg_t;
 
     // EX/MEM 流水线寄存器：锁存 EX 阶段的 ALU 结果、store 数据和控制信号。
-    // 成员顺序对应 core_single_cycle.sv 的 EX/MEM 声明。
     typedef struct packed {
         logic                       illegal_instr;
         core_pkg::instr_id_e        instr_id;
@@ -117,7 +113,6 @@ package pipeline_pkg;
     } ex_mem_reg_t;
 
     // MEM/WB 流水线寄存器：锁存 MEM 阶段的 load 数据、ALU 结果和控制信号。
-    // 成员顺序对应 core_single_cycle.sv 的 MEM/WB 声明。
     typedef struct packed {
         logic                       illegal_instr;
         core_pkg::instr_id_e        instr_id;

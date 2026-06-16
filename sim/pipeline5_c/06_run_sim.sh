@@ -30,28 +30,14 @@ fi
 
 cd "${REPO_ROOT}"
 
+RTL_FILES=(
+    rtl/common/*.sv
+    rtl/core/*.sv
+    rtl/mem/*.sv
+)
+
 verilator -sv --binary --timing --top-module tb_core_pipeline5 \
-    rtl/common/core_pkg.sv \
-    rtl/common/pipeline_pkg.sv \
-    rtl/core/alu.sv \
-    rtl/core/branch_unit.sv \
-    rtl/core/decoder.sv \
-    rtl/core/imm_gen.sv \
-    rtl/core/regfile.sv \
-    rtl/core/pc_reg.sv \
-    rtl/core/hazard_unit.sv \
-    rtl/core/forwarding_unit.sv \
-    rtl/core/if_stage.sv \
-    rtl/core/id_stage.sv \
-    rtl/core/ex_stage.sv \
-    rtl/core/mem_stage.sv \
-    rtl/core/wb_stage.sv \
-    rtl/core/pipe_reg.sv \
-    rtl/core/csr_file.sv \
-    rtl/core/trap_ctrl.sv \
-    rtl/core/core_pipeline5.sv \
-    rtl/mem/simple_rom.sv \
-    rtl/mem/simple_ram.sv \
+    "${RTL_FILES[@]}" \
     tb/sv/tb_core_pipeline5.sv
 
 "${REPO_ROOT}/obj_dir/Vtb_core_pipeline5" "+imem=${IMEM_FILE}" "+dmem=${DMEM_FILE}"

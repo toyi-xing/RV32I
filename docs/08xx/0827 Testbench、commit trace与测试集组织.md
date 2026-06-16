@@ -11,7 +11,7 @@
 
 | 项目 | 假设 |
 |---|---|
-| DUT | 单周期为 `core_single_cycle`，五级流水为 `core_pipeline5` |
+| DUT | 当前维护路径为五级流水 `core_pipeline5`；早期单周期顶层只作为历史阶段 |
 | imem | `$readmemh` 加载 32 bit word `.mem` |
 | dmem | testbench 可观察内部 memory 或 store 事件 |
 | pass/fail | 当前实现采用固定 `TEST_STATUS_ADDR` store 检查 |
@@ -24,7 +24,7 @@
 |---|---|
 | PASS/FAIL | 已实现，程序写 `DMEM_BASE + 0x100`，写 1 为 PASS，其他值为 FAIL |
 | timeout | 已实现，超过固定周期未结束则打印 TIMEOUT |
-| commit trace | 已实现，单周期和五级流水 testbench 都打印提交 PC、指令和写回信息 |
+| commit trace | 已实现，当前五级流水 testbench 打印提交 PC、指令 ID、原始指令和写回信息 |
 | DMEM/stack 统计 | 已实现，仿真结束时打印运行期 DMEM 访问范围和最大栈深 |
 | directed test 编号分组 | 已实现，测试文件使用四位编号前缀，脚本支持四位编号或完整 basename |
 | scoreboard / reference model / ISS | 选择实现，可暂时不用；当前 directed self-check + commit trace 已满足 v2.0 教学核验证 |
@@ -236,7 +236,7 @@ DMEM access range: 0x00010200 - 0x00010ffc
 Stack max used:    80 bytes
 ```
 
-当前单周期和五级流水 testbench 都采用同一套统计口径：
+当前五级流水 testbench 采用以下统计口径：
 
 | 统计项 | 统计方法 | 说明 |
 |---|---|---|
@@ -278,8 +278,8 @@ sw/c/
 当前使用四位编号：前两位表示测试部分，后两位表示该部分内的测试序号。脚本支持两种参数形式：
 
 ```bash
-sim/single_cycle_asm/run_test.sh 0102
-sim/single_cycle_asm/run_test.sh 0102_alu_imm
+sim/pipeline5_asm/run_test.sh 0102
+sim/pipeline5_asm/run_test.sh 0102_alu_imm
 ```
 
 编号能保证回归输出稳定排序，也能让单个测试命令更短。
@@ -403,12 +403,12 @@ test.S
 当前仓库的单测试脚本支持四位编号或完整 basename：
 
 ```bash
-sim/single_cycle_asm/run_test.sh 0102
-sim/single_cycle_asm/run_test.sh 0102_alu_imm
+sim/pipeline5_asm/run_test.sh 0102
+sim/pipeline5_asm/run_test.sh 0102_alu_imm
 sim/pipeline5_c/run_test.sh 0401
 ```
 
-`run_all.sh` 不扫描目录自动运行所有测试，而是维护阶段专属列表。这样单周期回归、流水线回归和后续 CSR/trap 回归可以有不同范围。
+`run_all.sh` 不扫描目录自动运行所有测试，而是维护阶段专属列表。这样基础 RV32I 回归、流水线 hazard 回归和后续 CSR/trap 回归可以有不同范围。
 
 ### 7.2 回归输出
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # 一键回归：编译所有 .mem → 构建仿真 → 逐个运行所有汇编测试。
-# 流水线核向后兼容单周期全部指令，因此回归包含两套测试集。
+# 当前列表覆盖基础 RV32I 指令集测试和流水线 hazard 测试。
 # 每个测试都打印 PASS/FAIL，最后汇总。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SIM="${REPO_ROOT}/obj_dir/Vtb_core_pipeline5"
 
 TESTS=(
-    # 单周期指令集全覆盖（验证流水线 ISA 正确性）
+    # 基础 RV32I 指令集测试（验证流水线 ISA 正确性）
     0001_smoke
     0101_branch
     0102_alu_imm
@@ -43,28 +43,14 @@ done
 echo ""
 echo ">>> [2/3] Building simulation binary..."
 cd "${REPO_ROOT}"
+RTL_FILES=(
+    rtl/common/*.sv
+    rtl/core/*.sv
+    rtl/mem/*.sv
+)
+
 verilator -sv --binary --timing --top-module tb_core_pipeline5 \
-    rtl/common/core_pkg.sv \
-    rtl/common/pipeline_pkg.sv \
-    rtl/core/alu.sv \
-    rtl/core/branch_unit.sv \
-    rtl/core/decoder.sv \
-    rtl/core/imm_gen.sv \
-    rtl/core/regfile.sv \
-    rtl/core/pc_reg.sv \
-    rtl/core/hazard_unit.sv \
-    rtl/core/forwarding_unit.sv \
-    rtl/core/if_stage.sv \
-    rtl/core/id_stage.sv \
-    rtl/core/ex_stage.sv \
-    rtl/core/mem_stage.sv \
-    rtl/core/wb_stage.sv \
-    rtl/core/pipe_reg.sv \
-    rtl/core/csr_file.sv \
-    rtl/core/trap_ctrl.sv \
-    rtl/core/core_pipeline5.sv \
-    rtl/mem/simple_rom.sv \
-    rtl/mem/simple_ram.sv \
+    "${RTL_FILES[@]}" \
     tb/sv/tb_core_pipeline5.sv
 
 # ------------------------------------------------------------------

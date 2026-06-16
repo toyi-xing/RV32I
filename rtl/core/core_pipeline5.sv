@@ -10,15 +10,18 @@
 //   - Total Power = 0.163 W (约 163 mW)
 //
 // 规范：
-//   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 本模块用于搭建 IF/ID/EX/MEM/WB 五级流水线结构。
-//   - 第一版外接 imem/dmem，不在 core 内部实例化具体 memory。
-//   - 第一版假设 imem/dmem 固定响应，没有 valid/ready 握手。
+//   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
+//   - commit_instr_id_o 为仿真 trace 观察口，沿用 commit_* 分组命名。
+//   - 本模块实现 IF/ID/EX/MEM/WB 五级流水线顶层连接。
+//   - 外接 imem/dmem，不在 core 内部实例化具体 memory。
+//   - 当前假设 imem/dmem 固定响应，没有 valid/ready 握手。
 //
 // 功能：
-//   - 连接 pc_reg、if_stage、id_stage、ex_stage、mem_stage、wb_stage 和 regfile。
+//   - 连接 pc_reg、if_stage、id_stage、ex_stage、mem_stage、wb_stage、regfile、csr_file 和 trap_ctrl。
 //   - 使用 pipeline_pkg 中的 struct 描述四组流水线寄存器承载的数据和控制。
-//   - 处理 forwarding、load-use stall 和 branch/JAL/JALR redirect flush/kill。
+//   - 处理 forwarding、load-use/CSR-use stall 和 branch/JAL/JALR redirect flush。
+//   - 在 MEM 边界精确接受 trap/MRET，并通过 kill 清除 younger instruction 或终止当前 MEM 指令普通 WB 路径。
+//   - 输出 commit trace 和 trap/MRET trace 观察信号，供 testbench 打印和调试使用。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -37,14 +40,22 @@ module core_pipeline5 (
     output logic [core_pkg::XLEN-1:0]     dmem_wdata_o,         // 输出给 dmem 的已按 byte lane 对齐的 store 数据。
     input  logic [core_pkg::XLEN-1:0]     dmem_rdata_i,         // dmem 返回的 32 bit load 原始 word 数据。
 
+    // WB 指令提交观察
     output logic                          commit_valid_o,       // 当前拍是否有有效指令提交。
     output logic [core_pkg::XLEN-1:0]     commit_pc_o,          // 提交指令的 PC。
     output logic [core_pkg::ILEN-1:0]     commit_instr_o,       // 提交指令的原始 instruction。
+    output core_pkg::instr_id_e           commit_instr_id_o,    // 提交指令类型
     output logic                          commit_reg_we_o,      // 提交指令是否写 rd。
     output logic [4:0]                    commit_rd_addr_o,     // 提交指令写回的 rd 编号。
     output logic [core_pkg::XLEN-1:0]     commit_rd_wdata_o,    // 提交指令写回 rd 的数据。
-    output logic                          illegal_instr_o,      // 当前指令是否非法或暂未支持。
-    output logic                          mem_misaligned_o      // 当前 load/store 是否地址不对齐。
+
+    // trap/MRET 提交观察
+    output logic                          trap_valid_o,         // trap entry 有效（异常/中断），不含 MRET。
+    output logic [core_pkg::XLEN-1:0]     trap_pc_o,            // 发生异常/中断时的指令 PC（mepc 写入值）。
+    output core_pkg::trap_cause_e         trap_cause_o,         // 异常/中断原因编码。
+    output logic [core_pkg::XLEN-1:0]     trap_tval_o,          // 异常相关附加值（mtval 写入值）。
+    output logic                          trap_return_o,        // MRET 返回事件有效。
+    output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o    // trap 或 MRET 的跳转目标 PC。
 );
     import core_pkg::*;
     import pipeline_pkg::*;
@@ -176,9 +187,10 @@ module core_pipeline5 (
 
     // WB 随指令输出 -> commit
     wire [core_pkg::ILEN-1:0] wb_instr          = mem_wb_data_q.instr;
+    core_pkg::instr_id_e      wb_instr_id;
+    assign                    wb_instr_id       = mem_wb_data_q.instr_id;
     wire [core_pkg::XLEN-1:0] wb_pc             = mem_wb_data_q.pc;
     wire [4:0]                wb_rd_addr        = mem_wb_data_q.rd_addr;
-    wire                      wb_illegal_instr  = mem_wb_data_q.illegal_instr;
 
     pc_reg u_pc_reg(
         .clk_i              (clk_i),
@@ -506,7 +518,7 @@ module core_pipeline5 (
         .dmem_wdata_o       (dmem_wdata_o),
         .load_data_o        (mem_load_data),
 
-        .mem_misaligned_o   (mem_misaligned_o),
+        .mem_misaligned_o   (),     // 旧合并观察口不再导出顶层；保留下面两个细分观察线和 exception 输出。
         .load_misaligned_o  (mem_load_misaligned),
         .store_misaligned_o (mem_store_misaligned),
         .exception_valid_o  (mem_exception_valid),
@@ -573,13 +585,21 @@ module core_pipeline5 (
         .kill_mem_wb_o          (kill_mem_wb)
     );
 
+    // trap/MRET 随流水线在 MEM 边界精确提交，这里只把观察信号导出给 testbench。
+    assign trap_valid_o         = trap_valid;
+    assign trap_pc_o            = trap_pc;
+    assign trap_cause_o         = trap_cause;
+    assign trap_tval_o          = trap_tval;
+    assign trap_return_o        = mret_valid;
+    assign trap_redirect_pc_o   = trap_redirect_pc;
+
     pipe_reg_mem_wb u_pipe_reg_mem_wb (
         .clk_i      (clk_i),
         .rst_n_i    (rst_n_i),
 
         .data_i     (mem_wb_data_d),
         .valid_i    (mem_valid),
-        .kill_i     (kill_mem_wb),     // trap control hazard，终止改指令生命周期（已被 trap 提交）
+        .kill_i     (kill_mem_wb),     // trap control hazard，终止该指令生命周期（已被 trap 提交）
         .stall_i    (1'b0), // 为后续扩展保留
 
         .data_o     (mem_wb_data_q),
@@ -606,6 +626,7 @@ module core_pipeline5 (
     wb_stage u_wb_stage (
         .valid_i        (mem_wb_valid),
         .reg_we_i       (mem_wb_data_q.reg_we),
+        .rd_addr_i      (mem_wb_data_q.rd_addr),
         .wb_sel_i       (mem_wb_data_q.wb_sel),
         .alu_result_i   (mem_wb_data_q.alu_result),
         .load_data_i    (mem_wb_data_q.load_data),
@@ -621,12 +642,10 @@ module core_pipeline5 (
     assign commit_valid_o    = wb_valid;
     assign commit_pc_o       = wb_pc;
     assign commit_instr_o    = wb_instr;
+    assign commit_instr_id_o = wb_instr_id;
     assign commit_reg_we_o   = wb_rd_we;
     assign commit_rd_addr_o  = wb_rd_addr;
     assign commit_rd_wdata_o = wb_rd_wdata;
-
-    // TODO: 后续异常/非法指令处理应随流水线精确提交，这里先随 WB 槽观察。
-    assign illegal_instr_o   = wb_valid & wb_illegal_instr;
 
 endmodule
 

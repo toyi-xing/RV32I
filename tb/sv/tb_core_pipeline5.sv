@@ -11,8 +11,8 @@
 // 功能：
 //   - 产生 clk/rst 驱动 core_pipeline5。
 //   - 实例化 simple_rom/simple_ram 并连接到 core。
-//   - 在每次提交时打印当前指令的 PC、原始指令、rd 写使能和写回数据。
-//   - 监控 illegal_instr_o 和 mem_misaligned_o。
+//   - 在每次提交时打印当前指令的 PC、原始指令、指令类型、rd 写使能和写回数据。
+//   - 观察 trap/MRET trace 信号，但暂不据此判定 PASS/FAIL。
 //   - 通过写约定 DMEM 地址作为 PASS/FAIL 标志自动结束仿真。
 //------------------------------------------------------------------------------
 
@@ -21,6 +21,7 @@
 module tb_core_pipeline5;
 
     import core_pkg::*;
+    import pipeline_pkg::*;
 
     // -------------------------------------------------------------------------
     // 时钟和复位
@@ -45,25 +46,30 @@ module tb_core_pipeline5;
     // -------------------------------------------------------------------------
     // core_pipeline5 接口信号
     // -------------------------------------------------------------------------
-    logic [ILEN-1:0]     imem_rdata;
-    logic [XLEN-1:0]     imem_addr;
+    logic [core_pkg::ILEN-1:0]     imem_rdata;
+    logic [core_pkg::XLEN-1:0]     imem_addr;
 
-    logic                dmem_re;
-    logic                dmem_we;
-    logic [3:0]          dmem_be;
-    logic [XLEN-1:0]     dmem_addr;
-    logic [XLEN-1:0]     dmem_wdata;
-    logic [XLEN-1:0]     dmem_rdata;
+    logic                          dmem_re;
+    logic                          dmem_we;
+    logic [3:0]                    dmem_be;
+    logic [core_pkg::XLEN-1:0]     dmem_addr;
+    logic [core_pkg::XLEN-1:0]     dmem_wdata;
+    logic [core_pkg::XLEN-1:0]     dmem_rdata;
 
-    logic                commit_valid;
-    logic [XLEN-1:0]     commit_pc;
-    logic [ILEN-1:0]     commit_instr;
-    logic                commit_reg_we;
-    logic [4:0]          commit_rd_addr;
-    logic [XLEN-1:0]     commit_rd_wdata;
-    logic                illegal_instr;
-    logic                mem_misaligned;
+    logic                          commit_valid;
+    logic [core_pkg::XLEN-1:0]     commit_pc;
+    logic [core_pkg::ILEN-1:0]     commit_instr;
+    core_pkg::instr_id_e           commit_instr_id;
+    logic                          commit_reg_we;
+    logic [4:0]                    commit_rd_addr;
+    logic [core_pkg::XLEN-1:0]     commit_rd_wdata;
 
+    logic                          trap_valid;
+    logic [core_pkg::XLEN-1:0]     trap_pc;
+    core_pkg::trap_cause_e         trap_cause;
+    logic [core_pkg::XLEN-1:0]     trap_tval;
+    logic                          trap_return;
+    logic [core_pkg::XLEN-1:0]     trap_redirect_pc;
     // -------------------------------------------------------------------------
     // core 实例化
     // -------------------------------------------------------------------------
@@ -84,11 +90,17 @@ module tb_core_pipeline5;
         .commit_valid_o     (commit_valid),
         .commit_pc_o        (commit_pc),
         .commit_instr_o     (commit_instr),
+        .commit_instr_id_o  (commit_instr_id),
         .commit_reg_we_o    (commit_reg_we),
         .commit_rd_addr_o   (commit_rd_addr),
         .commit_rd_wdata_o  (commit_rd_wdata),
-        .illegal_instr_o    (illegal_instr),
-        .mem_misaligned_o   (mem_misaligned)
+
+        .trap_valid_o       (trap_valid),
+        .trap_pc_o          (trap_pc),
+        .trap_cause_o       (trap_cause),
+        .trap_tval_o        (trap_tval),
+        .trap_return_o      (trap_return),
+        .trap_redirect_pc_o (trap_redirect_pc)
     );
 
     // -------------------------------------------------------------------------
@@ -203,27 +215,28 @@ module tb_core_pipeline5;
             $write("[%0d] @ %0t: PC=0x%08h Instr=0x%08h", cycle_cnt, $time, commit_pc, commit_instr);
             if (commit_reg_we) begin
                 $write("   rd=x%0d <= 0x%08h", commit_rd_addr, commit_rd_wdata);
-            end else begin
+            end
+            else begin
                 $write("   noWB            ");
             end
-            // illegal/misaligned 时自动 FAIL （当前版本测试指令保证合法+对齐）
-            if (illegal_instr) begin
-                $write(" ILLEGAL ");
-                $finish;
-            end
-            if (mem_misaligned) begin
-                $write(" MISALIGN");
-                $finish;
-            end
-            $display("");
-        end else begin
+            $display(" %s", commit_instr_id.name());
+        end
+        else begin
             $display("[%0d] @ %0t: PC=0x%08h Instr_invalid", cycle_cnt, $time, commit_pc);
+        end
+
+        if (trap_valid) begin
+            $display("^^^^^^^^^^ this cycle happen trap_entry  ^^^^^^^^^^");
+        end
+        else if (trap_return) begin
+            $display("^^^^^^^^^^ this cycle happen trap_return ^^^^^^^^^^");
         end
 
         if (test_done) begin
             if (test_passed) begin
                 $display("PASS after %0d cycles", cycle_cnt);
-            end else begin
+            end
+            else begin
                 $display("FAIL after %0d cycles, status=0x%08h", cycle_cnt, test_status_value);
             end
             print_memory_usage();

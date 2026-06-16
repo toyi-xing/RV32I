@@ -6,8 +6,7 @@
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
 //   - 本模块是纯组合逻辑，不包含时钟或复位。
 //   - ALU 操作、操作数选择、分支比较类型统一使用 core_pkg.sv 中的枚举。
-//   - 本模块只接收 EX 实际使用的 rs1/rs2 数据：
-//     单周期 demo 中通常直接来自 ID/regfile；五级流水中可来自 forwarding mux。
+//   - 本模块只接收 EX 实际使用的 rs1/rs2 数据，通常来自 forwarding mux 输出。
 //
 // 功能：
 //   - 根据 op_a_sel_i/op_b_sel_i 选择 ALU 输入操作数。
@@ -29,7 +28,7 @@ module ex_stage (
     input  logic                          valid_i,           // 当前 EX 槽是否有效。各阶段有各自的 valid 门控其副作用：
                                                              // EX→redirect，MEM→dmem 写，WB→regfile 写。
     input  logic [core_pkg::XLEN-1:0]     pc_i,              // 当前 EX 阶段指令的 PC。
-    input  logic [core_pkg::XLEN-1:0]     rs1_data_i,        // EX 实际使用的 rs1 数据；单周期 demo 直接来自 regfile，流水线中可来自 forwarding mux。
+    input  logic [core_pkg::XLEN-1:0]     rs1_data_i,        // EX 实际使用的 rs1 数据，通常来自 forwarding mux。
     input  logic [core_pkg::XLEN-1:0]     rs2_data_i,        // EX 实际使用的 rs2 数据；branch 比较和 store data 都会使用。
     input  logic [core_pkg::XLEN-1:0]     imm_i,             // ID 阶段生成并传入的 32 bit 立即数。
     input  core_pkg::alu_op_e             alu_op_i,          // ALU 运算类型。

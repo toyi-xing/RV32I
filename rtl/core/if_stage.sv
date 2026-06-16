@@ -19,7 +19,7 @@
 
 module if_stage (
     input  logic [core_pkg::XLEN-1:0]     pc_i,              // pc_reg 输出的当前取指 PC。
-    input  logic [core_pkg::XLEN-1:0]     imem_rdata_i,      // imem 返回的 32 bit 指令。
+    input  logic [core_pkg::ILEN-1:0]     imem_rdata_i,      // imem 返回的 32 bit 指令。
     input  logic                          pc_valid_i,        // 当前 PC 是否有效；复位后可由 pc_reg 或前端控制拉起。
 
     output logic [core_pkg::XLEN-1:0]     imem_addr_o,       // 输出给 imem 的取指地址。

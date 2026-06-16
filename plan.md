@@ -28,7 +28,7 @@
 - vectored `mtvec`。第一版只支持 direct mode，`mtvec[1:0]` 写入后按 WARL 归零。
 - `mcycle/minstret` 可先不做，后续单独补。
 
-单周期顶层 `core_single_cycle.sv` 不再作为后续维护目标。本阶段允许共享 stage 新增端口后只保证五级流水顶层可用；单周期相关 RTL、testbench、仿真脚本和现行流程文档后续统一清理或改为历史说明。
+单周期顶层 `core_single_cycle.sv` 不再作为后续维护目标。本阶段允许共享 stage 新增端口后只保证五级流水顶层可用；单周期相关 RTL、testbench、仿真脚本和现行流程文档已在第 10 步清理，早期 08xx 规划文档仅作为历史背景保留。
 
 ## 1. 先补公共类型和常量 `已完成`
 
@@ -689,7 +689,7 @@ EX branch/JAL/JALR redirect > late-result-use stall
 - trap/MRET 在 MEM 接受时，需要额外 kill 当前 EX -> EX/MEM 的年轻指令。
 - MEM/WB 使用 `kill_i` 写入 invalid bubble，避免 faulting/MRET 指令作为普通指令进入 WB。
 
-## 9. 集成到 `core_pipeline5.sv` `执行中`
+## 9. 集成到 `core_pipeline5.sv` `已完成`
 
 本步以当前已经落地的 1～8 步 RTL 接口为准，不再沿用最初“顶层门控 MEM/WB valid”或“单周期最小兼容”的旧方案。
 
@@ -999,40 +999,122 @@ trap_ctrl u_trap_ctrl (...);
 
 faulting/MRET 指令会被 `kill_mem_wb` 清成 invalid bubble，因此 `mem_wb_data_d.reg_we` 可以继续从 `ex_mem_data_q.reg_we` 透传。
 
-### 9.13 调整顶层观察输出 `执行中`
+### 9.13 调整顶层观察输出 `已完成`
 
-现有 `illegal_instr_o` 和 `mem_misaligned_o` 不应再作为“遇到错误立即停机”的语义：
+`illegal_instr_o` 和 `mem_misaligned_o` 是早期“遇到非法指令/访存不对齐就由 TB 直接停机”的调试接口。加入 CSR/trap 后，这两类事件应由 core 进入 trap handler，而不是让 testbench 直接 `$finish`，因此本步删除这两个顶层输出。
 
-- `mem_misaligned_o` 可以继续接 `mem_stage.mem_misaligned_o`，作为 MEM 当拍观察信号。
-- `illegal_instr_o` 若继续保留，建议改为 `trap_valid && trap_cause == TRAP_CAUSE_ILLEGAL_INSTR`，因为非法指令不会再进入普通 WB。
+需要从 `core_pipeline5.sv` 中删除：
 
-建议新增或后续在 testbench 层观察这些 trap 信号：
+```systemverilog
+output logic illegal_instr_o,
+output logic mem_misaligned_o
+```
 
-| 信号 | 来源 |
-|---|---|
-| `trap_valid_o` | `trap_valid` |
-| `trap_pc_o` | `trap_pc` |
-| `trap_cause_o` | `trap_cause` |
-| `trap_tval_o` | `trap_tval` |
-| `trap_return_o` | `mret_valid` |
-| `trap_return_pc_o` | `csr_mepc` |
+对应的内部 assign 也删除：
 
-这些信号只用于 debug/trace/testbench，不参与 core 内部功能闭环。
+```systemverilog
+assign illegal_instr_o = ...;
+```
 
-## 10. 清理单周期相关文件和流程
+`mem_stage.mem_misaligned_o` 仍然保留在模块内部，用于生成 load/store address misaligned exception，但不再作为 core 顶层观察接口导出。
+
+同时新增并接好 trap/MRET 观察口。这些端口只用于 debug/trace/testbench 观察，不参与 core 内部功能闭环：
+
+| 顶层输出 | 来源 | 作用 |
+|---|---|---|
+| `trap_valid_o` | `trap_valid` | MEM 边界本拍接受 trap entry。 |
+| `trap_pc_o` | `trap_pc` | 发生 trap 的指令 PC。 |
+| `trap_cause_o` | `trap_cause` | 本次 trap cause。 |
+| `trap_tval_o` | `trap_tval` | 本次 trap 附加值，例如非法指令编码或错误地址。 |
+| `trap_return_o` | `mret_valid` | MEM 边界本拍接受 MRET。 |
+| `trap_redirect_pc_o` | `trap_redirect_pc` | trap entry 或 MRET 的实际重定向目标 PC。 |
+
+连接建议：
+
+```systemverilog
+assign trap_valid_o       = trap_valid;
+assign trap_pc_o          = trap_pc;
+assign trap_cause_o       = trap_cause;
+assign trap_tval_o        = trap_tval;
+assign trap_return_o      = mret_valid;
+assign trap_redirect_pc_o = trap_redirect_pc;
+```
+
+另外保留并接好提交指令类型观察口：
+
+```systemverilog
+output core_pkg::instr_id_e commit_instr_id_o
+```
+
+连接建议：
+
+```systemverilog
+wire wb_instr_id = mem_wb_data_q.instr_id;
+assign commit_instr_id_o = wb_instr_id;
+```
+
+该信号只用于 commit trace/debug，让仿真日志能打印每条提交指令的译码类型，不参与 core 内部控制。
+
+> 异常测试暂时不在本步处理。本步只让无异常测试程序适配当前 trap 版顶层；后续专门写异常测试时，再通过 trap handler 检查 `mcause/mepc/mtval` 等 CSR 行为。
+
+### 9.14 修改 pipeline5 testbench 以兼容新顶层 `已完成`
+
+修改 `tb/sv/tb_core_pipeline5.sv`：
+
+1. 删除 `illegal_instr` 和 `mem_misaligned` 两个 testbench 信号。
+2. 删除 core 实例中 `.illegal_instr_o(...)`、`.mem_misaligned_o(...)` 两个端口连接。
+3. 删除运行时直接检查并 `$finish` 的旧逻辑：
+
+```systemverilog
+if (illegal_instr) begin
+    ...
+    $finish;
+end
+
+if (mem_misaligned) begin
+    ...
+    $finish;
+end
+```
+
+4. 新增 `commit_instr_id` 信号并连接顶层：
+
+```systemverilog
+core_pkg::instr_id_e commit_instr_id;
+
+.commit_instr_id_o(commit_instr_id)
+```
+
+5. 在 commit trace 中打印 `commit_instr_id`，方便观察每条提交指令类型。
+6. 新增 trap/MRET 观察信号并连接顶层：
+
+```systemverilog
+logic                      trap_valid;
+logic [core_pkg::XLEN-1:0] trap_pc;
+core_pkg::trap_cause_e     trap_cause;
+logic [core_pkg::XLEN-1:0] trap_tval;
+logic                      trap_return;
+logic [core_pkg::XLEN-1:0] trap_redirect_pc;
+```
+
+7. `trap_valid` 或 `trap_return` 有效时，在最终日志中打印一行观察信息，但暂时不据此判定 PASS/FAIL。
+
+本步的 testbench 目标只是兼容当前顶层并继续跑无异常程序。非法指令、访存不对齐、ECALL/EBREAK/MRET 等异常路径的自动化检查后续集中规划，不在 9.14 内完成。
+
+## 10. 清理单周期相关文件和流程 `已完成`
 
 单周期顶层不再随共享 stage 继续维护。本步目标不是保持单周期可编译，而是把现行流程切换为五级流水为唯一维护对象，并删除或标注单周期路径。
 
-### 10.1 建议删除的 RTL/TB 文件
+### 10.1 删除 RTL/TB 文件 `已完成`
 
 | 文件 | 处理 |
 |---|---|
-| `rtl/core/core_single_cycle.sv` | 删除或移动到历史归档目录；不再接共享 stage 新端口。 |
-| `tb/sv/tb_core_single_cycle.sv` | 删除或移动到历史归档目录；后续只维护流水线 testbench。 |
+| `rtl/core/core_single_cycle.sv` | 已删除；不再接共享 stage 新端口。 |
+| `tb/sv/tb_core_single_cycle.sv` | 已删除；后续只维护流水线 testbench。 |
 
 不删除共享模块，例如 `id_stage/ex_stage/mem_stage/wb_stage/regfile/pc_reg`。这些模块继续服务五级流水顶层。
 
-### 10.2 建议删除的单周期仿真脚本
+### 10.2 删除单周期仿真脚本 `已完成`
 
 | 文件/目录 | 处理 |
 |---|---|
@@ -1052,41 +1134,39 @@ faulting/MRET 指令会被 `kill_mem_wb` 清成 invalid bubble，因此 `mem_wb_
 - `build/single_cycle_c/`
 - `obj_dir/Vtb_core_single_cycle`
 
-### 10.3 建议删除或改写的现行流程文档
+### 10.3 删除或改写现行流程文档 `已完成`
 
 | 文件 | 处理 |
 |---|---|
-| `docs/simulation_flow_singlecycle_asm.md` | 删除，或改成历史说明并从 README 中移除现行入口。 |
-| `docs/simulation_flow_singlecycle_c.md` | 删除，或改成历史说明并从 README 中移除现行入口。 |
-| `docs/simulation_flow_pipeline_asm.md` | 改为自包含文档，不再写“只说明与单周期流程的差异”。 |
-| `docs/simulation_flow_pipeline_c.md` | 改为自包含文档，不再引用单周期 C 流程作为通用说明。 |
-| `README.md` | 删除“单周期核”现行章节，仓库状态改成以五级流水为唯一维护 core。 |
+| `docs/simulation_flow_singlecycle_asm.md` | 已删除。 |
+| `docs/simulation_flow_singlecycle_c.md` | 已删除。 |
+| `docs/simulation_flow_pipeline_asm.md` | 已改为自包含文档，不再写“只说明与单周期流程的差异”。 |
+| `docs/simulation_flow_pipeline_c.md` | 已改为自包含文档，不再引用单周期 C 流程作为通用说明。 |
+| `README.md` | 已删除“单周期核”现行章节；前部保留单周期历史时间戳，现行入口改成五级流水为唯一维护 core。 |
 
 `docs/08xx/0823 从单周期语义模型到五级流水线.md` 等早期规划文档可以保留为历史背景，但如果其中有“当前仍维护单周期”的说法，需要加注说明它不再代表现行工程状态。
 
-### 10.4 需要同步改掉的单周期措辞
+### 10.4 同步改掉单周期现行措辞 `已完成`
 
-这些文件不一定删除，但有单周期现行口径，需要后续统一改：
+这些文件保留，但已清掉单周期现行口径：
 
 | 文件 | 需要改的典型表述 |
 |---|---|
-| `rtl/common/pipeline_pkg.sv` | “成员顺序对应 core_single_cycle.sv” 等注释改为“五级流水寄存器字段顺序”。 |
-| `rtl/core/regfile.sv` | `BYPASS_EN` 注释中“单周期顶层保持默认 0”改成泛化说明。 |
-| `rtl/core/id_stage.sv`、`rtl/core/ex_stage.sv`、`rtl/core/pc_reg.sv` | “单周期 demo”措辞改成“非流水/组合路径历史用法”或直接删除。 |
-| `sim/pipeline5_asm/run_all.sh` | “单周期指令集全覆盖”改为“基础 RV32I 指令集测试”。 |
-| `sw/asm/0001_smoke.S` | 文件头“单周期 core”改为“基础 RV32I smoke”。 |
-| `sw/c/0202_dmem_init.c` | 文件头“单周期 RV32I C”改为“RV32I C 裸机”。 |
-| `docs/08xx/0827 Testbench、commit trace与测试集组织.md` | 当前命令和 DUT 描述改成流水线为现行路径，单周期作为历史阶段。 |
+| `rtl/common/pipeline_pkg.sv` | “成员顺序对应 core_single_cycle.sv” 等注释已改为流水线字段分组口径。 |
+| `rtl/core/regfile.sv` | `BYPASS_EN` 注释中“单周期顶层保持默认 0”已改成泛化说明。 |
+| `rtl/core/id_stage.sv`、`rtl/core/ex_stage.sv`、`rtl/core/pc_reg.sv` | 已删除现行单周期措辞。 |
+| `sim/pipeline5_asm/run_all.sh` | “单周期指令集全覆盖”已改为“基础 RV32I 指令集测试”。 |
+| `sw/asm/0001_smoke.S` | 文件头已改为“基础 RV32I smoke”。 |
+| `sw/c/0202_dmem_init.c` | 文件头已改为“RV32I C 裸机”。 |
+| `docs/08xx/0827 Testbench、commit trace与测试集组织.md` | 当前命令和 DUT 描述已改成流水线为现行路径，单周期作为历史阶段。 |
 
 ### 10.5 测试程序和软件目录保留
 
 `sw/asm/`、`sw/c/`、`sw/c_runtime/`、`sw/linker/` 不因删除单周期顶层而删除。基础 ISA 测试仍然用于流水线回归；只是脚本入口从 `sim/single_cycle_*` 迁移为 `sim/pipeline5_*`。
 
-### 10.6 简化 pipeline5 仿真脚本的 RTL 文件列表
+### 10.6 简化 pipeline5 仿真脚本的 RTL 文件列表 `已完成`
 
-当前 `sim/pipeline5_asm/06_run_sim.sh`、`sim/pipeline5_asm/run_all.sh`、`sim/pipeline5_c/06_run_sim.sh` 仍显式列出 Verilator 输入文件。这样虽然啰嗦，但能避免 `rtl/core/core_single_cycle.sv` 被一起编译。
-
-完成 10.1 删除或归档单周期顶层后，可以把 pipeline5 脚本改成按目录收集 RTL 文件，例如：
+`sim/pipeline5_asm/06_run_sim.sh`、`sim/pipeline5_asm/run_all.sh`、`sim/pipeline5_c/06_run_sim.sh` 已改成按目录收集 RTL 文件：
 
 ```bash
 rtl/common/*.sv
@@ -1094,164 +1174,14 @@ rtl/core/*.sv
 rtl/mem/*.sv
 ```
 
-或用脚本数组统一维护文件列表。改完后需要确认：
+`tb/sv/` 仍只显式选择 `tb_core_pipeline5.sv`，不会把所有 testbench 一起编译。三个 pipeline5 脚本使用同一套 RTL 文件收集规则，避免 asm/c/run_all 行为不一致。
 
-- `rtl/core/` 下不再包含不维护的单周期顶层。
-- `tb/sv/` 仍只显式选择 `tb_core_pipeline5.sv`，不要把所有 testbench 一起编译。
-- 三个 pipeline5 脚本使用同一套 RTL 文件收集规则，避免 asm/c/run_all 行为不一致。
 
-## 11. 推荐施工顺序
-
-### Step 1: 公共类型先落地
-
-修改：
-
-- `rtl/common/core_pkg.sv`
-- `rtl/common/pipeline_pkg.sv`
-
-目标：
-
-- 所有后续模块需要的 enum、CSR 地址、trap cause 和 struct 字段先定义好。
-- 在 pipeline struct 中加入 `instr_id`，让 `id_stage.instr_id_o` 能随指令一路传到 MEM/WB。
-- 先不连功能，只让后续代码有统一类型可用。
-
-### Step 2: 写 `csr_file.sv`
-
-新建：
-
-- `rtl/core/csr_file.sv`
-
-目标：
-
-- 完成 CSR 状态寄存器。
-- 完成 CSR read mux。
-- 完成 CSR illegal 判断。
-- 完成 CSR 指令读改写。
-- 完成 trap entry 写 CSR。
-- 完成 `MRET` 恢复 `mstatus`。
-
-### Step 3: 写 `trap_ctrl.sv`
-
-新建：
-
-- `rtl/core/trap_ctrl.sv`
-
-目标：
-
-- 汇总 MEM 阶段 exception、CSR illegal 和 `MRET`。
-- 产生 trap/MRET redirect。
-- 产生 kill IF/ID、ID/EX、EX/MEM、MEM/WB 的控制。
-- 明确 trap/MRET 优先于普通 EX redirect。
-
-### Step 4: 扩展 decoder 和 ID
-
-修改：
-
-- `rtl/core/decoder.sv`
-- `rtl/core/id_stage.sv`
-
-目标：
-
-- 译码 `FENCE/ECALL/EBREAK/MRET/CSR*`。
-- 产生 CSR 控制字段。
-- 产生初始 exception 字段。
-- 调整 `uses_rs1/uses_rs2/reg_we/wb_sel`。
-
-### Step 5: 扩展 EX
-
-修改：
-
-- `rtl/core/ex_stage.sv`
-
-目标：
-
-- 传递已有 exception。
-- 检测 branch/JAL/JALR target misaligned。
-- exception 存在时禁止普通 redirect。
-- 生成 forwarding 后的 `csr_operand`。
-
-### Step 6: 扩展 MEM
-
-修改：
-
-- `rtl/core/mem_stage.sv`
-
-目标：
-
-- 接收并透传前级 exception。
-- 拆分 load/store misaligned。
-- 在 MEM 内部合并前级 exception 和本级 misaligned，输出 MEM 边界最终 exception cause/tval。
-- 保持已有 exception 或 misaligned load/store 不访问 dmem。
-
-### Step 7: 扩展 WB、forwarding 和 hazard
-
-修改：
-
-- `rtl/core/wb_stage.sv`
-- `rtl/core/forwarding_unit.sv`
-- `rtl/core/hazard_unit.sv`
-
-目标：
-
-- WB 支持 `WB_CSR`。
-- MEM/WB -> EX forwarding 自然支持 CSR 写 rd。
-- EX/MEM 不前递 CSR 旧值。
-- hazard 增加 CSR-use stall。
-- hazard 仍只处理普通 EX redirect，优先级为 EX redirect > late-result-use stall；trap/MRET redirect 由 `trap_ctrl` 的 kill 口径处理。
-
-### Step 8: 扩展 pipeline register kill
-
-修改：
-
-- `rtl/core/pipe_reg.sv`
-
-目标：
-
-- `pipe_reg_if_id`、`pipe_reg_id_ex`、`pipe_reg_ex_mem`、`pipe_reg_mem_wb` 增加或使用 `kill_i`。
-- trap/MRET 在 MEM 接受时能杀掉当前 EX 年轻指令，并阻止当前 MEM 指令进入普通 WB。
-- 更新过时注释。
-
-### Step 9: 集成 `core_pipeline5.sv`
-
-修改：
-
-- `rtl/core/core_pipeline5.sv`
-
-目标：
-
-- 实例化 `csr_file`。
-- 实例化 `trap_ctrl`。
-- 把 `instr_id` 从 ID/EX、EX/MEM 一路送到 MEM/WB，用于后续 commit/debug 观察。
-- 连接 CSR 指令从 ID 到 MEM 再到 WB 的数据路径。
-- 连接 trap/MRET redirect 到 `pc_reg`。
-- 连接 trap kill 到 IF/ID、ID/EX、EX/MEM、MEM/WB。
-- 连接 `WB_CSR` 写回路径。
-- 保留并调整 commit/debug 输出。
-
-### Step 10: 清理单周期相关文件和流程
-
-修改：
-
-- `rtl/core/core_single_cycle.sv`
-- `tb/sv/tb_core_single_cycle.sv`
-- `sim/single_cycle_asm/`
-- `sim/single_cycle_c/`
-- 单周期现行流程文档和 README 入口
-
-目标：
-
-- 不再维护单周期顶层和单周期 testbench。
-- 删除或归档单周期仿真脚本。
-- 把现行说明改成五级流水为唯一维护 core。
-- 保留基础 ISA 测试程序，但只通过 pipeline5 脚本回归。
-
-完成以上步骤后，再另起验证计划，补测试程序、脚本和文档说明。
-
-## 12. RTL 之外的后续配套改动（暂不实施）
+## 11. RTL 之外的后续配套改动 `执行中`
 
 本章记录由 RTL 设计选择带来的软件、linker、仿真流程配套需求。当前先只规划，不修改 `rtl/` 之外的文件；等 RTL 主体完成并确定仿真策略后再统一实施。
 
-### 12.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局
+### 11.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局 `执行中`
 
 > 来源：见 2.2 “CSR 状态寄存器”。该步把 `mtvec` 的复位值从 0 设置为 `core_pkg::MTVEC_RESET`，当前平台约定为 `IMEM_BASE + 32'h80`。因此 RTL 默认 trap 入口、linker 放置的 handler 地址、软件写入 `mtvec` 的地址需要保持一致。
 
@@ -1277,7 +1207,7 @@ rtl/mem/*.sv
 - 对于只验证“复位后默认 `mtvec` 可用”的专项测试，可以故意不写 `mtvec`，但这类测试应单独命名和说明。
 - C 侧若要测试 trap，优先使用独立的 trap-aware runtime，或给 pipeline5 CSR/trap 测试单独 build flow；不要影响现有 pipeline5 C 基础测试。
 
-### 12.2 后续统一扩展 IMEM/DMEM 容量与地址图
+### 11.2 后续统一扩展 IMEM/DMEM 容量与地址图
 
 > 来源：后续若把 `rtl/mem/simple_rom.sv` 和 `rtl/mem/simple_ram.sv` 的 `ADDR_WIDTH` 从当前 10 扩大，需要同步更新软件可见地址图、linker script、testbench 统计和手写汇编常量。该事项暂不在 CSR/trap RTL 主线中实施，后续统一改。
 
