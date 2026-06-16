@@ -17,7 +17,7 @@
 `default_nettype none
 
 module simple_rom #(
-    parameter int unsigned ADDR_WIDTH = 10
+    parameter int unsigned ADDR_WIDTH = core_pkg::IMEM_ADDR_WIDTH
 ) (
     input  logic [core_pkg::XLEN-1:0]     addr_i,     // CPU 发出的 byte address 取指地址。
     output logic [core_pkg::ILEN-1:0]     rdata_o     // 返回给 CPU 的 32 bit instruction。

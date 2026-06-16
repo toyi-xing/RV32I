@@ -12,6 +12,7 @@
 #
 # 说明：
 #   - 当前 simple_ram 内部 mem[64] 对应软件 byte 地址 DMEM_BASE+0x100。
+#   - trap handler 使用 .text.trap section，由 linker 固定放到 IMEM_BASE+0x80。
 #   - 本测试只检查 trap entry 和 mtvec direct 跳转，不执行 MRET。
 #===============================================================================
 
@@ -19,6 +20,10 @@
 .globl _start
 
 _start:
+    jal   x0, test_main
+
+.section .text
+test_main:
     nop
     nop
     nop
@@ -26,17 +31,14 @@ _start:
     ecall                       # 触发 trap，PC 应重定向到 mtvec = 0x80
 
 wrong_path:
-    lui   x10, 0x10
+    lui   x10, 0x40
     addi  x11, x0, 2
     sw    x11, 0x100(x10)       # wrong path：trap kill 正常时不应提交
     jal   x0, wrong_path
 
-    # 当前 core_pkg::MTVEC_RESET = IMEM_BASE + 0x80。
-    # .text.init 位于 IMEM 起始处，因此用 .org 把 handler 放到 0x80。
-    .org 0x80
-
+.section .text.trap
 trap_handler:
-    lui   x10, 0x10             # x10 = DMEM_BASE
+    lui   x10, 0x40             # x10 = DMEM_BASE
     addi  x11, x0, 1            # PASS value
     sw    x11, 0x100(x10)       # dmem[DMEM_BASE+0x100] = 1
 

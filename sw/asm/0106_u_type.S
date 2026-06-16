@@ -21,6 +21,10 @@
 .globl _start
 
 _start:
+    jal   x0, test_main
+
+.section .text
+test_main:
     # LUI imm=0：结果应为 0
     lui   x1, 0x0
     bne   x1, x0, fail
@@ -37,23 +41,25 @@ _start:
     slli  x2, x2, 12
     bne   x1, x2, fail
 
-    # AUIPC imm=0（PC = 0x00000028）：结果应为当前 PC
+    # AUIPC imm=0：结果应为当前 PC。
+1:
     auipc x3, 0x0
-    addi  x4, x0, 0x28
+    lui   x4, %hi(1b)
+    addi  x4, x4, %lo(1b)
     bne   x3, x4, fail
 
-    # AUIPC 正数（PC = 0x00000034）：
-    # 结果 = 0x00000034 + 0x00001000 = 0x00001034
+    # AUIPC 正数：结果 = 当前 PC + 0x00001000。
+2:
     auipc x5, 0x1
-    lui   x6, 0x1
-    addi  x6, x6, 0x34
+    lui   x6, %hi(2b + 0x1000)
+    addi  x6, x6, %lo(2b + 0x1000)
     bne   x5, x6, fail
 
-    # AUIPC bit31 置位（PC = 0x00000044）：
-    # 结果 = 0x00000044 + 0xfffff000 = 0xfffff044
+    # AUIPC bit31 置位：结果 = 当前 PC - 0x00001000。
+3:
     auipc x7, 0xfffff
-    lui   x8, 0xfffff
-    addi  x8, x8, 0x44
+    lui   x8, %hi(3b - 0x1000)
+    addi  x8, x8, %lo(3b - 0x1000)
     bne   x7, x8, fail
 
     # rd=x0 写入应被丢弃：LUI 写 x0 不影响其他寄存器
@@ -69,7 +75,7 @@ _start:
     bne   x5, x0, fail      # x5 = x0 = 0，应相等
 
 pass:
-    lui   x30, 0x10
+    lui   x30, 0x40
     addi  x31, x0, 1
     sw    x31, 0x100(x30)
 
@@ -77,7 +83,7 @@ done:
     jal   x0, done
 
 fail:
-    lui   x30, 0x10
+    lui   x30, 0x40
     addi  x31, x0, 2
     sw    x31, 0x100(x30)
     jal   x0, done

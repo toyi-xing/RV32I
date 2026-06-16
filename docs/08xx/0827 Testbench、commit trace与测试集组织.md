@@ -127,18 +127,18 @@ always_ff @(posedge clk) begin
 end
 ```
 
-为了和本文 DMEM_BASE `0x0001_0000` 保持一致，推荐把 `TEST_STATUS_ADDR` 放在数据区起始处附近，例如：
+为了和本文 DMEM_BASE `0x0004_0000` 保持一致，推荐把 `TEST_STATUS_ADDR` 放在数据区起始处附近，例如：
 
 | 地址 | 用途 |
 |---|---|
-| `0x0001_0000` | 普通测试结果 word0 |
-| `0x0001_0004` | 普通测试结果 word1 |
-| `0x0001_0100` | `TEST_STATUS_ADDR` |
+| `0x0004_0000` | 普通测试结果 word0 |
+| `0x0004_0004` | 普通测试结果 word1 |
+| `0x0004_0100` | `TEST_STATUS_ADDR` |
 
-汇编中写 `0x0001_0100`：
+汇编中写 `0x0004_0100`：
 
 ```asm
-    lui  x31, 0x10
+    lui  x31, 0x40
     addi x30, x0, 1
     sw   x30, 0x100(x31)
 ```
@@ -232,7 +232,7 @@ end
 
 ```text
 PASS after 3652 cycles
-DMEM access range: 0x00010200 - 0x00010ffc
+DMEM access range: 0x00040200 - 0x0007fffc
 Stack max used:    80 bytes
 ```
 
@@ -305,13 +305,17 @@ sim/pipeline5_asm/run_test.sh 0102_alu_imm
 .global _start
 
 _start:
+    jal  x0, test_main
+
+.section .text
+test_main:
     # test body
     addi x1, x0, 3
     addi x2, x0, 4
     add  x3, x1, x2
 
     # write result
-    lui  x10, 0x10
+    lui  x10, 0x40
     sw   x3, 0(x10)
 
     # pass
@@ -397,6 +401,8 @@ test.S
   ↓ 运行 RTL 仿真 +imem=test.mem
   ↓ 检查 PASS/FAIL 和 trace
 ```
+
+流水线 C 测试使用同一类组织方式，但会生成 `_imem.mem` 和 `_dmem.mem` 两个镜像；其中 IMEM 镜像包含 `.text.init/.text.trap/.text`，DMEM 镜像来自 `.dmem_image`。
 
 命令细节见 `0826`。本篇只强调组织方式。
 

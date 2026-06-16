@@ -68,7 +68,7 @@ int main(void)
 
 - **入口约定**：`crt0.S` 负责初始化栈指针、清零 `.bss`、加载 `.dmem_image` 到 DMEM 基址，然后调用 `main()`。
 - **全局变量初始化**：若 C 测试需要在 DMEM 中预置数据，定义全局变量并赋初值即可。链接脚本会将这些初始值收集到 `.dmem_image` 段，仿真启动时 `simple_ram` 通过 `$readmemh` 加载。
-- **PASS/FAIL 约定**：C 测试由 `crt0.S` 统一写 `DMEM_BASE + 0x100`（即 `0x00010100`）。`main()` 返回 0 时写 1 表示 PASS，返回非 0 时写 2 表示 FAIL。超时（20010 周期）自动判 TIMEOUT。
+- **PASS/FAIL 约定**：C 测试由 `crt0.S` 统一写 `DMEM_BASE + 0x100`（即 `0x00040100`）。`main()` 返回 0 时写 1 表示 PASS，返回非 0 时写 2 表示 FAIL。超时（20010 周期）自动判 TIMEOUT。
 
 ### 4.2 生成 Memory Image
 
@@ -80,7 +80,7 @@ sim/pipeline5_c/05_build_mem.sh <test>
 
 1. `gcc` 编译 + 链接（`-T sw/linker/c_baremetal.ld`）→ `.elf`
 2. `objdump -d` → `.dump`
-3. `objcopy -j .text` → `_imem.bin` → `_imem.mem`
+3. `objcopy -j .text.init -j .text.trap -j .text` → `_imem.bin` → `_imem.mem`
 4. `objcopy -j .dmem_image` → `_dmem.bin` → `_dmem.mem`
 
 输出全部在 `build/pipeline5_c/` 下。**每次修改 .c 后都需重新运行此脚本。**
@@ -94,10 +94,10 @@ sim/pipeline5_c/06_run_sim.sh <test>
 正常输出类似：
 
 ```
-[0] @ 55: PC=0x00000000 Instr=0x00000537   rd=x10 <= 0x00010000
+[0] @ 55: PC=0x00000000 Instr=0x00040537   rd=x10 <= 0x00040000
 ...
 PASS after N cycles
-DMEM access range: 0x00010200 - 0x00010ffc
+DMEM access range: 0x00040200 - 0x0007fffc
 Stack max used:    80 bytes
 ```
 
@@ -106,6 +106,6 @@ Stack max used:    80 bytes
 ## 5. 调试注意事项
 
 - C 测试的 commit trace 比汇编更晚出现，因为 `crt0.S` 在进入 `main()` 前做了栈和 bss 初始化。
-- `sw/linker/c_baremetal.ld` 中 `_stack_end` 的值和栈指针初始化代码（`crt0.S`）必须一致，否则 `main()` 内的函数调用会异常。
+- `sw/linker/c_baremetal.ld` 中 `__stack_top` 的值和栈指针初始化代码（`crt0.S`）必须一致，否则 `main()` 内的函数调用会异常。
 - 全局变量的 dmem 地址可通过 `.map` 文件或 `.dump` 中的符号地址确认。
 - RTL 文件由 `sim/pipeline5_c/06_run_sim.sh` 按 `rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/mem/*.sv` 收集；testbench 仍固定为 `tb/sv/tb_core_pipeline5.sv`。

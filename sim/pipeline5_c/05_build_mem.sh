@@ -66,6 +66,8 @@ riscv64-unknown-elf-objdump \
 
 riscv64-unknown-elf-objcopy \
     -O binary \
+    -j .text.init \
+    -j .text.trap \
     -j .text \
     "${BUILD_DIR}/${TEST_NAME}.elf" \
     "${BUILD_DIR}/${TEST_NAME}_imem.bin"

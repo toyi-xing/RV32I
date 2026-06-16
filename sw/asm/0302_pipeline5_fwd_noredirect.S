@@ -34,7 +34,11 @@
 .globl _start
 
 _start:
-    lui   x10, 0x10           # x10 = DMEM_BASE = 0x00010000
+    jal   x0, test_main
+
+.section .text
+test_main:
+    lui   x10, 0x40           # x10 = DMEM_BASE = 0x00040000
 
     # ---- 1+2: EX/MEM->EX + MEM/WB->EX, WB_ALU ----
     # x4 = 1 (若两段 forwarding 都正常)

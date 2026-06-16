@@ -3,10 +3,10 @@
  *
  * 内存布局：
  *   IMEM (0x00000000) : .text
- *   DMEM (0x00010000) : .data / .bss
+ *   DMEM (0x00040000) : .data / .bss
  *
- * 当前 simple_rom/simple_ram 默认 ADDR_WIDTH=10，即 1024 个 32-bit word，
- * 每块 memory 容量为 4 KiB。链接脚本先与这个仿真 memory model 保持一致。
+ * 当前 simple_rom/simple_ram 默认 ADDR_WIDTH=16，即 65536 个 32-bit word，
+ * 每块 memory 容量为 256 KiB。链接脚本与这个仿真 memory model 保持一致。
  *
  * 用法：
  *   ${CROSS_COMPILE}ld -T sw/linker/asm_test.ld -o program.elf program.o
@@ -17,23 +17,44 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* 指令存储器：起始地址 0x00000000，4 KiB */
-    IMEM (rx)  : ORIGIN = 0x00000000, LENGTH = 4K
+    /* 指令存储器：起始地址 0x00000000，256 KiB */
+    IMEM (rx)  : ORIGIN = 0x00000000, LENGTH = 256K
 
-    /* 数据存储器：起始地址 0x00010000，4 KiB */
-    DMEM (rw)  : ORIGIN = 0x00010000, LENGTH = 4K
+    /* 数据存储器：起始地址 0x00040000，256 KiB */
+    DMEM (rw)  : ORIGIN = 0x00040000, LENGTH = 256K
 }
 
 SECTIONS
 {
+    __trap_vector = ORIGIN(IMEM) + 0x80;
+
     /*----------------------------------------------------------------------
-     * .text — 代码段，放在 IMEM
+     * .text.init — reset 后执行的入口 stub，必须位于 IMEM 起始地址。
+     *--------------------------------------------------------------------*/
+    .text.init : ALIGN(4)
+    {
+        KEEP(*(.text.init))
+    } > IMEM
+
+    ASSERT(. <= __trap_vector, ".text.init overlaps trap vector")
+
+    /*----------------------------------------------------------------------
+     * .text.trap — M-mode direct trap 入口，和 core_pkg::MTVEC_RESET 对齐。
+     *--------------------------------------------------------------------*/
+    .text.trap __trap_vector : ALIGN(4)
+    {
+        __trap_section_start = .;
+        KEEP(*(.text.trap))
+        . = MAX(., __trap_section_start + 4);
+    } > IMEM
+
+    /*----------------------------------------------------------------------
+     * .text — 普通代码段，放在 trap vector 之后。
      *--------------------------------------------------------------------*/
     .text : ALIGN(4)
     {
-        *(.text.init)          /* reset 后执行的入口代码必须放在最前面 */
-        *(.text)               /* 所有输入文件的 .text 段 */
-        *(.text.*)             /* 诸如 .text.some_function 的子段 */
+        *(.text)
+        *(.text.*)
     } > IMEM
 
     /*----------------------------------------------------------------------

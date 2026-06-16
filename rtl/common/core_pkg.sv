@@ -21,12 +21,18 @@ package core_pkg;
     // IMEM_BASE 表示软件可见的指令存储器起始地址。测试平台和链接脚本应把 .text 放在这里。
     parameter logic [XLEN-1:0] IMEM_BASE = 32'h0000_0000;
 
+    // 当前教学平台的 IMEM/DMEM 仿真容量。ADDR_WIDTH 表示 32-bit word index 宽度。
+    parameter int unsigned IMEM_ADDR_WIDTH = 16;
+    parameter int unsigned DMEM_ADDR_WIDTH = 16;
+    parameter logic [XLEN-1:0] IMEM_SIZE_BYTES = 32'h0004_0000;
+    parameter logic [XLEN-1:0] DMEM_SIZE_BYTES = 32'h0004_0000;
+
     // MTVEC_RESET 表示 M-mode trap vector 的平台默认复位值。
     // 当前采用 direct mode，低 2 bit 必须为 0；软件启动后仍建议显式写 mtvec。
     parameter logic [XLEN-1:0] MTVEC_RESET = IMEM_BASE + 32'h0000_0080;
 
     // DMEM_BASE 表示软件可见的数据存储器起始地址。简单 RAM 封装模块可把它映射到内部 mem[0]。
-    parameter logic [XLEN-1:0] DMEM_BASE = 32'h0001_0000;
+    parameter logic [XLEN-1:0] DMEM_BASE = 32'h0004_0000;
 
     // opcode_e 按 0821 第 3 章的 opcode 速查表划分指令大类。
     // decoder 可以先根据 opcode 进入大类，再根据 funct3/funct7 区分具体指令。

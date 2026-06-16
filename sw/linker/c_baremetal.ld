@@ -3,9 +3,9 @@
  *
  * 内存布局：
  *   IMEM (0x00000000) : .text
- *   DMEM (0x00010000) : reserved / TEST_STATUS / .rodata / .data / .bss / stack
+ *   DMEM (0x00040000) : reserved / TEST_STATUS / .rodata / .data / .bss / stack
  *
- * simple_rom/simple_ram 当前容量均为 4 KiB。C 程序的数据段从 DMEM+0x200
+ * simple_rom/simple_ram 当前容量均为 256 KiB。C 程序的数据段从 DMEM+0x200
  * 开始，避开 TEST_STATUS_ADDR = DMEM+0x100，防止正常全局变量/栈使用状态字。
  *
  * .data/.rodata 的初始值通过 dmem.mem 加载到 simple_ram。
@@ -17,24 +17,45 @@ ENTRY(_start)
 
 MEMORY
 {
-    IMEM (rx) : ORIGIN = 0x00000000, LENGTH = 4K
-    DMEM (rw) : ORIGIN = 0x00010000, LENGTH = 4K
+    IMEM (rx) : ORIGIN = 0x00000000, LENGTH = 256K
+    DMEM (rw) : ORIGIN = 0x00040000, LENGTH = 256K
 }
 
 __dmem_base        = ORIGIN(DMEM);
 __test_status_addr = ORIGIN(DMEM) + 0x100;
 __c_data_base      = ORIGIN(DMEM) + 0x200;
-__stack_bottom     = ORIGIN(DMEM) + 0x0e00;
 __stack_top        = ORIGIN(DMEM) + LENGTH(DMEM);
+__stack_size       = 0x2000;
+__stack_bottom     = __stack_top - __stack_size;
+__trap_vector      = ORIGIN(IMEM) + 0x80;
 
 SECTIONS
 {
     /*----------------------------------------------------------------------
-     * .text — C runtime 和 C 函数代码，放入 IMEM。
+     * .text.init — reset 后执行的入口 stub，必须位于 IMEM 起始地址。
+     *--------------------------------------------------------------------*/
+    .text.init : ALIGN(4)
+    {
+        KEEP(*(.text.init))    /* reset 入口 _start 必须位于 IMEM 起始处 */
+    } > IMEM
+
+    ASSERT(. <= __trap_vector, ".text.init overlaps trap vector")
+
+    /*----------------------------------------------------------------------
+     * .text.trap — M-mode direct trap 入口，和 core_pkg::MTVEC_RESET 对齐。
+     *--------------------------------------------------------------------*/
+    .text.trap __trap_vector : ALIGN(4)
+    {
+        __trap_section_start = .;
+        KEEP(*(.text.trap))
+        . = MAX(., __trap_section_start + 4);
+    } > IMEM
+
+    /*----------------------------------------------------------------------
+     * .text — C 函数代码，放在 trap vector 之后。
      *--------------------------------------------------------------------*/
     .text : ALIGN(4)
     {
-        KEEP(*(.text.init))    /* reset 入口 _start 必须位于 IMEM 起始处 */
         *(.text)
         *(.text.*)
     } > IMEM
@@ -43,11 +64,11 @@ SECTIONS
      * .dmem_image — 会被 objcopy 生成 dmem.mem 并加载到 simple_ram。
      *
      * 本节从 DMEM_BASE 开始，先保留 0x200 字节：
-     *   0x00010000-0x000100ff : 保留
-     *   0x00010100-0x00010103 : TEST_STATUS_ADDR
-     *   0x00010104-0x000101ff : 保留
+     *   0x00040000-0x000400ff : 保留
+     *   0x00040100-0x00040103 : TEST_STATUS_ADDR
+     *   0x00040104-0x000401ff : 保留
      *
-     * C 可正常访问的数据从 0x00010200 开始。
+     * C 可正常访问的数据从 0x00040200 开始。
      *--------------------------------------------------------------------*/
     .dmem_image ORIGIN(DMEM) : ALIGN(4)
     {

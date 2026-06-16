@@ -14,6 +14,10 @@
 .globl _start
 
 _start:
+    jal   x0, test_main
+
+.section .text
+test_main:
     # x2 是 sp。栈从 DMEM 顶部向下生长，__stack_top 在 c_baremetal.ld 中定义。
     lui   x2, %hi(__stack_top)
     addi  x2, x2, %lo(__stack_top)

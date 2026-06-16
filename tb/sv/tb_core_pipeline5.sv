@@ -144,7 +144,7 @@ module tb_core_pipeline5;
     // 注意：DMEM 地址范围和**真正“用了多少 RAM”**不是完全等价的，因为程序可能
     // 访问了高地址和低地址，中间未必全用；而栈深度用 min(sp) 统计通常最有价值。
     // TEST_STATUS_ADDR 是 testbench 的结束标志地址，不计入程序自身 DMEM 访问范围。
-    localparam logic [core_pkg::XLEN-1:0] DMEM_END_ADDR   = core_pkg::DMEM_BASE + 32'h0000_1000;
+    localparam logic [core_pkg::XLEN-1:0] DMEM_END_ADDR   = core_pkg::DMEM_BASE + core_pkg::DMEM_SIZE_BYTES;
     localparam logic [core_pkg::XLEN-1:0] STACK_TOP_ADDR  = DMEM_END_ADDR;
     logic                                dmem_access_seen;
     logic [core_pkg::XLEN-1:0]           dmem_min_addr;

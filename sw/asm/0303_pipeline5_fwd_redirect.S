@@ -18,7 +18,11 @@
 .globl _start
 
 _start:
-    lui   x10, 0x10              # x10 = DMEM_BASE
+    jal   x0, test_main
+
+.section .text
+test_main:
+    lui   x10, 0x40              # x10 = DMEM_BASE
     addi  x20, x0, 0             # 计分寄存器
     addi  x21, x0, 0             # wrong-path GPR 哨兵值
     addi  x22, x0, 99            # wrong-path store 污染值

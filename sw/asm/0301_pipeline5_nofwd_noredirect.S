@@ -16,6 +16,10 @@
 .globl _start
 
 _start:
+    jal   x0, test_main
+
+.section .text
+test_main:
     addi  x1, x0, 7           # x1 = 7
 
     addi  x2, x0, 6           # x2 = 6
@@ -25,7 +29,7 @@ _start:
 
     sub   x3, x1, x2          # x3 = 1
 
-    lui   x10, 0x10           # x10 = DMEM_BASE = 0x00010000
+    lui   x10, 0x40           # x10 = DMEM_BASE = 0x00040000
     nop
     nop
     nop

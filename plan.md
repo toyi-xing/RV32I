@@ -227,7 +227,7 @@ module csr_file (
 - `mscratch/mepc/mcause/mtval` 复位为 0。
 - RTL 中先将 `mstatus` 整体清 0，再将 `mstatus[12:11]` 写为 `MSTATUS_MPP_M`；这是为了明确保留 M-only 核的 MPP 合法值。
 
-> RTL 之外的配套改动暂不在本步实施：由于 2.2 把 `mtvec` 复位值改为 `MTVEC_RESET`，后续 linker script、启动代码和 trap 测试程序需要约定 `.text.trap`/`__trap_vector`，并在软件启动阶段显式写 `mtvec`。见文末“12. RTL 之外的后续配套改动”。
+> RTL 之外的配套改动已在第 11 步完成：linker script、启动代码和 trap 测试程序已约定 `.text.trap`/`__trap_vector`。除专门验证 reset 默认值的测试外，后续 trap 测试仍建议在软件启动阶段显式写 `mtvec`。
 
 只读 CSR 可以不建寄存器，直接在读 mux 中返回常量：
 
@@ -1177,68 +1177,64 @@ rtl/mem/*.sv
 `tb/sv/` 仍只显式选择 `tb_core_pipeline5.sv`，不会把所有 testbench 一起编译。三个 pipeline5 脚本使用同一套 RTL 文件收集规则，避免 asm/c/run_all 行为不一致。
 
 
-## 11. RTL 之外的后续配套改动 `执行中`
+## 11. RTL 之外的后续配套改动 `已完成`
 
-本章记录由 RTL 设计选择带来的软件、linker、仿真流程配套需求。当前先只规划，不修改 `rtl/` 之外的文件；等 RTL 主体完成并确定仿真策略后再统一实施。
+本章记录由 RTL 设计选择带来的软件、linker、仿真流程配套改动。当前已完成 trap handler 链接布局，并把 IMEM/DMEM 统一扩展到 256 KiB。
 
-### 11.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局 `执行中`
+### 11.1 由 2.2 `MTVEC_RESET` 引出的 trap handler 布局 `已完成`
 
 > 来源：见 2.2 “CSR 状态寄存器”。该步把 `mtvec` 的复位值从 0 设置为 `core_pkg::MTVEC_RESET`，当前平台约定为 `IMEM_BASE + 32'h80`。因此 RTL 默认 trap 入口、linker 放置的 handler 地址、软件写入 `mtvec` 的地址需要保持一致。
 
-后续需要修改：
+已修改：
 
 - `sw/linker/asm_test.ld`
 - `sw/linker/c_baremetal.ld`
-- 新增或调整 trap 相关 `.S` 测试程序。
-- 视 C trap 测试需求，新增专用 trap runtime 或独立启动文件；不要直接让当前共享 `sw/c_runtime/crt0.S` 无条件执行 CSR 指令，否则会影响现有 pipeline5 C 基础回归。
-- 仿真脚本按最终测试分组决定是否新增 CSR/trap 专用入口，暂不在本步改。
+- `sw/asm/0501_trap_entry_smoke.S`
+- 现有 `sw/asm/*.S` 和 `sw/c_runtime/crt0.S` 已拆成短 `.text.init` reset stub，加普通 `.text` 主体，避免和 `IMEM_BASE + 0x80` 的 trap vector 冲突。
 
-建议 linker 约定：
+linker 约定：
 
 - 保持 `_start` / `.text.init` 从 `RESET_PC = IMEM_BASE` 开始执行。
 - 在 `IMEM_BASE + 0x80` 放置 `.text.trap`，并导出 `__trap_vector`。
 - `.text.trap` 使用 `KEEP(*(.text.trap))`，避免后续启用 section GC 或链接顺序变化时 handler 被丢弃。
+- `.text.trap` 即使没有输入 handler 也至少保留 4 bytes，确保普通 `.text` 不会占用默认 `mtvec` 入口；若存在真实 handler，则不额外插入无意义占位字。
 - 普通 `.text` 放在 `.text.trap` 之后，防止 `*(.text.*)` 提前吞掉 `.text.trap`。
 
-建议软件约定：
+软件约定：
 
 - trap 测试程序在 `.text.trap` 中定义 `trap_handler`。
 - 启动阶段显式执行 `csrw mtvec, __trap_vector`，不要长期依赖 CSR reset 默认值。
 - 对于只验证“复位后默认 `mtvec` 可用”的专项测试，可以故意不写 `mtvec`，但这类测试应单独命名和说明。
-- C 侧若要测试 trap，优先使用独立的 trap-aware runtime，或给 pipeline5 CSR/trap 测试单独 build flow；不要影响现有 pipeline5 C 基础测试。
+- C 侧若要测试 trap，后续仍优先使用独立的 trap-aware runtime，或给 pipeline5 CSR/trap 测试单独 build flow；不要影响现有 pipeline5 C 基础测试。
 
-### 11.2 后续统一扩展 IMEM/DMEM 容量与地址图
+### 11.2 统一扩展 IMEM/DMEM 容量与地址图 `已完成`
 
-> 来源：后续若把 `rtl/mem/simple_rom.sv` 和 `rtl/mem/simple_ram.sv` 的 `ADDR_WIDTH` 从当前 10 扩大，需要同步更新软件可见地址图、linker script、testbench 统计和手写汇编常量。该事项暂不在 CSR/trap RTL 主线中实施，后续统一改。
+> 来源：把 `rtl/mem/simple_rom.sv` 和 `rtl/mem/simple_ram.sv` 的 `ADDR_WIDTH` 从 10 扩大到 16，需要同步更新软件可见地址图、linker script、testbench 统计和手写汇编常量。
 
 注意：当前 `ADDR_WIDTH` 表示 32-bit word index 宽度，不是 byte 地址宽度。
 
-- `ADDR_WIDTH = 10` 表示 1024 words，即 4 KiB。
-- `ADDR_WIDTH = 14` 表示 16384 words，即 64 KiB。
+当前采用：
+
 - `ADDR_WIDTH = 16` 表示 65536 words，即 256 KiB。
+- `IMEM_BASE = 0x0000_0000`，IMEM 范围 `0x0000_0000` 到 `0x0003_FFFF`。
+- `DMEM_BASE = 0x0004_0000`，DMEM 范围 `0x0004_0000` 到 `0x0007_FFFF`。
+- `TEST_STATUS_ADDR = DMEM_BASE + 0x100 = 0x0004_0100`。
 
-后续建议：
+RTL/testbench 已同步修改：
 
-- 在 `rtl/common/core_pkg.sv` 中集中定义 IMEM/DMEM 的地址宽度、byte size 和 base address，避免 `rtl/mem/`、testbench、linker 文档各自硬编码。
-- `simple_rom.sv` 和 `simple_ram.sv` 的 `ADDR_WIDTH` 默认值改为引用 `core_pkg` 中的常量。
-- 保持软件可见地址图不重叠。若 IMEM 从 `0x0000_0000` 开始且 `ADDR_WIDTH = 16`，IMEM byte 范围是 `0x0000_0000` 到 `0x0003_FFFF`，则 `DMEM_BASE` 至少应放到 `0x0004_0000`。
-- 如果只想扩到 64 KiB，可以用 `ADDR_WIDTH = 14`；此时当前 `DMEM_BASE = 0x0001_0000` 正好接在 IMEM 之后，地址图变化最小。
+- `rtl/common/core_pkg.sv`：新增 `IMEM_ADDR_WIDTH/DMEM_ADDR_WIDTH`、`IMEM_SIZE_BYTES/DMEM_SIZE_BYTES`，并把 `DMEM_BASE` 改为 `0x0004_0000`。
+- `rtl/mem/simple_rom.sv`：默认引用共享 IMEM 地址宽度常量。
+- `rtl/mem/simple_ram.sv`：默认引用共享 DMEM 地址宽度常量。
+- `tb/sv/tb_core_pipeline5.sv`：DMEM 尾地址和栈顶统计改为由 `DMEM_SIZE_BYTES` 推导。
 
-RTL/testbench 需要同步修改：
-
-- `rtl/common/core_pkg.sv`：新增或调整 `IMEM_ADDR_WIDTH/DMEM_ADDR_WIDTH`、`IMEM_SIZE_BYTES/DMEM_SIZE_BYTES`、`DMEM_BASE` 等常量。
-- `rtl/mem/simple_rom.sv`：改用共享 IMEM 地址宽度常量。
-- `rtl/mem/simple_ram.sv`：改用共享 DMEM 地址宽度常量。
-- `tb/sv/tb_core_pipeline5.sv`：同样更新 DMEM 尾地址和栈顶统计。
-
-软件和仿真流程需要同步修改：
+软件和仿真流程已同步修改：
 
 - `sw/linker/asm_test.ld`：更新 `IMEM LENGTH`、`DMEM ORIGIN`、`DMEM LENGTH`。
-- `sw/linker/c_baremetal.ld`：更新 `IMEM/DMEM` memory region；`__stack_bottom` 不再按 4 KiB 写死为 `ORIGIN(DMEM) + 0x0e00`，建议改成 `__stack_top - 固定栈大小`。
-- `sw/asm/*.S`：若 `DMEM_BASE` 改变，所有手写 `lui ..., 0x10` 的地址常量都要同步更新；更推荐逐步改成 `%hi/%lo(__test_status_addr)` 或其他 linker symbol，减少后续地址图变化带来的重复修改。
-- `sw/c_runtime/crt0.S` 当前使用 linker symbol 设置 `sp` 和测试状态地址，原则上随 linker 更新即可，不应硬编码 DMEM 地址。
-- `sim/pipeline5_*/05_build_mem.sh` 当前主要依赖 linker script 和 objcopy，通常不需要因容量扩大单独改；若后续加入镜像大小检查，再统一接入共享容量约束。
-- 保留的 `docs/simulation_flow_pipeline_*.md`、`README.md` 和 08xx 中涉及 `4 KiB`、`0x00010000`、`lui ..., 0x10` 的说明需要在最后统一同步。
+- `sw/linker/c_baremetal.ld`：更新 `IMEM/DMEM` memory region；`__stack_bottom = __stack_top - __stack_size`。
+- `sw/asm/*.S`：用于构造 DMEM_BASE 的 `lui ..., 0x10` 已同步为 `lui ..., 0x40`。
+- `sw/c_runtime/crt0.S`：继续使用 linker symbol 设置 `sp` 和测试状态地址，不硬编码 DMEM 地址。
+- `sim/pipeline5_c/05_build_mem.sh`：生成 IMEM 镜像时同时抽取 `.text.init/.text.trap/.text`，防止 C 程序镜像丢失 reset stub 或 trap vector 占位。
+- `docs/simulation_flow_pipeline_*.md`、`docs/08xx/0827...`、`sw/c/readme.md` 已同步现行地址说明。
 
 仿真影响：
 

@@ -20,8 +20,12 @@
 # _start: 定义一个标签，代表这一行的地址
 # CPU 复位后第一条指令从这里开始取
 _start:
+    jal   x0, test_main
+
+.section .text
+test_main:
     addi  x1, x0, 42         # x1 = 42
-    lui   x10, 0x10          # x10 = DMEM_BASE
+    lui   x10, 0x40          # x10 = DMEM_BASE
     addi  x11, x0, 1         # x11 = PASS value
     sw    x11, 0x100(x10)    # dmem[DMEM_BASE+0x100] = 1
 

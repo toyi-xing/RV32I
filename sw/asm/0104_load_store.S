@@ -24,7 +24,11 @@
 .globl _start
 
 _start:
-    lui   x29, 0x10
+    jal   x0, test_main
+
+.section .text
+test_main:
+    lui   x29, 0x40
 
     # SW / LW：字读写
     #
@@ -139,7 +143,7 @@ _start:
     bne   x2, x3, fail
 
 pass:
-    lui   x30, 0x10
+    lui   x30, 0x40
     addi  x31, x0, 1
     sw    x31, 0x100(x30)
 
@@ -147,7 +151,7 @@ done:
     jal   x0, done
 
 fail:
-    lui   x30, 0x10
+    lui   x30, 0x40
     addi  x31, x0, 2
     sw    x31, 0x100(x30)
     jal   x0, done

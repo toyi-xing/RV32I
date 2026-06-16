@@ -19,7 +19,7 @@
 `default_nettype none
 
 module simple_ram #(
-    parameter int unsigned ADDR_WIDTH = 10
+    parameter int unsigned ADDR_WIDTH = core_pkg::DMEM_ADDR_WIDTH
 ) (
     input  logic                          clk_i,
     input  logic                          we_i,       // store 写使能。

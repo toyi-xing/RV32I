@@ -21,6 +21,10 @@
 .globl _start
 
 _start:
+    jal   x0, test_main
+
+.section .text
+test_main:
     # BEQ 应该成立
     lui   x1, 0x1
     beq   x1, x1, beq_notaken
@@ -142,7 +146,7 @@ bwd_body:
     jal   x0, fail             # 没后跳 → fail
 
 pass:
-    lui   x30, 0x10
+    lui   x30, 0x40
     addi  x31, x0, 1
     sw    x31, 0x100(x30)
 
@@ -150,7 +154,7 @@ done:
     jal   x0, done
 
 fail:
-    lui   x30, 0x10
+    lui   x30, 0x40
     addi  x31, x0, 2
     sw    x31, 0x100(x30)
     jal   x0, done
