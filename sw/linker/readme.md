@@ -101,6 +101,8 @@ C 的 DMEM 布局：
 
 `crt0.S` 使用 linker symbol 设置 `sp`、清零 `.bss`，然后调用 `main()`。C 程序自身不应直接写 `TEST_STATUS_ADDR`；它只返回 0 或非 0，由 `crt0.S` 统一写状态字。
 
+C runtime 还固定提供 `.text.trap` 入口。该入口保存寄存器、读取 `mcause/mepc/mtval`，调用弱符号 `__trap_handler_c`，再按 handler 返回值写 `mepc` 并执行 `mret`。普通 C 测试不触发 trap 时不会用到它；需要处理 trap 的测试提供同名强定义即可覆盖默认 FAIL handler。
+
 ## 修改地址图时要同步的地方
 
 如果后续继续调整 IMEM/DMEM 大小或基址，需要一起检查：

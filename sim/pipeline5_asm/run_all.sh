@@ -23,6 +23,10 @@ TESTS=(
     0301_pipeline5_nofwd_noredirect
     0302_pipeline5_fwd_noredirect
     0303_pipeline5_fwd_redirect
+
+    # trap 测试 （trap_entry / 全量 exception）
+    0501_trap_entry_smoke
+    0502_exception_full
 )
 
 PASS=0

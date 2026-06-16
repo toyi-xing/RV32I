@@ -1,4 +1,4 @@
-# v2.1 最小 M-mode CSR 与 trap 执行计划
+# v2.1 最小 M-mode CSR 与 trap 执行计划 `已完成`
 
 当前五级流水线 v2.0 已完成 37 条 RV32I 主路径、forwarding、load-use stall 和 branch/JAL/JALR control hazard。本计划根据 `docs/08xx/0831 最小M-mode CSR与trap规划.md` 编写，把下一阶段拆成可直接施工的 RTL 步骤。
 
@@ -1241,3 +1241,64 @@ RTL/testbench 已同步修改：
 - 对 Verilator 仿真来说，`ADDR_WIDTH = 16` 只是把 ROM/RAM 数组扩到每个 256 KiB，通常影响很小。
 - 仿真速度主要取决于执行了多少 cycle、是否打开波形、是否 dump 大量内部信号；单纯扩大未访问的 memory 容量不是主要瓶颈。
 - 综合/FPGA 资源会明显受 memory 容量影响，因此仿真可先放宽，综合目标需要单独评估。
+
+## 12. CSR/trap 测试补充计划 `已完成`
+
+当前 RTL 主体和基础仿真流程已经成型，本计划只记录下一轮更细的 trap/异常测试补充项。
+
+### 12.1 `0502_exception_full.S` `已完成`
+
+目标：写一个汇编总测试，尽量在一个程序内覆盖当前最小 M-mode trap 的主要同步异常路径。
+
+实现方式：
+
+- 新增 `sw/asm/0502_exception_full.S`。
+- 使用 `.text.trap` 定义统一 trap handler，依赖 `MTVEC_RESET = IMEM_BASE + 0x80`。
+- 每个 step 触发一个异常前，先在 DMEM 中写入期望的 `mcause/mepc/mtval/resume_pc`。
+- handler 读取 `mcause/mepc/mtval`，和期望值比较；通过后写 `mepc=resume_pc` 并 `mret`。
+- 主流程在每个 step resume 后检查 `trap_seen`、wrong-path store 是否被 kill，然后 `score++`。
+- 最后检查 `score == TOTAL_STEPS`，成立则写 `DMEM_BASE+0x100 = 1`，否则写 2。
+- 失败时额外写 `DMEM_BASE+0x104 = error_code`，方便看波形或 dump 定位。
+- 跑这个测试前，pipeline5 TB 不能把 `illegal_instr/mem_misaligned` 这类预期异常直接当成 `$finish` 条件；应改成观察 `trap_valid/trap_cause/trap_tval`，最终仍由 `TEST_STATUS_ADDR` 判 PASS/FAIL。
+
+覆盖内容：
+
+- `ECALL`：`mcause=11`。
+- `EBREAK`：`mcause=3`。
+- 普通非法指令：例如 `.word 0x00000000`。
+- 不支持扩展指令：例如 M 扩展 `MUL` 编码。
+- 非法 CSR 访问：写只读 CSR、读不存在 CSR。
+- load address misaligned。
+- store address misaligned，并检查 faulting store 没有写入 DMEM。
+- instruction address misaligned：用 `JALR` 构造 bit1 置位的目标地址。
+
+说明：
+
+- 非法指令类测试不需要 assembler 认识对应助记符，直接用 `.word` 写机器码。
+- 第一版不追求枚举所有非法 32-bit 编码，只覆盖当前 RTL 中会产生 `TRAP_CAUSE_ILLEGAL_INSTR` 的主要来源路径。
+- `TEST_STATUS_ADDR` 只在最终 PASS/FAIL 时写；初始化阶段不要写 0，因为 testbench 会把对该地址的任意写入视为测试结束。
+
+### 12.2 `0551_trap_smoke.c` `已完成`
+
+目标：写一个 C 层 trap smoke，验证 C runtime、linker、`.text.trap`、汇编 trap entry、C handler 和 `mret` 能连起来。
+
+建议实现方式：
+
+- 新增 `sw/c/0551_trap_smoke.c`。
+- 修改共享 `sw/c_runtime/crt0.S`，固定提供 `.text.trap` 入口：
+  - 保存 GPR。
+  - `csrr a0, mcause`、`csrr a1, mepc`、`csrr a2, mtval`。
+  - `call __trap_handler_c`。
+  - C handler 返回新的 resume PC。
+  - trap entry 写 `mepc`，恢复 GPR，执行 `mret`。
+- `crt0.S` 提供弱定义 `__trap_handler_c`。普通 C 程序如果意外 trap，默认 handler 写 FAIL 并停住；需要处理 trap 的 C 程序提供同名强定义覆盖它。
+- `0551_trap_smoke.c` 不再自己定义 `.text.trap`，只实现 `__trap_handler_c`：
+  - 记录 `mcause/mepc/mtval`。
+  - 对 ECALL 返回 `mepc + 4`。
+- `main()` 中用 inline asm 触发一次 `ecall`，`mret` 返回后检查 C handler 是否被调用，再 `return 0`。
+
+可能需要的配套修改：
+
+- 当前 `c_baremetal.ld` 和 `sim/pipeline5_c/05_build_mem.sh` 已支持 `.text.trap` 进入 `_imem.mem`，原则上不需要改 linker。
+- 如果工具链严格要求 CSR 指令扩展，可把 C/ASM trap 测试的编译参数调整为 `-march=rv32i_zicsr`；当前本地工具链在 `-march=rv32i` 下已经能接受 CSR/MRET 助记符。
+- 如果后续 C trap 测试变复杂，再考虑把 `__trap_handler_c` 的上下文参数扩展为结构体，或新增更完整的 trap-aware runtime。

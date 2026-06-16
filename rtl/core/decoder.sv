@@ -91,15 +91,15 @@ module decoder (
     assign uses_rs2_o     =  base_uses_rs2;
 
     // 查表 0821 文档 2.2 立即数生成规则
-    assign imm_sel_o      = imm_sel_e'(((opcode_o == OPCODE_OP_IMM)     ||
-                                        (opcode_o == OPCODE_LOAD)       ||
-                                        (opcode_o == OPCODE_JALR))      ?   IMM_I :
-                                        (opcode_o == OPCODE_STORE)      ?   IMM_S :
-                                        (opcode_o == OPCODE_BRANCH)     ?   IMM_B :
-                                       ((opcode_o == OPCODE_LUI)        ||
-                                        (opcode_o == OPCODE_AUIPC))     ?   IMM_U :
-                                        (opcode_o == OPCODE_JAL)         ?  IMM_J :
-                                                                            IMM_NONE);
+    assign imm_sel_o      = ((opcode_o == OPCODE_OP_IMM)     ||
+                             (opcode_o == OPCODE_LOAD)       ||
+                             (opcode_o == OPCODE_JALR))      ?   IMM_I :
+                             (opcode_o == OPCODE_STORE)      ?   IMM_S :
+                             (opcode_o == OPCODE_BRANCH)     ?   IMM_B :
+                            ((opcode_o == OPCODE_LUI)        ||
+                             (opcode_o == OPCODE_AUIPC))     ?   IMM_U :
+                             (opcode_o == OPCODE_JAL)        ?   IMM_J :
+                                                                 IMM_NONE;
     // 查表 0821 文档 5.3 alu_op 译码查表。
     // 当前 instr_id_e 中共有 37 条有效主线指令，不包含 INSTR_INVALID。
     // 本 case 显式覆盖 36 条指令；唯一落入 default 的有效指令是 INSTR_LUI。

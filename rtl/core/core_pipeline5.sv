@@ -4,10 +4,10 @@
 //
 // 综合PPA：
 //   - 该顶层使用 yosys 综合器 + 浙芯 55nm 开源工艺库综合结果：
-//   - 最终面积 21949.76，其中时序单元 13555.36 (61.76%)
-//   - Setup (max) Worst Slack = 18.508 ns  理论上可以跑到 ~670MHz
-//   -  Hold (min) Worst Slack = 0.088 ns
-//   - Total Power = 0.163 W (约 163 mW)
+//   - 最终面积 27074.32，其中时序单元 16378.60 (60.49%)
+//   - Setup (max) Worst Slack = 17.822 ns  理论上可以跑到 ~472MHz
+//   -  Hold (min) Worst Slack = 0.125 ns
+//   - Total Power = 0.206 W (约 206 mW)
 //
 // 规范：
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
