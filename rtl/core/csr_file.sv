@@ -130,7 +130,7 @@ module csr_file (
         endcase
     end
     // CSR 写非法地址检测
-    logic csr_illegal_w;      // 写 CSR 地址非法（含只读寄存器和未支持寄存器），但也要组合输出
+    logic csr_illegal_w;      // 写 CSR 地址非法（含只读寄存器和未支持寄存器），但也要组合输出，不然差一拍
     always_comb begin : CSR_ILLEGAL_W
         csr_illegal_w = 1'b0;
         if (csr_valid_i && csr_write_en_i) begin
