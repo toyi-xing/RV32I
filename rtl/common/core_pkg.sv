@@ -15,24 +15,63 @@ package core_pkg;
     // ILEN 表示指令宽度。第一版只支持 32 bit 基础指令，不支持 C 压缩指令扩展。
     parameter int unsigned ILEN = 32;
 
-    // RESET_PC 表示复位后取指阶段使用的第一条指令地址。
-    parameter logic [XLEN-1:0] RESET_PC = 32'h0000_0000;
+    // | 区域 | 起始地址 | 结束地址 | 大小 |
+    // |---|---:|---:|---:|
+    // | IMEM | `0x0000_0000` | `0x0003_FFFF` | 256 KiB |
+    // | DMEM | `0x0004_0000` | `0x0007_FFFF` | 256 KiB |
+    // | MMIO | `0x0008_0000` | `0x0008_FFFF` | 64 KiB |
 
-    // IMEM_BASE 表示软件可见的指令存储器起始地址。测试平台和链接脚本应把 .text 放在这里。
-    parameter logic [XLEN-1:0] IMEM_BASE = 32'h0000_0000;
-
-    // 当前教学平台的 IMEM/DMEM 仿真容量。ADDR_WIDTH 表示 32-bit word index 宽度。
+    // 当前平台的 IMEM/DMEM/MMIO 容量。ADDR_WIDTH 表示 32-bit word index 宽度。
     parameter int unsigned IMEM_ADDR_WIDTH = 16;
     parameter int unsigned DMEM_ADDR_WIDTH = 16;
+    parameter int unsigned MMIO_ADDR_WIDTH = 14;
+
+    // RAM、ROM 地址位宽按 word 算，而 CPU 地址按 Byte 算
+
+    // IMEM_BASE 表示软件可见的指令存储器起始地址。测试平台和链接脚本应把 .text 放在这里。
+    parameter logic [XLEN-1:0] IMEM_BASE       = 32'h0000_0000;
     parameter logic [XLEN-1:0] IMEM_SIZE_BYTES = 32'h0004_0000;
-    parameter logic [XLEN-1:0] DMEM_SIZE_BYTES = 32'h0004_0000;
+
+    // RESET_PC 表示复位后取指阶段使用的第一条指令地址。
+    parameter logic [XLEN-1:0] RESET_PC = IMEM_BASE;
 
     // MTVEC_RESET 表示 M-mode trap vector 的平台默认复位值。
     // 当前采用 direct mode，低 2 bit 必须为 0；软件启动后仍建议显式写 mtvec。
     parameter logic [XLEN-1:0] MTVEC_RESET = IMEM_BASE + 32'h0000_0080;
 
     // DMEM_BASE 表示软件可见的数据存储器起始地址。简单 RAM 封装模块可把它映射到内部 mem[0]。
-    parameter logic [XLEN-1:0] DMEM_BASE = 32'h0004_0000;
+    parameter logic [XLEN-1:0] DMEM_BASE       = 32'h0004_0000;
+    parameter logic [XLEN-1:0] DMEM_SIZE_BYTES = 32'h0004_0000;
+
+    // MMIO 起始地址与大小
+    parameter logic [XLEN-1:0] MMIO_BASE       = 32'h0008_0000;
+    parameter logic [XLEN-1:0] MMIO_SIZE_BYTES = 32'h0001_0000;
+
+    //-----------------------------------------------
+    // MMIO 外设寄存器地址分配
+    //-----------------------------------------------
+
+    parameter logic [XLEN-1:0] UART0_BASE         = 32'h0008_0000;
+    parameter logic [XLEN-1:0] UART0_SIZE_BYTES   = 32'h0000_0100;
+    parameter logic [11:0]     UART_TXDATA_OFFSET = 12'h000;
+    parameter logic [11:0]     UART_STATUS_OFFSET = 12'h004;
+    parameter logic [11:0]     UART_CTRL_OFFSET   = 12'h008;
+
+    parameter logic [XLEN-1:0] GPIO0_BASE         = 32'h0008_0100;
+    parameter logic [XLEN-1:0] GPIO0_SIZE_BYTES   = 32'h0000_0100;
+    parameter logic [11:0]     GPIO_OUT_OFFSET    = 12'h000;
+    parameter logic [11:0]     GPIO_IN_OFFSET     = 12'h004;
+    parameter logic [11:0]     GPIO_OE_OFFSET     = 12'h008;
+
+    // 保留
+    parameter logic [XLEN-1:0] TIMER0_BASE        = 32'h0008_0200;
+    parameter logic [XLEN-1:0] TIMER0_SIZE_BYTES  = 32'h0000_0100;
+    parameter logic [XLEN-1:0] ACCEL0_BASE        = 32'h0008_1000;
+    parameter logic [XLEN-1:0] ACCEL0_SIZE_BYTES  = 32'h0000_1000;
+
+    //-----------------------------------------------
+    // OPCODE 与 instr_id 编码及支持情况
+    //-----------------------------------------------
 
     // opcode_e 按 0821 第 3 章的 opcode 速查表划分指令大类。
     // decoder 可以先根据 opcode 进入大类，再根据 funct3/funct7 区分具体指令。
@@ -225,9 +264,9 @@ package core_pkg;
         TRAP_CAUSE_ILLEGAL_INSTR          = 5'd2,    // 触发源：INSTR_INVALID（包含非法 SYSTEM 编码） + 非法 CSR 访问(访问不存在的 CSR 或写只读 CSR)
         TRAP_CAUSE_BREAKPOINT             = 5'd3,    // 触发源：EBREAK 指令
         TRAP_CAUSE_LOAD_ADDR_MISALIGNED   = 5'd4,    // 触发源：load 指令给出的 mem 地址不对齐
-        // TRAP_CAUSE_LOAD_ACCESS_FAULT   = 5'd5,       // 暂不做：无 bus error 模型
+        TRAP_CAUSE_LOAD_ACCESS_FAULT      = 5'd5,    // 触发源：load 访问错误（地址不存在 / 不允许读）
         TRAP_CAUSE_STORE_ADDR_MISALIGNED  = 5'd6,    // 触发源：store 指令给出的 mem 地址不对齐
-        // TRAP_CAUSE_STORE_ACCESS_FAULT  = 5'd7,       // 暂不做：无 bus error 模型
+        TRAP_CAUSE_STORE_ACCESS_FAULT     = 5'd7,    // 触发源：store/AMO（原子写）访问错误（AMO目前不涉及，且AMO不允许读也会触发）
         // TRAP_CAUSE_ECALL_U             = 5'd8,       // 暂不做：只有 M-mode
         // TRAP_CAUSE_ECALL_S             = 5'd9,       // 暂不做：只有 M-mode
         // TRAP_CAUSE_RESERVED_10         = 5'd10,   // RISC-V 保留
