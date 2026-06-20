@@ -9,7 +9,7 @@
 //   - testbench 层级路径：tb_core_pipeline5.u_core 访问核内信号。
 //
 // 功能：
-//   - 产生 clk/rst 驱动 core_pipeline5。
+//   - 产生 clk/rst 驱动 core。
 //   - 实例化 simple_rom/simple_ram 并连接到 core。
 //   - 在每次提交时打印当前指令的 PC、原始指令、指令类型、rd 写使能和写回数据。
 //   - 观察 trap/MRET trace 信号，但暂不据此判定 PASS/FAIL。
@@ -44,17 +44,17 @@ module tb_core_pipeline5;
     end
 
     // -------------------------------------------------------------------------
-    // core_pipeline5 接口信号
+    // core 接口信号
     // -------------------------------------------------------------------------
     logic [core_pkg::ILEN-1:0]     imem_rdata;
     logic [core_pkg::XLEN-1:0]     imem_addr;
 
-    logic                          dmem_re;
-    logic                          dmem_we;
-    logic [3:0]                    dmem_be;
-    logic [core_pkg::XLEN-1:0]     dmem_addr;
-    logic [core_pkg::XLEN-1:0]     dmem_wdata;
-    logic [core_pkg::XLEN-1:0]     dmem_rdata;
+    logic                          lsu_re;
+    logic                          lsu_we;
+    logic [3:0]                    lsu_be;
+    logic [core_pkg::XLEN-1:0]     lsu_addr;
+    logic [core_pkg::XLEN-1:0]     lsu_wdata;
+    logic [core_pkg::XLEN-1:0]     lsu_rdata;
 
     logic                          commit_valid;
     logic [core_pkg::XLEN-1:0]     commit_pc;
@@ -73,19 +73,20 @@ module tb_core_pipeline5;
     // -------------------------------------------------------------------------
     // core 实例化
     // -------------------------------------------------------------------------
-    core_pipeline5 u_core (
+    core u_core (
         .clk_i              (clk),
         .rst_n_i            (rst_n),
 
         .imem_rdata_i       (imem_rdata),
         .imem_addr_o        (imem_addr),
 
-        .dmem_re_o          (dmem_re),
-        .dmem_we_o          (dmem_we),
-        .dmem_be_o          (dmem_be),
-        .dmem_addr_o        (dmem_addr),
-        .dmem_wdata_o       (dmem_wdata),
-        .dmem_rdata_i       (dmem_rdata),
+        .lsu_re_o           (lsu_re),
+        .lsu_we_o           (lsu_we),
+        .lsu_be_o           (lsu_be),
+        .lsu_addr_o         (lsu_addr),
+        .lsu_wdata_o        (lsu_wdata),
+        .lsu_rdata_i        (lsu_rdata),
+        .lsu_access_fault_i (1'b0),     // 临时接 0 确保兼容已有仿真，后续会换为 soc 级仿真
 
         .commit_valid_o     (commit_valid),
         .commit_pc_o        (commit_pc),
@@ -116,11 +117,11 @@ module tb_core_pipeline5;
     // -------------------------------------------------------------------------
     simple_ram u_simple_ram(
         .clk_i  (clk),
-        .we_i   (dmem_we),
-        .be_i   (dmem_be),
-        .addr_i (dmem_addr),
-        .wdata_i(dmem_wdata),
-        .rdata_o(dmem_rdata)
+        .we_i   (lsu_we),
+        .be_i   (lsu_be),
+        .addr_i (lsu_addr),
+        .wdata_i(lsu_wdata),
+        .rdata_o(lsu_rdata)
     );
 
     // -------------------------------------------------------------------------
@@ -154,7 +155,7 @@ module tb_core_pipeline5;
     logic [core_pkg::XLEN-1:0]           sp_min_addr;
 
     wire [core_pkg::XLEN-1:0] current_sp = u_core.u_regfile.gpr_q[2];
-    wire dmem_access_for_stats = rst_n && (dmem_re || dmem_we) && (dmem_addr != TEST_STATUS_ADDR);
+    wire dmem_access_for_stats = rst_n && (lsu_re || lsu_we) && (lsu_addr != TEST_STATUS_ADDR);
     wire sp_in_dmem_range = (current_sp >= core_pkg::DMEM_BASE) && (current_sp <= STACK_TOP_ADDR);
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -168,11 +169,11 @@ module tb_core_pipeline5;
         end else begin
             if (dmem_access_for_stats) begin
                 dmem_access_seen <= 1'b1;
-                if (!dmem_access_seen || dmem_addr < dmem_min_addr) begin
-                    dmem_min_addr <= dmem_addr;
+                if (!dmem_access_seen || lsu_addr < dmem_min_addr) begin
+                    dmem_min_addr <= lsu_addr;
                 end
-                if (!dmem_access_seen || dmem_addr > dmem_max_addr) begin
-                    dmem_max_addr <= dmem_addr;
+                if (!dmem_access_seen || lsu_addr > dmem_max_addr) begin
+                    dmem_max_addr <= lsu_addr;
                 end
             end
 
@@ -256,10 +257,10 @@ module tb_core_pipeline5;
             test_done         <= 1'b0;
             test_passed       <= 1'b0;
             test_status_value <= '0;
-        end else if (dmem_we && dmem_addr == TEST_STATUS_ADDR) begin
+        end else if (lsu_we && lsu_addr == TEST_STATUS_ADDR) begin
             test_done         <= 1'b1;
-            test_passed       <= (dmem_wdata == TEST_PASS_VALUE);
-            test_status_value <= dmem_wdata;
+            test_passed       <= (lsu_wdata == TEST_PASS_VALUE);
+            test_status_value <= lsu_wdata;
         end
     end
 

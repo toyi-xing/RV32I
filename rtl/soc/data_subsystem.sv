@@ -5,12 +5,12 @@
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
 //   - 当前是固定响应译码层，没有 ready/valid backpressure。
-//   - core_re_i/core_we_i 来自 core_pipeline5.lsu_re_o/lsu_we_o。
-//   - core_access_fault_o 接回 core_pipeline5.lsu_access_fault_i。
+//   - core_re_i/core_we_i 来自 core.lsu_re_o/lsu_we_o。
+//   - core_access_fault_o 接回 core.lsu_access_fault_i。
 //   - dmem_access_o/mmio_access_o 只是观察信号，给 testbench 做统计或波形 debug。
 //
 // 功能：
-//   - 接收 core_pipeline5 的 lsu_* request（re/we/be/addr/wdata）。
+//   - 接收 core 的 lsu_* request（re/we/be/addr/wdata）。
 //   - 判断地址命中 DMEM、UART0、GPIO0，还是未映射。
 //   - 实例化 simple_ram、mmio_uart、mmio_gpio。
 //   - 对 store，只把写使能送到命中的设备。

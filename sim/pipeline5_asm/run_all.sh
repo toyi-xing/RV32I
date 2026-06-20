@@ -27,6 +27,7 @@ TESTS=(
     # trap 测试 （trap_entry / 全量 exception）
     0501_trap_entry_smoke
     0502_exception_full
+    0503_csr_instr_test
 )
 
 PASS=0

@@ -8,7 +8,7 @@
 
 本阶段目标：
 
-- 保持 `core_pipeline5.sv` 作为 CPU core，不在 core 内部实例化 RAM 或外设。
+- 保持 `rtl/core/core.sv` 中的 `core` 模块作为 CPU core，不在 core 内部实例化 RAM 或外设。
 - 新增 `rtl/common/soc_pkg.sv`，把 MMIO 总窗口、外设窗口和外设寄存器 offset 从 `core_pkg.sv` 迁出；`RESET_PC/MTVEC_RESET/IMEM/DMEM/XLEN` 等仍保留在 `core_pkg.sv`。
 - 新增最小平台 wrapper `rv32i_soc.sv`，把 core、IMEM、DMEM、MMIO 外设和地址译码连接起来。
 - 在现有 IMEM/DMEM 地址图后新增 MMIO window。
@@ -34,7 +34,7 @@
 
 - 它不是复杂 SoC，也不引入新总线协议。
 - 它只是当前教学平台顶层，用来把 CPU core、ROM、RAM、MMIO decode、UART/GPIO 组合成一个可仿真的最小平台。
-- 后续 0833/0834 增加 timer/interrupt/wait-state 时，优先在这个平台层扩展，不污染 `core_pipeline5` 的 CPU 微架构边界。
+- 后续 0833/0834 增加 timer/interrupt/wait-state 时，优先在这个平台层扩展，不污染 `core` 的 CPU 微架构边界。
 
 目标结构：
 
@@ -43,7 +43,7 @@ tb_core_pipeline5
     |
     v
 rv32i_soc
-    |-> core_pipeline5
+    |-> core
     |-> simple_rom
     |-> data_subsystem
             |-> simple_ram
@@ -54,8 +54,8 @@ rv32i_soc
 
 说明：
 
-- `core_pipeline5` 仍暴露 `imem_*` 取指接口。
-- `core_pipeline5` 的数据访问接口改名为 `lsu_*`，表示 Load/Store Unit 发出的 data access request；它可能访问 DMEM，也可能访问 MMIO，不能再继续用 `dmem_*` 命名。
+- `core` 仍暴露 `imem_*` 取指接口。
+- `core` 的数据访问接口改名为 `lsu_*`，表示 Load/Store Unit 发出的 data access request；它可能访问 DMEM，也可能访问 MMIO，不能再继续用 `dmem_*` 命名。
 - `data_subsystem` 根据 `lsu_*` 请求地址决定访问 DMEM、UART、GPIO，或返回 access fault。
 - `rv32i_soc` 和 testbench 对外观察口仍可使用 `data_*`，表示“当前 core 的数据侧访问”，不特指 RAM 或 MMIO。
 
@@ -379,7 +379,7 @@ rtl/common/pipeline_pkg.sv
 
 职责：
 
-- 接收 `core_pipeline5` 的 `lsu_*` request。
+- 接收 `core` 的 `lsu_*` request。
 - 判断地址命中 DMEM、UART0、GPIO0，还是未映射。
 - 实例化 `simple_ram`、`mmio_uart`、`mmio_gpio`。
 - 对 store，只把写使能送到命中的设备。
@@ -416,8 +416,8 @@ module data_subsystem (
 
 说明：
 
-- `core_re_i/core_we_i` 来自 `core_pipeline5.lsu_re_o/lsu_we_o`。
-- `core_access_fault_o` 接回 `core_pipeline5.lsu_access_fault_i`。
+- `core_re_i/core_we_i` 来自 `core.lsu_re_o/lsu_we_o`。
+- `core_access_fault_o` 接回 `core.lsu_access_fault_i`。
 - `dmem_access_o/mmio_access_o` 只是观察信号，给 testbench 做统计或波形 debug。
 
 ### 4.3 地址命中判断
@@ -528,9 +528,36 @@ end
 
 未映射地址读返回 0，同时 `core_access_fault_o = 1`。最终不会正常写回 GPR，因为 access fault 会在 MEM 边界被 trap 接受，`kill_mem_wb` 会阻止 faulting load 进入普通 WB。
 
-## 5. 扩展 core 数据访问错误通路 `执行中`
+## 5. 扩展 core 数据访问错误通路 `已完成`
 
-### 5.1 修改 `rtl/core/core_pipeline5.sv` 数据访问端口命名
+### 5.1 整理 core 顶层命名与数据访问端口 `已完成`
+
+本步只做 core 边界命名整理和最小兼容连接，不改变 core 内部数据通路功能。做完后，在没有触发 access fault 的既有程序上，现有 pipeline5 仿真应仍可通过。
+
+#### 5.1.1 文件名和模块名从 `core_pipeline5` 改为 `core`
+
+`rtl/core/core_pipeline5.sv` 改名为 `rtl/core/core.sv`，模块名同步改成更稳定的：
+
+```systemverilog
+module core (
+    ...
+);
+```
+
+原因：
+
+- `core_pipeline5` 描述的是当前微架构形态，作为模块名会把后续 SoC/testbench 都绑死在“五级流水”这个实现细节上。
+- `core` 更适合作为 CPU core 的稳定集成边界；后续即使内部继续扩展 CSR、interrupt、wait-state，外部 wrapper 不需要反复改模块名。
+- 当前仿真脚本按 `rtl/core/*.sv` 收集 RTL 文件，文件名改成 `core.sv` 不需要单独修改脚本；若后续脚本改为显式文件列表，需要同步更新。
+
+同步修改：
+
+- `tb/sv/tb_core_pipeline5.sv` 中 DUT 实例化从 `core_pipeline5 u_core` 改为 `core u_core`。
+- 第 6 章新增 `rv32i_soc.sv` 时，也应实例化 `core u_core`。
+- 脚本目前按目录收集 `rtl/core/*.sv`，本步不需要改脚本；若有显式 top/module 名检查，需要同步成 `core`。
+- testbench 模块名 `tb_core_pipeline5` 暂时可以保留，因为它表示“pipeline5 阶段使用的测试平台”，不是 DUT 模块名。
+
+#### 5.1.2 数据访问端口从 `dmem_*` 改为 `lsu_*`
 
 把 core 边界原有 `dmem_*` 端口改名为 `lsu_*`：
 
@@ -556,7 +583,35 @@ input logic lsu_access_fault_i,  // 当前 LSU data access 命中未映射或非
 - 外部可以把它接到 RAM，也可以接到包含 RAM/MMIO 的 data subsystem。
 - `lsu_access_fault_i` 只表示 data load/store 访问错误，不表示指令取指错误。
 
-### 5.2 修改 `rtl/core/mem_stage.sv` 端口
+同步修改：
+
+- `tb/sv/tb_core_pipeline5.sv` 里的局部信号可从 `dmem_*` 改为 `lsu_*`，也可以暂时保留 `dmem_*` 局部名但注释必须说明其含义已是 core data access；推荐本步直接改成 `lsu_*`，避免和后续 `data_subsystem.dmem_access_o` 混淆。
+- `tb/sv/tb_core_pipeline5.sv` 里的 DUT 端口连接必须从 `.dmem_*` 改为 `.lsu_*`。
+- 在 `rv32i_soc.sv` 尚未接入前，现有 core 直连 testbench 仍直接把 `lsu_*` 接到 `simple_ram`，并临时给 `lsu_access_fault_i` 接 `1'b0`，这样既有无异常程序仿真应保持通过。
+- PASS/FAIL、DMEM range、stack 统计逻辑若仍直接观察 core 直连 RAM，可继续用 `lsu_we/lsu_addr/lsu_wdata` 判断；等第 7 章切到 SoC wrapper 后再改成 `data_*`/`dmem_access_o` 口径。
+
+### 5.2 修改 `rtl/core/mem_stage.sv` 端口 `已完成`
+
+本步进入 MEM 阶段内部，把对外 data access 端口也统一成 `lsu_*` 口径。`mem_stage` 仍然负责 load/store 地址、byte enable、写数据对齐和 load 数据扩展；只是这些请求已经不再特指 DMEM，而是发往 core 外部的 LSU data side。
+
+原 `dmem_*` 端口统一改名 `已完成`：
+
+```systemverilog
+input  logic [core_pkg::XLEN-1:0] lsu_rdata_i,  // LSU load 返回的 32 bit 原始 word 数据。
+
+output logic                      lsu_re_o,     // LSU load 读请求；地址不对齐或前级已有 exception 时不发起访问。
+output logic                      lsu_we_o,     // LSU store 写请求；地址不对齐或前级已有 exception 时不发起访问。
+output logic [3:0]                lsu_be_o,     // LSU store byte enable。
+output logic [core_pkg::XLEN-1:0] lsu_addr_o,   // LSU load/store 地址。
+output logic [core_pkg::XLEN-1:0] lsu_wdata_o,  // LSU 按 byte lane 对齐后的 store 数据。
+```
+
+同步修改 `mem_stage` 头注释：
+
+- “dmem 固定响应”改成“LSU 数据侧固定响应”。
+- “生成 dmem 读/写使能”改成“生成 LSU load/store 请求”。
+- “从 dmem_rdata_i 选出数据”改成“从 lsu_rdata_i 选出数据”。
+- 不对齐访问屏蔽的是 `lsu_re_o/lsu_we_o`，不是特定 RAM 写使能。
 
 新增输入：
 
@@ -567,35 +622,42 @@ input logic lsu_access_fault_i, // 当前有效 load/store 地址没有命中已
 新增观察输出，方便波形和后续 testbench：
 
 ```systemverilog
+output logic mem_access_fault_o,
 output logic load_access_fault_o,
 output logic store_access_fault_o,
 ```
 
-`core_pipeline5.sv` 里可以先接到内部 wire，暂不导出顶层。
+这些端口可在 `rtl/core/core.sv` 里接到内部观察 wire，也可以在当前阶段留空；它们不参与 core 顶层功能逻辑，当前实现选择留空。
 
-### 5.3 修改 `core_pipeline5.sv` 中 `mem_stage` 实例连接
+### 5.3 修改 `core` 中 `mem_stage` 实例连接 `已完成`
 
 `u_mem_stage` 新增连接：
 
 ```systemverilog
+.lsu_rdata_i         (lsu_rdata_i),
+.lsu_re_o            (lsu_re_o),
+.lsu_we_o            (lsu_we_o),
+.lsu_be_o            (lsu_be_o),
+.lsu_addr_o          (lsu_addr_o),
+.lsu_wdata_o         (lsu_wdata_o),
 .lsu_access_fault_i  (lsu_access_fault_i),
-.load_access_fault_o (mem_load_access_fault),
-.store_access_fault_o(mem_store_access_fault),
+.mem_access_fault_o  (),
+.load_access_fault_o (),
+.store_access_fault_o(),
 ```
 
-`mem_load_access_fault/mem_store_access_fault` 可作为内部 wire，暂时不导出 `core_pipeline5`。
+同时删除/替换原来的 `.dmem_rdata_i/.dmem_re_o/.dmem_we_o/.dmem_be_o/.dmem_addr_o/.dmem_wdata_o` 连接。5.2 做完后，`core.sv` 内部不应再出现 `mem_stage` 的 `dmem_*` 端口连接。
 
-### 5.4 `mem_stage` access fault 判断
+这些 observation 输出当前留空，后续如需波形或 testbench 观察，可再接到内部 wire；暂时不导出 `core` 顶层。
+
+### 5.4 `mem_stage` access fault 判断 `已完成`
 
 新增组合信号：
 
 ```systemverilog
-wire mem_access_fault = valid_i
-                      & (mem_re_i | mem_we_i)
-                      & lsu_access_fault_i;
-
-assign load_access_fault_o  = valid_i & mem_re_i & mem_access_fault;
-assign store_access_fault_o = valid_i & mem_we_i & mem_access_fault;
+assign load_access_fault_o  = valid_i & lsu_access_fault_i & mem_re_i;
+assign store_access_fault_o = valid_i & lsu_access_fault_i & mem_we_i;
+assign mem_access_fault_o   = load_access_fault_o | store_access_fault_o;
 ```
 
 实际 exception 合并时要遵守优先级：
@@ -611,7 +673,7 @@ assign store_access_fault_o = valid_i & mem_we_i & mem_access_fault;
 ```systemverilog
 assign exception_valid_o = exception_valid_i
                          | mem_misaligned_o
-                         | mem_access_fault;
+                         | mem_access_fault_o;
 
 assign exception_cause_o = exception_valid_i      ? exception_cause_i                  :
                            load_misaligned_o      ? TRAP_CAUSE_LOAD_ADDR_MISALIGNED    :
@@ -622,7 +684,7 @@ assign exception_cause_o = exception_valid_i      ? exception_cause_i           
 
 assign exception_tval_o  = exception_valid_i ? exception_tval_i :
                            mem_misaligned_o  ? alu_result_i     :
-                           mem_access_fault  ? alu_result_i     : '0;
+                           mem_access_fault_o ? alu_result_i    : '0;
 ```
 
 注意：
@@ -631,7 +693,7 @@ assign exception_tval_o  = exception_valid_i ? exception_tval_i :
 - 未映射 store 的实际副作用由 `data_subsystem` 地址命中信号屏蔽，而不是由 `mem_stage` 关掉 `lsu_we_o`。
 - `mem_stage` 只负责把 access fault 变成 precise trap。
 
-### 5.5 `lsu_re_o/lsu_we_o` 保持现有门控
+### 5.5 `lsu_re_o/lsu_we_o` 保持现有门控 `已完成`
 
 保持当前门控条件：
 
@@ -646,18 +708,18 @@ assign lsu_we_o = valid_i & ~exception_valid_i & ~mem_misaligned_o & mem_we_i;
 - access fault 需要 data subsystem 根据地址译码得出，所以不能在发请求前就门控。
 - data subsystem 对未命中地址不写任何 RAM/MMIO，只返回 access fault。
 
-## 6. 新增 `rtl/soc/rv32i_soc.sv`
+## 6. 新增 `rtl/soc/rv32i_soc.sv` `执行中`
 
 ### 6.1 模块职责
 
-`rv32i_soc` 是当前最小平台顶层，不替代 `core_pipeline5` 的 CPU core 职责。
+`rv32i_soc` 是当前最小平台顶层，不替代 `core` 的 CPU core 职责。
 
 职责：
 
-- 实例化 `core_pipeline5`。
+- 实例化 `core`。
 - 实例化 `simple_rom` 作为 IMEM。
 - 实例化 `data_subsystem` 作为 DMEM/MMIO 数据侧。
-- 把 `data_subsystem.core_access_fault_o` 接回 `core_pipeline5.lsu_access_fault_i`。
+- 把 `data_subsystem.core_access_fault_o` 接回 `core.lsu_access_fault_i`。
 - 导出 commit/trap 观察信号给 testbench。
 - 导出 UART/GPIO/data access 观察信号给 testbench。
 
@@ -724,7 +786,7 @@ logic [core_pkg::XLEN-1:0] core_lsu_rdata;
 logic                      core_lsu_access_fault;
 ```
 
-连接 `core_pipeline5`：
+连接 `core`：
 
 ```systemverilog
 .imem_rdata_i        (core_imem_rdata),
@@ -789,7 +851,7 @@ assign data_wdata_o        = core_lsu_wdata;
 assign data_access_fault_o = core_lsu_access_fault;
 ```
 
-commit/trap 观察信号直接透传 `core_pipeline5` 输出。
+commit/trap 观察信号直接透传 `core` 输出。
 
 ## 7. 适配 `tb/sv/tb_core_pipeline5.sv`
 
@@ -798,7 +860,7 @@ commit/trap 观察信号直接透传 `core_pipeline5` 输出。
 当前 testbench 直接实例化：
 
 ```systemverilog
-core_pipeline5 u_core (...);
+core u_core (...);
 simple_rom u_simple_rom (...);
 simple_ram u_simple_ram (...);
 ```
@@ -1000,7 +1062,7 @@ RTL_FILES=(
 原因：
 
 - testbench 文件名和模块名暂时不改，减少脚本影响。
-- testbench 内部从实例化 `core_pipeline5` 改成实例化 `rv32i_soc`。
+- testbench 内部从实例化 `core` 改成实例化 `rv32i_soc`。
 
 ## 9. 软件可见常量
 
@@ -1084,7 +1146,7 @@ sw/asm/include/platform.inc
 需要后续同步：
 
 - `README.md`
-  - 当前顶层从 core-level 测试切到 `rv32i_soc` 平台测试。
+  - 当前顶层从 core 直连测试切到 `rv32i_soc` 平台测试。
   - 支持最小 MMIO 和 access fault。
 - `docs/simulation_flow_pipeline_asm.md`
   - 说明 testbench 内部实例化 SoC wrapper。
@@ -1124,7 +1186,7 @@ sw/include/
 | 文件 | 修改内容 |
 |---|---|
 | `rtl/common/core_pkg.sv` | 移出 MMIO/外设地址常量；保留 IMEM/DMEM/reset/trap 默认入口；新增 access fault trap cause |
-| `rtl/core/core_pipeline5.sv` | 数据访问端口从 `dmem_*` 改名为 `lsu_*`；新增 `lsu_access_fault_i` 并连接到 `mem_stage` |
+| `rtl/core/core.sv` | 由 `core_pipeline5.sv` 改名而来；模块名从 `core_pipeline5` 改为 `core`；数据访问端口从 `dmem_*` 改名为 `lsu_*`；新增 `lsu_access_fault_i` 并连接到 `mem_stage` |
 | `rtl/core/mem_stage.sv` | 合并 load/store access fault exception |
 | `tb/sv/tb_core_pipeline5.sv` | 从直接实例化 core/memory 改为实例化 `rv32i_soc` |
 | `sim/pipeline5_asm/06_run_sim.sh` | RTL 文件列表加入 `rtl/periph/*.sv`、`rtl/soc/*.sv` |

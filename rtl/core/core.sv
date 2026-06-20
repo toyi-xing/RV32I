@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// 文件      : rtl/core/core_pipeline5.sv
+// 文件      : rtl/core/core.sv
 // 用途      : RV32I 五级流水线教学核顶层。
 //
 // 综合PPA：
@@ -13,8 +13,8 @@
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
 //   - commit_instr_id_o 为仿真 trace 观察口，沿用 commit_* 分组命名。
 //   - 本模块实现 IF/ID/EX/MEM/WB 五级流水线顶层连接。
-//   - 外接 imem/dmem，不在 core 内部实例化具体 memory。
-//   - 当前假设 imem/dmem 固定响应，没有 valid/ready 握手。
+//   - 外接 imem 和 LSU 数据侧接口，不在 core 内部实例化具体 memory。
+//   - 当前假设 imem/LSU 数据侧固定响应，没有 valid/ready 握手。
 //
 // 功能：
 //   - 连接 pc_reg、if_stage、id_stage、ex_stage、mem_stage、wb_stage、regfile、csr_file 和 trap_ctrl。
@@ -26,19 +26,20 @@
 
 `default_nettype none
 
-module core_pipeline5 (
+module core (
     input  logic                          clk_i,
     input  logic                          rst_n_i,
 
     input  logic [core_pkg::ILEN-1:0]     imem_rdata_i,         // imem 返回的 32 bit instruction。
     output logic [core_pkg::XLEN-1:0]     imem_addr_o,          // 输出给 imem 的取指地址。
 
-    output logic                          dmem_re_o,            // 输出给 dmem 的 load 读使能。
-    output logic                          dmem_we_o,            // 输出给 dmem 的 store 写使能。
-    output logic [3:0]                    dmem_be_o,            // 输出给 dmem 的 store byte enable。
-    output logic [core_pkg::XLEN-1:0]     dmem_addr_o,          // 输出给 dmem 的 load/store 地址。
-    output logic [core_pkg::XLEN-1:0]     dmem_wdata_o,         // 输出给 dmem 的已按 byte lane 对齐的 store 数据。
-    input  logic [core_pkg::XLEN-1:0]     dmem_rdata_i,         // dmem 返回的 32 bit load 原始 word 数据。
+    output logic                          lsu_re_o,             // LSU load 读请求。
+    output logic                          lsu_we_o,             // LSU store 写请求。
+    output logic [3:0]                    lsu_be_o,             // LSU store byte enable。
+    output logic [core_pkg::XLEN-1:0]     lsu_addr_o,           // LSU load/store 地址，外部负责判断命中 DMEM/MMIO/未映射区域。
+    output logic [core_pkg::XLEN-1:0]     lsu_wdata_o,          // LSU 已按 byte lane 对齐的 store 数据。
+    input  logic [core_pkg::XLEN-1:0]     lsu_rdata_i,          // LSU load 返回的 32 bit 原始 word 数据。
+    input  logic                          lsu_access_fault_i,   // LSU data access 命中未映射或非法 data 地址。
 
     // WB 指令提交观察
     output logic                          commit_valid_o,       // 当前拍是否有有效指令提交。
@@ -164,8 +165,6 @@ module core_pipeline5 (
 
     // MEM
     wire [core_pkg::XLEN-1:0] mem_load_data;
-    wire                      mem_load_misaligned;
-    wire                      mem_store_misaligned;
     wire                      mem_exception_valid;
     core_pkg::trap_cause_e    mem_exception_cause;
     wire [core_pkg::XLEN-1:0] mem_exception_tval;
@@ -496,34 +495,39 @@ module core_pipeline5 (
     assign ex_mem_data_d.csr_write_en    = id_ex_data_q.csr_write_en;
 
     mem_stage u_mem_stage (
-        .valid_i            (ex_mem_valid),
-        .alu_result_i       (ex_mem_data_q.alu_result),
-        .store_data_i       (ex_mem_data_q.store_data),
-        .mem_re_i           (ex_mem_data_q.mem_re),
-        .mem_we_i           (ex_mem_data_q.mem_we),
-        .mem_size_i         (ex_mem_data_q.mem_size),
-        .mem_unsigned_i     (ex_mem_data_q.mem_unsigned),
-        .dmem_rdata_i       (dmem_rdata_i),
+        .valid_i                (ex_mem_valid),
+        .alu_result_i           (ex_mem_data_q.alu_result),
+        .store_data_i           (ex_mem_data_q.store_data),
+        .mem_re_i               (ex_mem_data_q.mem_re),
+        .mem_we_i               (ex_mem_data_q.mem_we),
+        .mem_size_i             (ex_mem_data_q.mem_size),
+        .mem_unsigned_i         (ex_mem_data_q.mem_unsigned),
+        .lsu_rdata_i            (lsu_rdata_i),
 
-        .exception_valid_i  (ex_mem_data_q.exception_valid),
-        .exception_cause_i  (ex_mem_data_q.exception_cause),
-        .exception_tval_i   (ex_mem_data_q.exception_tval),
+        .exception_valid_i      (ex_mem_data_q.exception_valid),
+        .exception_cause_i      (ex_mem_data_q.exception_cause),
+        .exception_tval_i       (ex_mem_data_q.exception_tval),
+        .lsu_access_fault_i     (lsu_access_fault_i),
 
-        .valid_o            (mem_valid),
-        .dmem_re_o          (dmem_re_o),
+        .valid_o                (mem_valid),
+        .lsu_re_o               (lsu_re_o),
 
-        .dmem_we_o          (dmem_we_o),
-        .dmem_be_o          (dmem_be_o),
-        .dmem_addr_o        (dmem_addr_o),
-        .dmem_wdata_o       (dmem_wdata_o),
-        .load_data_o        (mem_load_data),
+        .lsu_we_o               (lsu_we_o),
+        .lsu_be_o               (lsu_be_o),
+        .lsu_addr_o             (lsu_addr_o),
+        .lsu_wdata_o            (lsu_wdata_o),
 
-        .mem_misaligned_o   (),     // 旧合并观察口不再导出顶层；保留下面两个细分观察线和 exception 输出。
-        .load_misaligned_o  (mem_load_misaligned),
-        .store_misaligned_o (mem_store_misaligned),
-        .exception_valid_o  (mem_exception_valid),
-        .exception_cause_o  (mem_exception_cause),
-        .exception_tval_o   (mem_exception_tval)
+        .load_data_o            (mem_load_data),
+
+        .exception_valid_o      (mem_exception_valid),
+        .exception_cause_o      (mem_exception_cause),
+        .exception_tval_o       (mem_exception_tval),
+        .mem_misaligned_o       (),     // 可作为调试信号使用，暂不接
+        .load_misaligned_o      (),
+        .store_misaligned_o     (),
+        .mem_access_fault_o     (),
+        .load_access_fault_o    (),
+        .store_access_fault_o   ()
     );
 
     // 与 mem_stage “并连”

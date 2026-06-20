@@ -1,6 +1,6 @@
 # RV32I Teaching Core
 
-本仓库是一个 RV32I 教学核实现仓库，当前维护对象是五级流水线顶层 `core_pipeline5.sv`，已完成最小 M-mode CSR/trap 支持。
+本仓库是一个 RV32I 教学核实现仓库，当前维护对象是五级流水线顶层 `core.sv`，已完成最小 M-mode CSR/trap 支持。
 
 工程架构说明见 `docs/08xx/` 下的 082x 系列文档。支持的指令见 `docs/08xx/0821 RV32I最小教学核指令集、编码与译码参考.md`。CSR/trap 设计见 `docs/08xx/0831 最小M-mode CSR与trap规划.md`。
 
@@ -26,7 +26,7 @@
 |---|------|------|------|------|
 | 单周期 RV32I | `core_single_cycle.sv` | 历史版本已完成，当前不再维护 | v1.0 | 最终兼容版本为 v2.0，自 v2.10 起删除该文件 |
 | 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | 后续开发持续在该文件上累积 |
-| 五级流水线 RV32I（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | - |
+| 五级流水线 RV32I（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | 自 v3.4 起，将 `core_pipeline5.sv` 改名为 `core.sv` |
 
 ---
 
@@ -46,7 +46,7 @@
 ```
 rtl/common/core_pkg.sv               # ISA/CSR/trap 常量与枚举
 rtl/common/pipeline_pkg.sv           # 流水线寄存器 struct 和 forwarding 类型
-rtl/core/core_pipeline5.sv           # 五级流水顶层
+rtl/core/core.sv                     # 五级流水顶层
 rtl/core/pipe_reg.sv                 # 四组流水线寄存器
 rtl/core/forwarding_unit.sv          # RAW 数据前递
 rtl/core/hazard_unit.sv              # load-use/CSR-use stall + EX redirect 控制
@@ -112,7 +112,7 @@ sim/pipeline5_asm/run_all.sh
 sim/pipeline5_c/run_test.sh <n>            # n 表示 sw/c 下 c 程序前的四位编码
 
 # —— 汇编仿真 ——
-sim/pipeline5_c/run_test.sh <m>            # m 表示 sw/asm 下 汇编程序前的四位编码
+sim/pipeline5_asm/run_test.sh <m>          # m 表示 sw/asm 下 汇编程序前的四位编码
 ```
 
 汇编仿真详细流程见 [docs/simulation_flow_pipeline_asm.md](docs/simulation_flow_pipeline_asm.md)。C 仿真流程见 [docs/simulation_flow_pipeline_c.md](docs/simulation_flow_pipeline_c.md)。
