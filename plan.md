@@ -2,7 +2,7 @@
 
 当前五级流水线核已经完成 RV32I 主路径、CSR/trap、C runtime trap 入口和 256 KiB IMEM/DMEM 地址图。本计划根据 `docs/08xx/0832 最小memory map与MMIO外设规划.md` 编写，把第二阶段拆成可直接施工的 RTL/工程步骤。
 
-本计划只写实现拆分，暂不写测试程序、回归命令和后续问题记录；这些内容后续需要时再补。
+本计划前半部分写 RTL/工程实现拆分；从第 7 章开始补 SoC-level 定向测试入口，作为 0832 当前验证以及后续 0833 interrupt、0834 wait-state/backpressure 验证的共同基础。
 
 ## 0. 实现边界
 
@@ -39,7 +39,16 @@
 目标结构：
 
 ```text
+core-level regression:
+
 tb_core_pipeline5
+    |-> core
+    |-> simple_rom
+    |-> simple_ram
+
+soc-level directed test:
+
+tb_rv32i_soc
     |
     v
 rv32i_soc
@@ -57,7 +66,9 @@ rv32i_soc
 - `core` 仍暴露 `imem_*` 取指接口。
 - `core` 的数据访问接口改名为 `lsu_*`，表示 Load/Store Unit 发出的 data access request；它可能访问 DMEM，也可能访问 MMIO，不能再继续用 `dmem_*` 命名。
 - `data_subsystem` 根据 `lsu_*` 请求地址决定访问 DMEM、UART、GPIO，或返回 access fault。
-- `rv32i_soc` 和 testbench 对外观察口仍可使用 `data_*`，表示“当前 core 的数据侧访问”，不特指 RAM 或 MMIO。
+- `tb_core_pipeline5` 暂时保留为 core-only 回归入口，用于证明 core 主路径没有被 SoC 集成改动破坏。
+- `tb_rv32i_soc` 作为新的 SoC-level 定向测试入口，用于观察 UART/GPIO/MMIO/access fault，以及后续 interrupt/backpressure 行为。
+- `rv32i_soc` 和 SoC testbench 对外观察口仍可使用 `data_*`，表示“当前 core 的数据侧访问”，不特指 RAM 或 MMIO。
 
 ## 1. 公共类型和地址常量 `已完成`
 
@@ -588,7 +599,7 @@ input logic lsu_access_fault_i,  // 当前 LSU data access 命中未映射或非
 - `tb/sv/tb_core_pipeline5.sv` 里的局部信号可从 `dmem_*` 改为 `lsu_*`，也可以暂时保留 `dmem_*` 局部名但注释必须说明其含义已是 core data access；推荐本步直接改成 `lsu_*`，避免和后续 `data_subsystem.dmem_access_o` 混淆。
 - `tb/sv/tb_core_pipeline5.sv` 里的 DUT 端口连接必须从 `.dmem_*` 改为 `.lsu_*`。
 - 在 `rv32i_soc.sv` 尚未接入前，现有 core 直连 testbench 仍直接把 `lsu_*` 接到 `simple_ram`，并临时给 `lsu_access_fault_i` 接 `1'b0`，这样既有无异常程序仿真应保持通过。
-- PASS/FAIL、DMEM range、stack 统计逻辑若仍直接观察 core 直连 RAM，可继续用 `lsu_we/lsu_addr/lsu_wdata` 判断；等第 7 章切到 SoC wrapper 后再改成 `data_*`/`dmem_access_o` 口径。
+- PASS/FAIL、DMEM range、stack 统计逻辑在 core-only TB 中可继续用 `lsu_we/lsu_addr/lsu_wdata` 判断；SoC-level TB 另用 `rv32i_soc.data_*` 和 `dmem_access_o/mmio_access_o` 观察。
 
 ### 5.2 修改 `rtl/core/mem_stage.sv` 端口 `已完成`
 
@@ -708,7 +719,7 @@ assign lsu_we_o = valid_i & ~exception_valid_i & ~mem_misaligned_o & mem_we_i;
 - access fault 需要 data subsystem 根据地址译码得出，所以不能在发请求前就门控。
 - data subsystem 对未命中地址不写任何 RAM/MMIO，只返回 access fault。
 
-## 6. 新增 `rtl/soc/rv32i_soc.sv` `执行中`
+## 6. 新增 `rtl/soc/rv32i_soc.sv` `已完成`
 
 ### 6.1 模块职责
 
@@ -771,302 +782,306 @@ module rv32i_soc (
 
 ### 6.3 core 连接
 
-`rv32i_soc` 内部连线：
-
-```systemverilog
-logic [core_pkg::ILEN-1:0] core_imem_rdata;
-logic [core_pkg::XLEN-1:0] core_imem_addr;
-
-logic                      core_lsu_re;
-logic                      core_lsu_we;
-logic [3:0]                core_lsu_be;
-logic [core_pkg::XLEN-1:0] core_lsu_addr;
-logic [core_pkg::XLEN-1:0] core_lsu_wdata;
-logic [core_pkg::XLEN-1:0] core_lsu_rdata;
-logic                      core_lsu_access_fault;
-```
-
-连接 `core`：
-
-```systemverilog
-.imem_rdata_i        (core_imem_rdata),
-.imem_addr_o         (core_imem_addr),
-.lsu_re_o            (core_lsu_re),
-.lsu_we_o            (core_lsu_we),
-.lsu_be_o            (core_lsu_be),
-.lsu_addr_o          (core_lsu_addr),
-.lsu_wdata_o         (core_lsu_wdata),
-.lsu_rdata_i         (core_lsu_rdata),
-.lsu_access_fault_i  (core_lsu_access_fault),
-```
-
-### 6.4 simple_rom 连接
-
-```systemverilog
-simple_rom u_simple_rom (
-    .addr_i  (core_imem_addr),
-    .rdata_o (core_imem_rdata)
-);
-```
-
-仍由 `+imem=<path>` 初始化，不需要 SoC 顶层新增文件路径端口。
+### 6.4 rom 连接
 
 ### 6.5 data_subsystem 连接
 
-```systemverilog
-data_subsystem u_data_subsystem (
-    .clk_i                 (clk_i),
-    .rst_n_i               (rst_n_i),
+---
 
-    .core_re_i             (core_lsu_re),
-    .core_we_i             (core_lsu_we),
-    .core_be_i             (core_lsu_be),
-    .core_addr_i           (core_lsu_addr),
-    .core_wdata_i          (core_lsu_wdata),
-    .core_rdata_o          (core_lsu_rdata),
-    .core_access_fault_o   (core_lsu_access_fault),
+# 以下开始 SoC 仿真平台和定向测试入口
 
-    .gpio0_in_i            (gpio0_in_i),
-    .gpio0_out_o           (gpio0_out_o),
-    .gpio0_oe_o            (gpio0_oe_o),
+## 7. 新增 SoC-level testbench
 
-    .uart0_tx_valid_o      (uart0_tx_valid_o),
-    .uart0_tx_data_o       (uart0_tx_data_o),
+### 7.1 保留 core-level regression
 
-    .dmem_access_o         (dmem_access_o),
-    .mmio_access_o         (mmio_access_o)
-);
+`tb/sv/tb_core_pipeline5.sv` 暂时保留为 core-only 回归入口：
+
+```text
+tb_core_pipeline5
+    |-> core
+    |-> simple_rom
+    |-> simple_ram
 ```
 
-### 6.6 观察口赋值
+原因：
 
-把 core data request 导出：
+- 它已经能覆盖 RV32I 主路径、CSR/trap、pipeline hazard 和既有 C/ASM 回归。
+- core-only 回归可以证明 SoC 集成和外设修改没有破坏 CPU core 本身。
+- 旧的 `sim/pipeline5_asm`、`sim/pipeline5_c` 流程可以继续服务 core 回归；如果脚本已经统一包含 `rtl/periph/*.sv`、`rtl/soc/*.sv`，也不影响 core-only top。
 
-```systemverilog
-assign data_re_o           = core_lsu_re;
-assign data_we_o           = core_lsu_we;
-assign data_be_o           = core_lsu_be;
-assign data_addr_o         = core_lsu_addr;
-assign data_wdata_o        = core_lsu_wdata;
-assign data_access_fault_o = core_lsu_access_fault;
+### 7.2 新增 `tb/sv/tb_rv32i_soc.sv`
+
+新增 SoC-level testbench：
+
+```text
+tb_rv32i_soc
+    |
+    v
+rv32i_soc
+    |-> core
+    |-> simple_rom
+    |-> data_subsystem
+            |-> simple_ram
+            |-> mmio_uart
+            |-> mmio_gpio
 ```
 
-commit/trap 观察信号直接透传 `core` 输出。
+职责：
 
-## 7. 适配 `tb/sv/tb_core_pipeline5.sv`
+- 实例化 `rv32i_soc`。
+- 继续使用 `+imem=<path>`、`+dmem=<path>` 加载镜像；ROM/RAM 在 SoC 层级内部，plusarg 机制不需要改变。
+- 保留 PASS/FAIL 状态字：`DMEM_BASE + 0x100` 仍是自动结束条件。
+- 观察 commit/trap/MRET trace。
+- 观察 data access、DMEM/MMIO 命中、access fault。
+- 驱动 GPIO 输入，观察 GPIO 输出。
+- 收集 UART TX event，并可打印字符或按测试期望比对字符串。
 
-### 7.1 实例化对象从 core 改为 SoC
+### 7.3 `tb_rv32i_soc` 基本信号
 
-当前 testbench 直接实例化：
-
-```systemverilog
-core u_core (...);
-simple_rom u_simple_rom (...);
-simple_ram u_simple_ram (...);
-```
-
-本阶段改为：
+建议新增：
 
 ```systemverilog
-rv32i_soc u_soc (...);
-```
+logic [31:0] gpio0_in;
+logic [31:0] gpio0_out;
+logic [31:0] gpio0_oe;
 
-删除 testbench 中直接实例化 `simple_rom/simple_ram` 的代码。
+logic        uart0_tx_valid;
+logic [7:0]  uart0_tx_data;
 
-### 7.2 testbench 信号重命名
-
-原有 `dmem_*` 观察信号可以改名为 `data_*`，或者保留局部名但注释改成 data access。
-
-建议改成：
-
-```systemverilog
 logic                      data_re;
 logic                      data_we;
 logic [3:0]                data_be;
 logic [core_pkg::XLEN-1:0] data_addr;
 logic [core_pkg::XLEN-1:0] data_wdata;
+logic [core_pkg::XLEN-1:0] data_rdata;
 logic                      data_access_fault;
 logic                      dmem_access;
 logic                      mmio_access;
 ```
 
-SoC 连接：
+`gpio0_in` 第一版可以给固定值，也可以在测试中按 cycle 或事件驱动变化：
 
 ```systemverilog
-.data_re_o           (data_re),
-.data_we_o           (data_we),
-.data_be_o           (data_be),
-.data_addr_o         (data_addr),
-.data_wdata_o        (data_wdata),
-.data_access_fault_o (data_access_fault),
-.dmem_access_o       (dmem_access),
-.mmio_access_o       (mmio_access),
+assign gpio0_in = 32'hA5A5_5A5A;
 ```
 
-### 7.3 GPIO/UART 观察信号
+后续做 GPIO external interrupt 时，`gpio0_in` 不再固定，而由 testbench 在指定时间拉高/拉低或产生边沿。
 
-新增：
+### 7.4 UART/GPIO 观察
 
-```systemverilog
-logic [31:0] gpio_in;
-logic [31:0] gpio_out;
-logic [31:0] gpio_oe;
-logic        uart_tx_valid;
-logic [7:0]  uart_tx_data;
-```
-
-第一版可以固定：
-
-```systemverilog
-assign gpio_in = 32'hA5A5_5A5A;
-```
-
-UART 打印：
+UART TX event 建议单独打印，避免和 commit trace 混在一起：
 
 ```systemverilog
 always_ff @(posedge clk) begin
-    if (rst_n && uart_tx_valid) begin
-        $write("%c", uart_tx_data);
+    if (rst_n && uart0_tx_valid) begin
+        $display("[UART] 0x%02h '%c'", uart0_tx_data, uart0_tx_data);
     end
 end
 ```
 
-如果担心 UART 字符和 commit trace 混在一起，可以打印成单独 trace：
+如果某个测试需要比对字符串，testbench 可以把 `uart0_tx_data` 收进 byte queue 或定长数组，最后和期望字符串比较。
+
+GPIO 观察至少覆盖：
+
+- `gpio0_out` 是否等于软件写入的 OUT。
+- `gpio0_oe` 是否等于软件写入的 OE。
+- 软件读 `GPIO_IN` 时，返回值是否来自 testbench 驱动的 `gpio0_in`。
+
+### 7.5 PASS/FAIL 检测
+
+SoC TB 仍用 DMEM 状态字作为统一 PASS/FAIL：
 
 ```systemverilog
-$display("[UART] 0x%02h '%c'", uart_tx_data, uart_tx_data);
+localparam logic [core_pkg::XLEN-1:0] TEST_STATUS_ADDR = core_pkg::DMEM_BASE + 32'h100;
 ```
 
-具体格式后续做测试时再定，先保证能观察。
-
-### 7.4 PASS/FAIL 检测改用 data access
-
-原逻辑：
+检测口径：
 
 ```systemverilog
-else if (dmem_we && dmem_addr == TEST_STATUS_ADDR) begin
-```
-
-改为：
-
-```systemverilog
-else if (data_we && data_addr == TEST_STATUS_ADDR) begin
-```
-
-并使用：
-
-```systemverilog
-test_passed       <= (data_wdata == TEST_PASS_VALUE);
-test_status_value <= data_wdata;
+if (data_we && dmem_access && data_addr == TEST_STATUS_ADDR) begin
+    test_passed       <= (data_wdata == TEST_PASS_VALUE);
+    test_status_value <= data_wdata;
+end
 ```
 
 说明：
 
-- PASS/FAIL 地址仍在 DMEM。
-- 即使顶层变成 SoC wrapper，自动结束机制不变。
+- PASS/FAIL 不急着改到 MMIO，避免把“测试结束机制”和“外设功能验证”绑在一起。
+- `dmem_access` 来自 `data_subsystem` 的真实译码结果，比只看地址范围更贴近当前 SoC 行为。
 
-### 7.5 DMEM/stack 统计改用 DMEM 命中
+### 7.6 DMEM/stack 统计
 
-原统计：
-
-```systemverilog
-wire dmem_access_for_stats = rst_n && (dmem_re || dmem_we) && (dmem_addr != TEST_STATUS_ADDR);
-```
-
-建议改为：
+SoC TB 的 DMEM 访问统计建议使用：
 
 ```systemverilog
 wire dmem_access_for_stats = rst_n
                            && dmem_access
-                           && (data_addr != TEST_STATUS_ADDR);
-```
-
-或者不依赖 SoC 输出，直接用地址范围：
-
-```systemverilog
-wire data_addr_in_dmem = (data_addr >= core_pkg::DMEM_BASE)
-                       && (data_addr <  core_pkg::DMEM_BASE + core_pkg::DMEM_SIZE_BYTES);
-
-wire dmem_access_for_stats = rst_n
                            && (data_re || data_we)
-                           && data_addr_in_dmem
                            && (data_addr != TEST_STATUS_ADDR);
 ```
 
-推荐使用 `dmem_access`，因为它来自 `data_subsystem` 的真实译码结果。
-
-### 7.6 current_sp 层级路径调整
-
-原路径：
+`current_sp` 层级路径应从 core-only TB 的：
 
 ```systemverilog
-wire [core_pkg::XLEN-1:0] current_sp = u_core.u_regfile.gpr_q[2];
+u_core.u_regfile.gpr_q[2]
 ```
 
-改为：
+改为 SoC TB 中的：
 
 ```systemverilog
-wire [core_pkg::XLEN-1:0] current_sp = u_soc.u_core.u_regfile.gpr_q[2];
+u_soc.u_core.u_regfile.gpr_q[2]
 ```
 
-### 7.7 trap/commit trace 保持不变
+### 7.7 trap/commit trace
 
-commit/trap 观察信号由 `rv32i_soc` 透传，因此提交打印逻辑基本不需要改。
+`rv32i_soc` 已透传 commit/trap 观察信号，SoC TB 可以复用原有提交打印格式。
 
-可在 `trap_valid` 打印中追加 cause/tval，后续测试阶段再决定是否改格式。本阶段只要求端口连接正确。
+建议在 trap 打印中保留：
 
-## 8. 修改仿真脚本 RTL 文件列表
+- `trap_valid`
+- `trap_pc`
+- `trap_cause`
+- `trap_tval`
+- `trap_redirect_pc`
+- `trap_return`
 
-### 8.1 修改 `sim/pipeline5_asm/06_run_sim.sh`
+这样后续 0833 interrupt 测试可以直接观察 `mcause` 高位 interrupt 标志、返回 PC 和 handler 执行过程。
 
-当前：
+## 8. 新增 SoC 仿真脚本
+
+### 8.1 保留现有 pipeline5 脚本
+
+`sim/pipeline5_asm` 和 `sim/pipeline5_c` 继续作为 core-level 回归入口。
+
+如果这些脚本的 RTL 文件列表已经统一包含：
 
 ```bash
-RTL_FILES=(
-    rtl/common/*.sv
-    rtl/core/*.sv
-    rtl/mem/*.sv
-)
+rtl/common/*.sv
+rtl/core/*.sv
+rtl/mem/*.sv
+rtl/periph/*.sv
+rtl/soc/*.sv
 ```
 
-改为：
+可以保留；如果仍只包含 core/mem，也不影响 core-only 回归，但后续 SoC 脚本必须包含 `rtl/periph/*.sv` 和 `rtl/soc/*.sv`。
 
-```bash
-RTL_FILES=(
-    rtl/common/*.sv
-    rtl/core/*.sv
-    rtl/mem/*.sv
-    rtl/periph/*.sv
-    rtl/soc/*.sv
-)
+### 8.2 新增 `sim/soc_asm/run_test.sh`
+
+建议新增 SoC ASM 测试入口：
+
+```text
+sim/soc_asm/run_test.sh <test>
 ```
 
-### 8.2 修改 `sim/pipeline5_c/06_run_sim.sh`
+职责：
 
-做同样修改：
+- 根据测试名编译 `sw/asm/<test>.S`。
+- 生成 IMEM/DMEM mem 文件。
+- 编译并运行 `tb/sv/tb_rv32i_soc.sv`。
+- RTL 文件列表包含 `rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/mem/*.sv`、`rtl/periph/*.sv`、`rtl/soc/*.sv`。
+- top module 使用 `tb_rv32i_soc`。
 
-```bash
-RTL_FILES=(
-    rtl/common/*.sv
-    rtl/core/*.sv
-    rtl/mem/*.sv
-    rtl/periph/*.sv
-    rtl/soc/*.sv
-)
+### 8.3 新增 `sim/soc_c/run_test.sh`
+
+建议新增 SoC C 测试入口：
+
+```text
+sim/soc_c/run_test.sh <test>
 ```
 
-### 8.3 脚本 top-module 保持不变
+职责：
 
-`--top-module tb_core_pipeline5` 保持不变。
+- 复用当前 C bare-metal 编译、链接、objcopy、mem 生成流程。
+- 增加 `-I sw/include`，便于 C 程序包含 `platform.h`。
+- 编译并运行 `tb/sv/tb_rv32i_soc.sv`。
+- top module 使用 `tb_rv32i_soc`。
 
-原因：
+### 8.4 `run_all.sh` 暂缓
 
-- testbench 文件名和模块名暂时不改，减少脚本影响。
-- testbench 内部从实例化 `core` 改成实例化 `rv32i_soc`。
+SoC 测试集会随着 0832/0833/0834 持续扩展，不建议一开始把所有测试混到一个全局 `run_all.sh`。
 
-## 9. 软件可见常量
+可以等 SoC smoke、MMIO、access fault、interrupt、wait-state 分组稳定后，再分别做：
 
-### 9.1 新增 C 侧 platform header
+```text
+sim/soc_asm/run_all.sh
+sim/soc_c/run_all.sh
+```
+
+或者只维护分组脚本，避免“all”的含义频繁变化。
+
+## 9. SoC directed test 规划
+
+### 9.1 0832 当前测试
+
+当前阶段先覆盖固定响应 MMIO 和 access fault：
+
+| 编号 | 建议文件 | 目标 |
+|---:|---|---|
+| `0601` | `sw/asm/0601_soc_smoke.S` | 旧主路径程序通过 `rv32i_soc` 跑通，证明 SoC wrapper 不破坏 core |
+| `0602` | `sw/asm/0602_uart_tx.S` | 软件开启 UART，写 `TXDATA`，testbench 观察 TX event |
+| `0603` | `sw/asm/0603_gpio_rw.S` | 写 `GPIO_OUT/OE`，读 `GPIO_IN`，验证普通 RW/RO MMIO |
+| `0604` | `sw/asm/0604_mmio_access_fault.S` | 访问未实现 MMIO/保留区，检查 load/store access fault |
+| `0605` | `sw/asm/0605_mmio_misaligned_priority.S` | MMIO 不对齐访问优先报 misaligned，不报 access fault |
+| `0606` | `sw/asm/0606_wrong_path_mmio.S` | branch/trap wrong-path store 不应触发 UART/GPIO 副作用 |
+| `0651` | `sw/c/0651_soc_mmio_smoke.c` | C 程序通过 `platform.h` 访问 UART/GPIO，做 MMIO 冒烟 |
+
+说明：
+
+- 0832 的测试重点是地址译码、副作用门控、MMIO 观察和 access fault。
+- 异常测试可以继续使用 trap handler 写 DMEM PASS/FAIL。
+- C 测试不需要覆盖所有异常，重点展示软件驱动风格和 `volatile` MMIO 访问。
+
+### 9.2 0833 interrupt/timer 测试预留
+
+后续 0833 加 machine interrupt 与 timer 后，继续复用 `tb_rv32i_soc`。
+
+建议测试：
+
+| 编号 | 建议文件 | 目标 |
+|---:|---|---|
+| `0701` | `sw/asm/0701_timer_irq_smoke.S` | 配置 timer compare，打开 `mie.MTIE/mstatus.MIE`，进入 timer interrupt handler |
+| `0702` | `sw/asm/0702_gpio_irq_smoke.S` | testbench 驱动 `gpio0_in_i` 产生事件，进入 machine external interrupt handler |
+| `0703` | `sw/asm/0703_irq_mask.S` | pending 已有但 enable/global MIE 未开时不进入；打开后进入 |
+| `0704` | `sw/asm/0704_irq_mret.S` | interrupt handler 执行 `MRET` 后回到被打断程序继续执行 |
+| `0705` | `sw/asm/0705_exception_over_irq.S` | 同边界有同步 exception 和 pending interrupt 时，同步 exception 优先 |
+| `0751` | `sw/c/0751_irq_smoke.c` | C handler 处理一次 timer 或 GPIO interrupt 冒烟 |
+
+GPIO external interrupt 的推荐仿真模型：
+
+```text
+tb 驱动 gpio0_in_i 边沿或电平
+    -> mmio_gpio 置 pending
+    -> gpio_irq_o
+    -> SoC 汇总为 core interrupt 输入
+    -> core 在提交边界接受 machine external interrupt
+    -> handler 读 cause / 清 pending / mret
+```
+
+interrupt 测试不应要求“事件发生后固定第 N 拍进入 handler”。更稳妥的检查是：在 pending 和 enable 都满足后，有限时间内必须进入 handler，并且 `mepc/mcause/mtval/MRET` 行为正确。
+
+### 9.3 0834 wait-state/backpressure 测试预留
+
+后续 0834 加 ready/valid 或简化 bus response 后，仍以 SoC TB 为入口扩展：
+
+| 建议方向 | 目标 |
+|---|---|
+| DMEM load 延迟 | load 等待期间流水线 stall，不丢指令 |
+| MMIO store 延迟 | 等待期间不能重复触发 UART/GPIO 副作用 |
+| MMIO load 延迟 | 返回数据只写回一次，load-use stall/backpressure 行为正确 |
+| response error 延迟 | access fault 随 response 返回后进入 trap |
+| trap/redirect 与 wait 同时存在 | 优先级稳定，wrong-path 无副作用 |
+
+这一阶段可以开始把 SoC TB 中的观察逻辑沉淀成 monitor/scoreboard。即使后续上 UVM，也可以复用同一套观察点：
+
+- commit monitor
+- trap monitor
+- data bus/MMIO monitor
+- UART monitor
+- GPIO monitor
+
+## 10. 软件可见常量
+
+### 10.1 新增 C 侧 platform header
 
 建议新增：
 
@@ -1110,7 +1125,7 @@ static inline unsigned int mmio_read32(unsigned int addr) {
 - C 测试后续包含这个头文件访问 UART/GPIO。
 - 当前编译脚本若还没有 include path，需要后续测试阶段补 `-I sw/include`；本阶段可以先把头文件建好，也可以等写 C 测试时一起补脚本。
 
-### 9.2 ASM 侧公共 include 暂缓
+### 10.2 ASM 侧公共 include 暂缓
 
 手写汇编可以后续新增：
 
@@ -1122,9 +1137,9 @@ sw/asm/include/platform.inc
 
 后续写 MMIO asm 测试时再决定是每个 `.S` 内写 `.equ`，还是统一 include。
 
-## 10. 文档同步
+## 11. 文档同步
 
-### 10.1 同步 `sw/linker/readme.md`
+### 11.1 同步 `sw/linker/readme.md`
 
 需要补充 MMIO window：
 
@@ -1141,24 +1156,28 @@ sw/asm/include/platform.inc
 | UART0 | `0x0008_2000` | 已实现 TXDATA/STATUS/CTRL |
 | ACCEL0 | `0x0008_8000` | 地址预留，访问 fault |
 
-### 10.2 同步 README 和 simulation flow 文档
+### 11.2 同步 README 和 simulation flow 文档
 
 需要后续同步：
 
 - `README.md`
-  - 当前顶层从 core 直连测试切到 `rv32i_soc` 平台测试。
+  - 保留 core-level 回归入口。
+  - 新增 SoC-level 平台测试入口。
   - 支持最小 MMIO 和 access fault。
 - `docs/simulation_flow_pipeline_asm.md`
-  - 说明 testbench 内部实例化 SoC wrapper。
-  - 说明 UART/GPIO 输出观察口。
+  - 说明该流程仍用于 core-level regression。
 - `docs/simulation_flow_pipeline_c.md`
+  - 说明该流程仍用于 core-level regression。
+- 后续新增的 SoC simulation flow 文档
+  - 说明 `tb_rv32i_soc` 内部实例化 SoC wrapper。
+  - 说明 UART/GPIO 输出观察口。
   - 说明 C 程序可包含 `sw/include/platform.h` 访问 MMIO。
 
 本章只列同步项；具体文字可以在 RTL 完成后根据真实实现补。
 
-## 11. 文件清单总览
+## 12. 文件清单总览
 
-### 11.1 新增文件
+### 12.1 新增文件
 
 本阶段建议新增：
 
@@ -1169,6 +1188,9 @@ sw/asm/include/platform.inc
 | `rtl/periph/mmio_gpio.sv` | GPIO0 最小 MMIO 寄存器块 |
 | `rtl/soc/data_subsystem.sv` | data address decode、DMEM/MMIO mux、access fault 汇总 |
 | `rtl/soc/rv32i_soc.sv` | 最小平台 wrapper |
+| `tb/sv/tb_rv32i_soc.sv` | SoC-level directed testbench |
+| `sim/soc_asm/run_test.sh` | SoC ASM 定向测试入口 |
+| `sim/soc_c/run_test.sh` | SoC C 定向测试入口 |
 | `sw/include/platform.h` | C 侧 MMIO 地址常量和访问函数 |
 
 目录若不存在，需要新增：
@@ -1176,10 +1198,12 @@ sw/asm/include/platform.inc
 ```text
 rtl/periph/
 rtl/soc/
+sim/soc_asm/
+sim/soc_c/
 sw/include/
 ```
 
-### 11.2 修改文件
+### 12.2 修改文件
 
 本阶段预计修改：
 
@@ -1188,15 +1212,15 @@ sw/include/
 | `rtl/common/core_pkg.sv` | 移出 MMIO/外设地址常量；保留 IMEM/DMEM/reset/trap 默认入口；新增 access fault trap cause |
 | `rtl/core/core.sv` | 由 `core_pipeline5.sv` 改名而来；模块名从 `core_pipeline5` 改为 `core`；数据访问端口从 `dmem_*` 改名为 `lsu_*`；新增 `lsu_access_fault_i` 并连接到 `mem_stage` |
 | `rtl/core/mem_stage.sv` | 合并 load/store access fault exception |
-| `tb/sv/tb_core_pipeline5.sv` | 从直接实例化 core/memory 改为实例化 `rv32i_soc` |
-| `sim/pipeline5_asm/06_run_sim.sh` | RTL 文件列表加入 `rtl/periph/*.sv`、`rtl/soc/*.sv` |
-| `sim/pipeline5_c/06_run_sim.sh` | RTL 文件列表加入 `rtl/periph/*.sv`、`rtl/soc/*.sv` |
+| `tb/sv/tb_core_pipeline5.sv` | 只做 core 模块名和 `lsu_*` 端口适配，继续作为 core-only TB |
+| `sim/pipeline5_asm/06_run_sim.sh` | 可保留 core-only 流程；若已统一 RTL 文件列表，包含 `rtl/periph/*.sv`、`rtl/soc/*.sv` 也可以 |
+| `sim/pipeline5_c/06_run_sim.sh` | 可保留 core-only 流程；若已统一 RTL 文件列表，包含 `rtl/periph/*.sv`、`rtl/soc/*.sv` 也可以 |
 | `sw/linker/readme.md` | 补 MMIO window 和外设地址说明 |
 | `README.md` | 补当前平台支持 MMIO/access fault |
-| `docs/simulation_flow_pipeline_asm.md` | 补 SoC wrapper 和 MMIO 观察说明 |
-| `docs/simulation_flow_pipeline_c.md` | 补 C platform header 和 MMIO 说明 |
+| `docs/simulation_flow_pipeline_asm.md` | 说明该流程仍是 core-level regression，SoC 测试走 `sim/soc_asm` |
+| `docs/simulation_flow_pipeline_c.md` | 说明该流程仍是 core-level regression，SoC 测试走 `sim/soc_c` |
 
-### 11.3 不应修改的核心文件
+### 12.3 不应修改的核心文件
 
 正常情况下，本阶段不需要修改：
 
