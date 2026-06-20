@@ -20,7 +20,7 @@
 `default_nettype none
 
 module mmio_uart #(
-    parameter logic [core_pkg::XLEN-1:0] BASE_ADDR  = core_pkg::UART0_BASE
+    parameter logic [core_pkg::XLEN-1:0] BASE_ADDR  = soc_pkg::UART0_BASE
 )(
     input  logic                      clk_i,
     input  logic                      rst_n_i,
@@ -38,8 +38,12 @@ module mmio_uart #(
 );
 
     import core_pkg::*;
+    import soc_pkg::*;
 
-    wire [core_pkg::XLEN-1:0] offset = addr_i - BASE_ADDR;
+    // 直接设为 12 位宽，方便与 soc 包中的 OFFSET 比较
+    // valid_i 保证地址已命中本外设窗口；本模块只检查窗口内 offset 是否为已定义寄存器。
+    wire [core_pkg::XLEN-1:0] full_offset = addr_i - BASE_ADDR;
+    wire [11:0]               offset      = full_offset[11:0];
 
     // 内部寄存器声明，保持 XLEN 位宽；RW/RO/WO 按属性分组，便于后续扩展。
     // RW 属性寄存器
