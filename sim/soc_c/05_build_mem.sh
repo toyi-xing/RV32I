@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 把一个 RV32I C 裸机测试编译成 IMEM/DMEM 两份 .mem 镜像。
-# 用法：
-#   sim/pipeline5_c/05_build_mem.sh [test_name]
-# 示例：
-#   sim/pipeline5_c/05_build_mem.sh 0201
+# Build one SoC-level RV32I C bare-metal test into IMEM/DMEM .mem images.
+# Usage:
+#   sim/soc_c/05_build_mem.sh [test_name]
+# Example:
+#   sim/soc_c/05_build_mem.sh 0651
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -13,11 +13,11 @@ TOOLCHAIN_ENV="${TOOLCHAIN_ENV:-/home/a/tools/riscv-unknown-elf/env.sh}"
 
 source "${REPO_ROOT}/sim/common/resolve_test_name.sh"
 
-TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/c" "c" "${1:-}" "0201_c_smoke")"
+TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/c" "c" "${1:-}" "0651_soc_mmio_smoke")"
 C_FILE="${REPO_ROOT}/sw/c/${TEST_NAME}.c"
 CRT0_FILE="${REPO_ROOT}/sw/c_runtime/crt0.S"
 LINKER_FILE="${REPO_ROOT}/sw/linker/c_baremetal.ld"
-BUILD_DIR="${REPO_ROOT}/build/pipeline5_c"
+BUILD_DIR="${REPO_ROOT}/build/soc_c"
 
 if [[ -f "${TOOLCHAIN_ENV}" ]]; then
     # shellcheck disable=SC1090
@@ -52,6 +52,7 @@ riscv64-unknown-elf-gcc \
     -fno-unwind-tables \
     -nostdlib \
     -nostartfiles \
+    -I "${REPO_ROOT}/sw/include" \
     -Wl,-T,"${LINKER_FILE}" \
     -Wl,--no-relax \
     -Wl,-Map,"${BUILD_DIR}/${TEST_NAME}.map" \
