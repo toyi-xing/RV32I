@@ -43,25 +43,25 @@
 
 `MEIP > MTIP` 是本阶段固定选择；后续若加入 PLIC 或更完整平台，可以再调整。
 
-## 1. 公共常量和类型
+## 1. 公共常量和类型 `已完成`
 
-### 1.1 修改 `rtl/common/core_pkg.sv`
+### 1.1 修改 `rtl/common/core_pkg.sv` `已完成`
 
 新增 CSR 地址：
 
 ```systemverilog
-CSR_ADDR_MIE = 12'h304;
-CSR_ADDR_MIP = 12'h344;
+CSR_ADDR_MIE = 12'h304;     // RW
+CSR_ADDR_MIP = 12'h344;     // RO，硬件自动更新
 ```
 
 新增 interrupt bit 位置：
 
 ```systemverilog
-MIP_MSIP_BIT = 3;   // 本阶段不实现
+// MIP_MSIP_BIT = 3;   // 本阶段不实现
 MIP_MTIP_BIT = 7;
 MIP_MEIP_BIT = 11;
 
-MIE_MSIE_BIT = 3;   // 本阶段不实现
+// MIE_MSIE_BIT = 3;   // 本阶段不实现
 MIE_MTIE_BIT = 7;
 MIE_MEIE_BIT = 11;
 ```
@@ -72,36 +72,32 @@ MIE_MEIE_BIT = 11;
 MCAUSE_INTERRUPT_BIT = XLEN - 1;
 ```
 
-当前 `trap_cause_e` 是 5-bit exception code。本阶段不要把 interrupt bit 塞进这个 enum，而是新增单独的 trap kind 信号。
-
-可选做法：
+当前 `trap_cause_e` 是 5-bit exception code。本阶段不要把 interrupt bit 塞进这个 enum；新增 `irq_cause_e` 表示 interrupt code，后续再由单独 trap kind 信号区分 exception/interrupt。
 
 ```systemverilog
 typedef enum logic [4:0] {
-    IRQ_CAUSE_M_SOFTWARE = 5'd3,  // 本阶段不实现 MSIP
+    // IRQ_CAUSE_M_SOFTWARE = 5'd3,  // 本阶段不实现 MSIP
     IRQ_CAUSE_M_TIMER    = 5'd7,
     IRQ_CAUSE_M_EXTERNAL = 5'd11
 } irq_cause_e;
 ```
 
-若不想新增 enum，也可以直接用 `logic [4:0]` 表示 interrupt code，但注释必须写清楚低 5 bit 对应 `mcause` code。
-
-### 1.2 修改 `rtl/common/soc_pkg.sv`
+### 1.2 修改 `rtl/common/soc_pkg.sv` `已完成`
 
 补 TIMER0 offset：
 
 ```systemverilog
-TIMER_MTIME_OFFSET    = 12'h000;
-TIMER_MTIMECMP_OFFSET = 12'h004;
-TIMER_CTRL_OFFSET     = 12'h008;
-TIMER_STATUS_OFFSET   = 12'h00c;
+TIMER0_MTIME_OFFSET    = 12'h000;
+TIMER0_MTIMECMP_OFFSET = 12'h004;
+TIMER0_CTRL_OFFSET     = 12'h008;
+TIMER0_STATUS_OFFSET   = 12'h00c;
 ```
 
 补 TIMER bit：
 
 ```systemverilog
-TIMER_CTRL_ENABLE_BIT = 0;
-TIMER_STATUS_MTIP_BIT = 0;
+TIMER0_CTRL_EN_BIT     = 0;
+TIMER0_STATUS_MTIP_BIT = 0;
 ```
 
 补 GPIO interrupt offset：
@@ -136,7 +132,7 @@ UART bit 规划：
 ```text
 STATUS[0] = tx_ready
 STATUS[1] = rx_valid
-STATUS[2] = irq_pending
+STATUS[2] = irq_pending，即 IRQ_PENDING[0] 的只读镜像
 
 CTRL[0] = enable
 CTRL[1] = rx_irq_enable
@@ -144,23 +140,29 @@ CTRL[1] = rx_irq_enable
 IRQ_PENDING[0] = rx_irq_pending，R/W1C
 ```
 
-若实现时希望 `IRQ_PENDING` 和 `STATUS` 合并，也可以只保留 `STATUS[2]` 观察 pending、通过读 `RXDATA` 清 pending；但文档当前规划更推荐保留独立 `IRQ_PENDING`，便于软件 W1C。
+本阶段保留独立 `IRQ_PENDING`，便于软件 W1C；`STATUS[2]` 只作为轮询视图，不参与清除语义。
 
-## 2. 流水线 next PC 信息
+## 2. 流水线 next PC 信息 `已完成`
 
-### 2.1 修改 `rtl/common/pipeline_pkg.sv`
+### 2.1 修改 `rtl/common/pipeline_pkg.sv` `已完成` `只做了 ex_mem_reg_t`
 
 interrupt 需要返回到第一条未提交指令，因此 MEM 边界必须知道当前提交指令的实际下一条 PC。
 
-在 `id_ex_reg_t`、`ex_mem_reg_t` 中新增：
+当前实现不在 `id_ex_reg_t` 新增 `next_pc`，因为 ID/EX 已经有 `pc_plus4`，顺序下一条 PC 可以直接复用。只在 `ex_mem_reg_t` 中新增：
 
 ```systemverilog
 logic [core_pkg::XLEN-1:0] next_pc;
 ```
 
-`mem_wb_reg_t` 不需要新增该字段，因为 interrupt 在 MEM/commit 边界接受，不等到 WB。
+`mem_wb_reg_t` 也不需要新增该字段，因为 interrupt 在 MEM/commit 边界接受，不等到 WB。
 
-### 2.2 修改 `rtl/core/ex_stage.sv`
+### 2.2 修改 `rtl/core/ex_stage.sv` `已完成` `额外复用输入 pc_plus4_i 无需额外计算`
+
+新增输入：
+
+```systemverilog
+input logic [core_pkg::XLEN-1:0] pc_plus4_i
+```
 
 新增输出：
 
@@ -180,17 +182,19 @@ JALR                -> jalr target
 
 注意：
 
+- 当前实现用已有 `pc_plus4_i` 表示 `pc_i + 4`，避免在 EX 里重复加法。
 - `next_pc_o` 是“当前指令提交后，下一条架构 PC”。
 - 它不替代现有 `redirect_pc_o`。
 - `redirect_pc_o` 仍用于 EX 阶段控制流重定向。
 - `next_pc_o` 只给后续 interrupt 写 `mepc` 使用。
 
-### 2.3 修改 `rtl/core/core.sv` 的流水线组包
+### 2.3 修改 `rtl/core/core.sv` 的流水线组包 `已完成`
 
-ID/EX 组包：
+`ex_stage` 实例新增连接：
 
 ```systemverilog
-id_ex_data_d.next_pc = if_id_data_q.pc_plus4;
+.pc_plus4_i (id_ex_data_q.pc_plus4),
+.next_pc_o  (ex_next_pc)
 ```
 
 EX/MEM 组包：
@@ -199,7 +203,7 @@ EX/MEM 组包：
 ex_mem_data_d.next_pc = ex_next_pc;
 ```
 
-其中 `ex_next_pc` 来自 `ex_stage.next_pc_o`。
+其中 `ex_next_pc` 来自 `ex_stage.next_pc_o`。ID/EX 不新增 `next_pc` 字段。
 
 ## 3. CSR 文件扩展
 
@@ -1131,4 +1135,3 @@ RTL 完成后同步检查：
 - `rtl/periph/mmio_uart.sv` 头注释是否写明仿真 RX 和 UART interrupt。
 - `rtl/periph/mmio_timer.sv` 头注释是否写明 32-bit 教学 timer。
 - SoC/testbench 注释是否说明 `MEIP = GPIO irq | UART irq`、`MTIP = TIMER0`。
-

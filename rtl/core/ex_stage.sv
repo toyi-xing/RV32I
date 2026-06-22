@@ -28,6 +28,7 @@ module ex_stage (
     input  logic                          valid_i,           // 当前 EX 槽是否有效。各阶段有各自的 valid 门控其副作用：
                                                              // EX→redirect，MEM→dmem 写，WB→regfile 写。
     input  logic [core_pkg::XLEN-1:0]     pc_i,              // 当前 EX 阶段指令的 PC。
+    input  logic [core_pkg::XLEN-1:0]     pc_plus4_i,        // 当前 EX 阶段指令的 PC + 4
     input  logic [core_pkg::XLEN-1:0]     rs1_data_i,        // EX 实际使用的 rs1 数据，通常来自 forwarding mux。
     input  logic [core_pkg::XLEN-1:0]     rs2_data_i,        // EX 实际使用的 rs2 数据；branch 比较和 store data 都会使用。
     input  logic [core_pkg::XLEN-1:0]     imm_i,             // ID 阶段生成并传入的 32 bit 立即数。
@@ -58,7 +59,8 @@ module ex_stage (
     output core_pkg::trap_cause_e         exception_cause_o, // EX 输出 exception cause。
     output logic [core_pkg::XLEN-1:0]     exception_tval_o,  // EX 输出 exception tval。
     output logic [core_pkg::XLEN-1:0]     csr_operand_o,     // 送入 CSR 文件的操作数；register 形式来自 forwarding 后 rs1，immediate 形式来自零扩展 uimm。
-    output logic                          mret_o             // MRET 标志透传输出。
+    output logic                          mret_o,            // MRET 标志透传输出。
+    output logic [core_pkg::XLEN-1:0]     next_pc_o          // 正常情况下，本指令的下条 pc
 );
     import core_pkg::*;
     
@@ -100,7 +102,10 @@ module ex_stage (
     wire csr_op_uimm            = (csr_op_i == CSR_OP_RWI) || (csr_op_i == CSR_OP_RSI) || (csr_op_i == CSR_OP_RCI);
     assign csr_operand_o        = !csr_i? '0 : csr_op_reg ? rs1_data_i : csr_op_uimm ? {{(core_pkg::XLEN-5){1'b0}},csr_uimm_i} : '0;
 
-    assign mret_o = mret_i;
+    assign mret_o    = mret_i;
+
+    // 发生异常时，该信号无意义。仅服务中断返回pc
+    assign next_pc_o = redirect_valid_o ? redirect_pc_o : pc_plus4_i;
 
 endmodule
 

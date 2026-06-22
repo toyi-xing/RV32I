@@ -92,6 +92,10 @@ CSR/trap entry + MMIO timer + interrupt pending/enable + precise interrupt accep
 
 这也是本阶段最容易写错的地方：不能把 interrupt 简单当成“又一种 MEM exception”。同步 exception 属于当前指令，因此当前指令不能继续作为普通指令进入 WB；interrupt 不属于当前指令，更合理的口径是在一个精确边界接受 interrupt，让已经提交的旧指令保持提交结果，再 kill 更年轻的指令。
 
+**为什么异常不需要 next_pc？** 异常总有 faulting instruction，硬件只需保存 `mepc = fault_pc`。是否跳过失灵指令（ECALL 需要 +4，非法指令需要重试）是软件 handler 的判断，硬件不参与。所以异常不需要 next_pc。
+
+**为什么中断必须用 next_pc？** 中断发生在指令之间，被中断的可能是任意指令——包括 taken branch/JAL/JALR。软件 handler 拿到 `mepc` 后自己做 +4 是不行的：如果被中断的是 `jal target`，`mepc + 4` 是 `target + 4`，不是正确的 `target`。硬件必须把**当前已提交指令的实际下一条地址**（可能是 pc+4，也可能是跳转 target）写入 mepc。这就是 next_pc 必须由硬件携带的原因。
+
 ### 2.2 异步事件也要同步接受
 
 timer/external interrupt 的 pending 可以在任意周期变成 1，但流水线不能在 IF/ID/EX 任意位置随便跳走。否则会出现：
@@ -179,10 +183,10 @@ misa, mvendorid, marchid, mimpid, mhartid
 
 本阶段需要新增：
 
-| CSR | 地址 | 作用 |
-|---|---:|---|
-| `mie` | `12'h304` | machine interrupt enable，软件写入各类 interrupt enable bit |
-| `mip` | `12'h344` | machine interrupt pending，反映当前 pending 状态 |
+| CSR | 地址 | 属性 | 作用 |
+|---|---:|---|---|
+| `mie` | `12'h304` | 读写 | machine interrupt enable，软件写入各类 interrupt enable bit |
+| `mip` | `12'h344` | 只读 | machine interrupt pending，反映当前 pending 状态 |
 
 RISC-V machine interrupt 编码里常见的三类来源如下：
 
@@ -680,6 +684,16 @@ mmio_uart 保存 RXDATA，并置 rx_valid/rx_irq_pending
 uart_irq = rx_irq_pending && rx_irq_enable
 meip_raw 包含 uart_irq
 ```
+
+UART0 本阶段寄存器规划：
+
+| offset | 名称 | 属性 | 作用 |
+|---:|---|---|---|
+| `0x00` | `TXDATA` | WO | 发送数据字节（只写，读返回 0）；`CTRL.enable=1` 时写入触发 TX event |
+| `0x04` | `STATUS` | RO | `[0]=tx_ready`（当前固定 1），`[1]=rx_valid`（RX 数据有效），`[2]=irq_pending`（`IRQ_PENDING[0]` 的只读镜像） |
+| `0x08` | `CTRL` | RW | `[0]=tx_enable`，`[1]=rx_irq_enable`；其余 bit 读 0 写忽略 |
+| `0x0C` | `RXDATA` | RO | 接收数据字节，来自 `uart_rx_data_i`；读操作同时清 `irq_pending` |
+| `0x10` | `IRQ_PENDING` | R/W1C | 读表示 RX 中断 pending；写 1 清 pending（当不使用 RXDATA 读取清除时） |
 
 UART RX event 必须被保存成 pending 状态，不能只输出单周期 pulse。否则 core 没有在同一拍接受 interrupt 时，UART 中断会丢失。
 

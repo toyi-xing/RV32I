@@ -110,6 +110,7 @@ package pipeline_pkg;
         logic [core_pkg::XLEN-1:0]  csr_operand;
         logic                       csr_writes_rd;
         logic                       csr_write_en;
+        logic [core_pkg::XLEN-1:0]  next_pc;        // 记录 ex 后确定的本指令的下条 pc 地址，若中断需存到 mepc 中
     } ex_mem_reg_t;
 
     // MEM/WB 流水线寄存器：锁存 MEM 阶段的 load 数据、ALU 结果和控制信号。

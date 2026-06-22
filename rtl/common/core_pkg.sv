@@ -193,26 +193,42 @@ package core_pkg;
     // CSR 旧值写回 GPR：WB 级（csr_rdata 经 MEM/WB → wb_stage WB_CSR mux）
 
     // CSR 地址常量（12 位，对应 RISC-V Privileged Spec 定义的 CSR 地址空间）
+    // CSR 指令可读可写
     parameter logic [11:0] CSR_ADDR_MSTATUS    = 12'h300;   // 全局中断、特权栈、各种使能
+    parameter logic [11:0] CSR_ADDR_MIE        = 12'h304;   // 中断使能
     parameter logic [11:0] CSR_ADDR_MTVEC      = 12'h305;   // trap 跳转地址
     parameter logic [11:0] CSR_ADDR_MSCRATCH   = 12'h340;   // 硬件存在，软件自由读写（便签）
     parameter logic [11:0] CSR_ADDR_MEPC       = 12'h341;   // trap 返回地址
     parameter logic [11:0] CSR_ADDR_MCAUSE     = 12'h342;   // trap 原因（值相同时，异常/中断也代表不同原因）
     parameter logic [11:0] CSR_ADDR_MTVAL      = 12'h343;   // 异常附加信息，不同异常对应不同内容，中断写 0
 
-    parameter logic [11:0] CSR_ADDR_MISA       = 12'h301;   // 只读：ISA 扩展标识（如 RV32I）
-    parameter logic [11:0] CSR_ADDR_MVENDORID  = 12'hF11;   // 只读：厂商 ID
-    parameter logic [11:0] CSR_ADDR_MARCHID    = 12'hF12;   // 只读：架构 ID
-    parameter logic [11:0] CSR_ADDR_MIMPID     = 12'hF13;   // 只读：实现 ID
-    parameter logic [11:0] CSR_ADDR_MHARTID    = 12'hF14;   // 只读：硬件线程 ID
+    // CSR指令只读，固定或硬件自动写
+    parameter logic [11:0] CSR_ADDR_MIP        = 12'h344;   // 中断挂起，硬件自动写
+    parameter logic [11:0] CSR_ADDR_MISA       = 12'h301;   // ISA 扩展标识（如 RV32I）
+    parameter logic [11:0] CSR_ADDR_MVENDORID  = 12'hF11;   // 厂商 ID
+    parameter logic [11:0] CSR_ADDR_MARCHID    = 12'hF12;   // 架构 ID
+    parameter logic [11:0] CSR_ADDR_MIMPID     = 12'hF13;   // 实现 ID
+    parameter logic [11:0] CSR_ADDR_MHARTID    = 12'hF14;   // 硬件线程 ID
 
-    // mstatus 寄存器关键 bit 位置常量。
-    parameter int MSTATUS_MIE_BIT   = 3;
-    parameter int MSTATUS_MPIE_BIT  = 7;
+    // mstatus 寄存器关键 bit 位置常量（当前实现部分）。
+    parameter int MSTATUS_MIE_BIT   = 3;    // 全局中断总开关
+    parameter int MSTATUS_MPIE_BIT  = 7;    // 中断开关备份位
     parameter int MSTATUS_MPP_LSB   = 11;
     parameter int MSTATUS_MPP_MSB   = 12;
     // MPP 特权级编码。
     parameter logic [1:0] MSTATUS_MPP_M = 2'b11;    // 特权级编码，当前仅 M mode，由 mstatus 的 MPP 字段存储
+
+    // mcause 寄存器
+    parameter int MCAUSE_INTERRUPT_BIT = XLEN - 1;  // 1 表示中断，0 表示异常
+
+    // mie 寄存器关键 bit 位置常量（当前实现部分）。
+    // parameter int MIE_MSIE_BIT  = 3;    // 软件中断开关
+    parameter int MIE_MTIE_BIT  = 7;    // Timer 中断开关
+    parameter int MIE_MEIE_BIT  = 11;   // 外部中断开关
+    // mip 寄存器关键 bit 位置常量（当前实现部分）。
+    // parameter int MIP_MSIP_BIT  = 3;
+    parameter int MIP_MTIP_BIT  = 7;
+    parameter int MIP_MEIP_BIT  = 11;
 
     // csr_op_e 指示 CSR 指令在 CSR 文件（csr_file.sv）中执行哪种位操作。
     // decoder 根据 funct3 产生，经 ID/EX、EX/MEM 传到 MEM/csr_file 用于计算 CSR 新值：
@@ -229,8 +245,9 @@ package core_pkg;
         CSR_OP_RCI    // CSRRCI：CSR = CSR & ~uimm；uimm=0 时不写。
     } csr_op_e;
 
-    // trap_cause_e 表示 exception 类型，编码对应 RISC-V Privileged Spec 中 mcause 的 Exception Code。
+    // irq_cause_e 和 trap_cause_e 一样存在 cause 寄存器的低五位，根据最高位判定是异常还是中断
     // 注释掉的是本阶段不实现的条目，保留枚举值便于后续扩展。
+    // trap_cause_e 表示 exception 类型，编码对应 RISC-V Privileged Spec 中 mcause 的 Exception Code。
     typedef enum logic [4:0] {
         TRAP_CAUSE_INST_ADDR_MISALIGNED   = 5'd0,    // 触发源：pc 重定向地址非法
         // TRAP_CAUSE_INST_ACCESS_FAULT   = 5'd1,       // 暂不做：无访问错误模型
@@ -249,6 +266,20 @@ package core_pkg;
         // TRAP_CAUSE_RESERVED_14         = 5'd14,   // RISC-V 保留
         // TRAP_CAUSE_STORE_PAGE_FAULT    = 5'd15,      // 暂不做：无 MMU
     } trap_cause_e;
+    typedef enum logic [4:0] {
+        // IRQ_CAUSE_U_SOFTWARE           = 5'd0,    // 暂不做：只有 M-mode
+        // IRQ_CAUSE_S_SOFTWARE           = 5'd1,    // 暂不做：只有 M-mode
+        // IRQ_CAUSE_RESERVED_IRQ_2       = 5'd2,    // RISC-V 保留
+        // IRQ_CAUSE_M_SOFTWARE           = 5'd3,    // 暂不做：MSIP 不在本阶段实现
+        // IRQ_CAUSE_U_TIMER              = 5'd4,    // 暂不做：只有 M-mode
+        // IRQ_CAUSE_S_TIMER              = 5'd5,    // 暂不做：只有 M-mode
+        // IRQ_CAUSE_RESERVED_IRQ_6       = 5'd6,    // RISC-V 保留
+        IRQ_CAUSE_M_TIMER              = 5'd7,    // 触发源：TIMER0 比较器 match
+        // IRQ_CAUSE_U_EXTERNAL           = 5'd8,    // 暂不做：只有 M-mode
+        // IRQ_CAUSE_S_EXTERNAL           = 5'd9,    // 暂不做：只有 M-mode
+        // IRQ_CAUSE_RESERVED_IRQ_10      = 5'd10,   // RISC-V 保留
+        IRQ_CAUSE_M_EXTERNAL           = 5'd11    // 触发源：GPIO/UART 外设中断输入
+    } irq_cause_e;
 
 
 

@@ -162,6 +162,7 @@ module core (
     wire [core_pkg::XLEN-1:0] ex_exception_tval;
     wire [core_pkg::XLEN-1:0] ex_csr_operand;
     wire                      ex_mret;
+    wire [core_pkg::XLEN-1:0] ex_next_pc;
 
     // MEM
     wire [core_pkg::XLEN-1:0] mem_load_data;
@@ -418,7 +419,9 @@ module core (
 
     ex_stage u_ex_stage (
         .valid_i            (id_ex_valid),
+
         .pc_i               (id_ex_data_q.pc),
+        .pc_plus4_i         (id_ex_data_q.pc_plus4),
         .rs1_data_i         (ex_rs1_op_data),
         .rs2_data_i         (ex_rs2_op_data),
         .imm_i              (id_ex_data_q.imm),
@@ -447,7 +450,8 @@ module core (
         .exception_cause_o  (ex_exception_cause),
         .exception_tval_o   (ex_exception_tval),
         .csr_operand_o      (ex_csr_operand),
-        .mret_o             (ex_mret)
+        .mret_o             (ex_mret),
+        .next_pc_o          (ex_next_pc)
     );
 
     pipe_reg_ex_mem u_pipe_reg_ex_mem (
@@ -493,6 +497,7 @@ module core (
     assign ex_mem_data_d.csr_operand     = ex_csr_operand;
     assign ex_mem_data_d.csr_writes_rd   = id_ex_data_q.csr_writes_rd;
     assign ex_mem_data_d.csr_write_en    = id_ex_data_q.csr_write_en;
+    assign ex_mem_data_d.next_pc         = ex_next_pc;
 
     mem_stage u_mem_stage (
         .valid_i                (ex_mem_valid),
