@@ -209,7 +209,7 @@ module decoder (
     assign csr_uses_rs1_o  = csr_op_reg;
     assign csr_writes_rd_o = csr_o && (rd_addr_o != '0);
     assign csr_write_en_o  = instr_id_o == INSTR_CSRRW            ||
-                             (csr_op_reg  && rs1_addr_o  != '0)   ||
+                             (csr_op_reg  && rs1_addr_o != '0)    ||
                              instr_id_o == INSTR_CSRRWI           ||
                              (csr_op_uimm && csr_uimm_o != '0);
 

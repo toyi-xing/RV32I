@@ -4,11 +4,11 @@
 //
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 本模块保存最小 M-mode CSR 状态，集中处理三类 CSR 写来源：
+//   - 本模块保存最小 M-mode CSR 状态，集中处理 CSR 状态更新：
 //       1. 普通 CSR 指令提交。
 //       2. trap entry（mepc/mcause/mtval/mstatus 更新）。
 //       3. MRET 返回时恢复 mstatus。
-//   - 组合读、同步写。同一拍写优先：trap_valid_i > mret_valid_i > normal csr write
+//   - 组合读、同步写。写端口支持 MRET/CSR 写与 interrupt 同拍提交的复合语义。
 //
 // 功能：
 //   - 保存 7 个 M-mode CSR 状态寄存器：mstatus、mie、mtvec、mscratch、mepc、mcause、mtval。
@@ -19,6 +19,7 @@
 //   - 接收普通 CSR 指令写请求，按 csr_op_i 计算新值并执行 WARL 处理。
 //   - 接收 trap_valid 写请求，自动更新 mepc/mcause/mtval/mstatus。
 //   - 接收 mret_valid（MRET指令） 写请求，自动恢复 mstatus.MIE/MPIE/MPP。
+//   - 输出普通 CSR 写提交后的 commit view，供 trap_ctrl 判断 CSR 写同拍 interrupt。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -51,12 +52,15 @@ module csr_file (
     input  logic                      mtip_i,
     input  logic                      meip_i,
 
-    // 输出 CSR 值供 trap_ctrl 和顶层使用
-    output logic [core_pkg::XLEN-1:0] mtvec_o,               // mtvec 当前值（trap 跳转基址）
-    output logic [core_pkg::XLEN-1:0] mepc_o,                // mepc 当前值（MRET 返回地址）
+    // 输出 CSR 值供 trap_ctrl 和顶层使用。
+    // commit view 只表示普通 CSR 写提交后的值，用于 CSR 写同拍 interrupt 的判断和 redirect。
     output logic [core_pkg::XLEN-1:0] mstatus_o,             // mstatus 当前值（特权级、全局中断备份与开关）
-    output logic [core_pkg::XLEN-1:0] mie_o,                 // mie 当前值（更细致的中断开关）
+    output logic [core_pkg::XLEN-1:0] mstatus_commit_o,      // 普通 CSR 写提交后的 mstatus；无合法 mstatus 写时等于当前值
+    output logic [core_pkg::XLEN-1:0] mie_commit_o,          // 普通 CSR 写提交后的 mie；无合法 mie 写时等于当前值
+    output logic [core_pkg::XLEN-1:0] mtvec_commit_o,        // 普通 CSR 写提交后的 mtvec；无合法 mtvec 写时等于当前值
+    output logic [core_pkg::XLEN-1:0] mepc_o,                // mepc 当前值（MRET 返回地址）
     output logic [core_pkg::XLEN-1:0] mip_o                  // mip 当前值（中断 pending）
+
 );
 
     import core_pkg::*;
@@ -162,7 +166,16 @@ module csr_file (
             endcase
         end
     end
-    // CSR 写端口： Zicsr 指令写 + trap & MRET CSR 硬件写
+    // CSR 写端口：Zicsr 指令写 + trap & MRET CSR 硬件写
+    // CSR 写分为以下情况：硬件自动写——trap（exception/interrupt）、MRET；软件写——CSR 指令写
+    // 由于中断可能在任意指令（MRET、CSR 写）发生，仅异常时只需处理异常，其他时候都要考虑与中断同时发生
+    // 优先级排序：exception trap > MRET+interrupt > CSR 写+interrupt > interrupt trap > MRET > normal CSR write
+    wire exception_trap =  trap_valid_i & !trap_is_interrupt_i;
+    wire irq_and_mret   =  trap_valid_i &  trap_is_interrupt_i &  mret_valid_i;
+    wire irq_and_csr_we =  trap_valid_i &  trap_is_interrupt_i &  csr_valid_i  &  csr_write_en_i;
+    wire irq_only       =  trap_valid_i &  trap_is_interrupt_i & !mret_valid_i & !csr_write_en_i;    // 根据 decoder 规则，其实只看 csr_write_en_i 就够了，其他地方是双重保险
+    wire mret_only      = !trap_valid_i &  mret_valid_i;
+    wire csr_we_only    = !trap_valid_i &  csr_valid_i  &  csr_write_en_i;
     always_ff @(posedge clk_i or negedge rst_n_i) begin : CSR_WRITE
         if (!rst_n_i) begin
             mstatus        <= '0;
@@ -174,21 +187,55 @@ module csr_file (
             mcause         <= '0;
             mtval          <= '0;
         end else begin
-            // CSR 写优先级：trap entry(exception/interrupt) > mret > normal csr write
-            if (trap_valid_i) begin         // trap entry：PC redirect 到 trap handler
-                mepc     <= trap_pc_i;      // trap_pc_i 是异常 pc 还是中断返回 pc 由 trap_ctrl 选择
-                mcause   <= {trap_is_interrupt_i, (XLEN-1)'(trap_cause_code_i)};
-                mtval    <= trap_is_interrupt_i ? '0 : trap_tval_i;    // tval 中断写 0
+            if (exception_trap) begin       // trap entry：PC redirect 到 trap handler
+                mepc     <= trap_pc_i;      // 异常 pc
+                mcause   <= {1'b0, (XLEN-1)'(trap_cause_code_i)};
+                mtval    <= trap_tval_i;
                 mstatus[MSTATUS_MIE_BIT]                  <= 1'b0;
                 mstatus[MSTATUS_MPIE_BIT]                 <= mstatus[MSTATUS_MIE_BIT];
                 mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
             end
-            else if (mret_valid_i) begin    // mret:该情况 pc <- mepc
+            else if (irq_and_mret) begin    // mstatus 等价于先 MRET 再 interrupt entry,其他 CSR 等价于一次 irq
+                // mepc 本就是 MRET 要返回的 pc,因此保持不变，中断处理完后再回去
+                mcause   <= {1'b1, (XLEN-1)'(trap_cause_code_i)};
+                mtval    <= '0;             // tval 中断写 0
+                mstatus[MSTATUS_MIE_BIT]                  <= 1'b0;                      // MIE 清 0
+                mstatus[MSTATUS_MPIE_BIT]                 <= mstatus[MSTATUS_MPIE_BIT]; // MPIE 保持旧值
+                mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
+            end
+            else if (irq_and_csr_we) begin  // 普通 CSR 写先提交，再执行 interrupt trap entry
+                unique case (csr_addr_i)
+                    CSR_ADDR_MSTATUS    : mstatus    <= csr_warl;
+                    CSR_ADDR_MIE        : mie        <= csr_warl;
+                    CSR_ADDR_MTVEC      : mtvec      <= csr_warl;
+                    CSR_ADDR_MSCRATCH   : mscratch   <= csr_warl;
+                    CSR_ADDR_MEPC       : mepc       <= csr_warl;
+                    CSR_ADDR_MCAUSE     : mcause     <= csr_warl;
+                    CSR_ADDR_MTVAL      : mtval      <= csr_warl;
+                    default: ;  // 写端口只负责合法地址的状态更新；非法写由组合 csr_illegal_o 上报。
+                endcase
+                mepc     <= trap_pc_i;      // 中断返回 pc
+                mcause   <= {1'b1, (XLEN-1)'(trap_cause_code_i)};
+                mtval    <= '0;             // tval 中断写 0
+                mstatus[MSTATUS_MIE_BIT]                  <= 1'b0;
+                mstatus[MSTATUS_MPIE_BIT]                 <= mstatus_commit_o[MSTATUS_MIE_BIT];     // 使用普通 CSR 写提交后的 MIE
+                mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
+
+            end
+            else if (irq_only) begin
+                mepc     <= trap_pc_i;      // 中断返回 pc
+                mcause   <= {1'b1, (XLEN-1)'(trap_cause_code_i)};
+                mtval    <= '0;             // tval 中断写 0
+                mstatus[MSTATUS_MIE_BIT]                  <= 1'b0;
+                mstatus[MSTATUS_MPIE_BIT]                 <= mstatus[MSTATUS_MIE_BIT];
+                mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
+            end
+            else if (mret_only) begin     // mret:该情况 pc <- mepc
                 mstatus[MSTATUS_MIE_BIT]                  <= mstatus[MSTATUS_MPIE_BIT];
                 mstatus[MSTATUS_MPIE_BIT]                 <= 1'b1;      // MPIE 复位
                 mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
             end
-            else if (csr_valid_i && csr_write_en_i) begin   // CSR 指令写，该情况 pc 不重定向
+            else if (csr_we_only) begin   // CSR 指令写，该情况 pc 不重定向
                 unique case (csr_addr_i)
                     CSR_ADDR_MSTATUS    : mstatus    <= csr_warl;
                     CSR_ADDR_MIE        : mie        <= csr_warl;
@@ -211,12 +258,69 @@ module csr_file (
 
     assign csr_illegal_o = csr_illegal_r | csr_illegal_w;
 
-    assign mtvec_o      = mtvec;
-    assign mepc_o       = mepc;
-    assign mstatus_o    = mstatus;
-    assign mie_o        = mie;
-    assign mip_o        = mip;
+    // 无需看 MRET 后的 commit 寄存器，因为 MRET 只会改变 mstatus，而 mstatus_o 的 MPIE 就可以确定 MRET 后还是否会中断（irq_and_mret）
+    // 这里添加了 MRET 的 commit 反而容易构成组合环
+    always_comb begin : CSR_STATUS_OUT
+        mstatus_o           = mstatus;
+        mstatus_commit_o    = mstatus;
+        mie_commit_o        = mie;
+        mtvec_commit_o      = mtvec;
+        mepc_o              = mepc;
+        mip_o               = mip;
+        if(csr_valid_i  &  csr_write_en_i & !csr_illegal_o) begin    // 合法普通 CSR 写提交后的对应寄存器
+            unique case (csr_addr_i)
+                CSR_ADDR_MSTATUS:   mstatus_commit_o = csr_warl;
+                CSR_ADDR_MIE:       mie_commit_o     = csr_warl;
+                CSR_ADDR_MTVEC:     mtvec_commit_o   = csr_warl;
+                default: ;
+            endcase
+        end
+    end
 
 endmodule
+
+// =============================================================================
+// CSR commit view 与同拍 interrupt 说明
+// =============================================================================
+// 本模块有两类容易混在一起的“本拍之后”概念：
+//
+//   1. 普通 CSR 指令提交后的 CSR 视图：
+//        mstatus_commit_o / mie_commit_o / mtvec_commit_o
+//
+//      这几个信号只描述“如果当前 MEM 指令是一条合法 CSR 写，那么这条 CSR 写
+//      自己提交后，相关 CSR 会是什么值”。它们不包含 trap entry 的硬件写，也不包含
+//      MRET 的硬件写。这样可以避免形成：
+//
+//        csr_file commit view -> trap_ctrl -> trap_valid/mret_valid -> csr_file commit view
+//
+//      这种组合闭环。
+//
+//      CSR 写+ interrupt 使用这几个信号。语义是：
+//        - 先提交当前 CSR 写；
+//        - trap_ctrl 用提交后的 mstatus/mie 判断 interrupt 是否真正可接受；
+//        - 若同拍接受 interrupt，redirect 目标使用提交后的 mtvec；
+//        - csr_file 在时钟沿合并“CSR 写 + interrupt trap entry”的最终状态。
+//
+//      因此，如果本拍写 mstatus 清掉 MIE，就不应再按旧 MIE 接受 interrupt；
+//      如果本拍写 mtvec 后同拍接受 interrupt，就应跳到新 mtvec。
+//
+//   2. MRET 提交后的 mstatus：
+//
+//      MRET 也会改变 mstatus，但它不放进 commit view。原因是 MRET + interrupt
+//      不需要完整构造“mstatus_after_mret”，只需要知道 MRET 后的 MIE 是否为 1。
+//      根据 MRET 语义：
+//
+//        MIE <= old MPIE
+//
+//      所以 trap_ctrl 直接看 mstatus_o[MSTATUS_MPIE_BIT]，就等价于判断
+//      “MRET 返回后是否开中断”。若 MRET+interrupt 成立，最终 mstatus 不是单纯
+//      的 MRET 后状态，而是“先 MRET，再 interrupt trap entry”的结果：
+//
+//        MIE  <= 0
+//        MPIE <= old MPIE
+//        MPP  <= M
+//
+//      这就是为什么 commit view 只管普通 CSR 写，而 MRET + interrupt 走单独口径。
+// =============================================================================
 
 `default_nettype wire

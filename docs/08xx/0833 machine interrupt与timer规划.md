@@ -147,7 +147,8 @@ interrupt_return_pc / commit_next_pc / mem_next_pc
 | taken branch | branch target |
 | `JAL` | jump target |
 | `JALR` | jalr target |
-| `MRET` | 第一版不和 interrupt 同拍接受，先完成 MRET redirect |
+| `MRET` | 若同拍接受 interrupt，返回 PC 使用 `MRET` 原本要跳回的 `mepc` |
+| 合法 CSR 写 | CSR 写本身先提交；interrupt 返回 PC 仍是该 CSR 指令之后的下一条 PC |
 
 如果后续为了简单选择“接受 interrupt 时 replay 当前 MEM 指令”，可以把 `mepc` 写成 `mem_pc`，但这会要求同拍屏蔽当前 MEM 指令的所有副作用，否则 store/MMIO store 可能被执行两次。当前项目已经有 MMIO 副作用，推荐采用“当前旧指令完成、kill younger、`mepc` 指向下一条未提交指令”的口径。
 
@@ -156,7 +157,7 @@ interrupt_return_pc / commit_next_pc / mem_next_pc
 同一个 MEM/commit 边界上，优先级为：
 
 ```text
-已有同步 exception > MRET > interrupt > 普通指令提交
+同步 exception > MRET+interrupt > CSR写+interrupt > MRET > interrupt > 普通指令提交
 ```
 
 含义如下：
@@ -164,11 +165,62 @@ interrupt_return_pc / commit_next_pc / mem_next_pc
 | 优先级 | 事件 | 原因 |
 |---|---|---|
 | 1 | 同步 exception | 当前指令已经发生架构异常，必须先进入 exception handler |
-| 2 | `MRET` | `MRET` 会恢复 `mstatus.MIE` 并 redirect 到 `mepc`，pending interrupt 可在后续边界再接受 |
-| 3 | interrupt | 只有在没有同步 exception、没有正在提交的 `MRET` 时接受 |
-| 4 | 普通提交 | 没有 trap/return/interrupt 时正常流动 |
+| 2 | `MRET+interrupt` | `MRET` 先完成返回语义，若返回后 interrupt 仍可接受，则直接进入 interrupt handler |
+| 3 | `CSR写+interrupt` | CSR 写先提交，若提交后的 CSR 状态允许 interrupt，则同拍进入 interrupt handler |
+| 4 | `MRET` | 没有同拍 interrupt 时，正常 redirect 到 `mepc` |
+| 5 | interrupt | 普通指令提交边界接受 interrupt |
+| 6 | 普通提交 | 没有 trap/return/interrupt 时正常流动 |
 
-这个优先级不是为了处理常见同拍冲突，而是为了让所有边界都有确定行为。正常软件中，一条合法 `MRET` 自己不会同时带同步 exception；如果返回后 `MIE=1` 且 pending 仍然存在，硬件可以在后续指令边界再次接受 interrupt。
+其中 interrupt 来源内部仍按本阶段固定优先级选择：
+
+```text
+MEIP > MTIP
+```
+
+所以更展开地看，可以理解为：
+
+```text
+同步 exception
+> MRET+MEIP
+> MRET+MTIP
+> CSR写+MEIP
+> CSR写+MTIP
+> MRET
+> MEIP
+> MTIP
+> 普通提交
+```
+
+这个优先级不是为了处理常见同拍冲突，而是为了让所有边界都有确定行为。同步 exception 最高，因为当前指令已经发生架构异常，不能再先完成 `MRET`、CSR 写或 interrupt。`MRET+interrupt` 和 `CSR写+interrupt` 则属于“当前指令先提交，然后立刻在同一精确边界接受 interrupt”的复合提交场景。
+
+### 2.5 复合提交边界
+
+普通 interrupt 可以理解为插在两条普通指令之间。但当前 MEM 边界的旧指令不一定只是 ALU/load/store，也可能是 `MRET` 或 CSR 写指令。为了保持 precise state，本阶段把这两类情况显式定义出来。
+
+`MRET+interrupt` 的语义是：
+
+```text
+先完成 MRET 的返回语义；
+若 MRET 恢复后的全局中断使能允许，且对应 pending/enable 有效；
+则本拍直接进入 interrupt handler。
+```
+
+此时 interrupt 写入 `mepc` 的值不是普通 `next_pc`，而是 `MRET` 原本要跳回的 `mepc`。这样 handler 返回后，程序仍会回到原本 `MRET` 要返回的位置。
+
+`CSR写+interrupt` 的语义是：
+
+```text
+先完成当前 CSR 写；
+用 CSR 写提交后的 mstatus/mie/mtvec 判断和选择 interrupt；
+若 interrupt 被接受，则同拍进入 handler。
+```
+
+这条规则避免两个问题：
+
+- CSR 写不能被 interrupt trap entry 吞掉。例如软件写 `mie` 打开 timer enable，这个写本身必须提交。
+- interrupt 判断不能只看旧 CSR 值。例如当前 CSR 写清 `mstatus.MIE`，则本拍不应再按旧 `MIE=1` 接受 interrupt；如果当前 CSR 写更新 `mtvec`，同拍进入 handler 时也应跳到更新后的 `mtvec`。
+
+从硬件规划角度看，CSR 文件需要提供“普通 CSR 写提交后的 CSR 视图”给 trap 控制逻辑，例如提交后的 `mstatus/mie/mtvec`。这个视图只反映普通 CSR 写本身，不包含 trap entry 或 `MRET` 的硬件写效果，否则容易形成组合环。
 
 ## 第3章 CSR 扩展规划
 
@@ -497,11 +549,12 @@ timer 属于 MMIO 外设，仍沿用 0832 的访问规则：
 - 随流水线传来的同步 exception。
 - CSR illegal exception。
 - `MRET`。
+- CSR 写提交相关信息。
 
 本阶段继续让 `trap_ctrl` 作为 interrupt 接受点。新增 interrupt 后，可以理解为：
 
 ```text
-trap_ctrl = 同步 exception 选择 + MRET 选择 + interrupt 选择 + redirect/kill 控制
+trap_ctrl = 同步 exception 选择 + MRET/CSR提交选择 + interrupt 选择 + redirect/kill 控制
 ```
 
 这样 interrupt 不会散落在 IF、ID、EX 各处，也更容易保持 precise state。
@@ -527,9 +580,11 @@ handler 返回到第一条未提交指令。
 | IF/ID | kill |
 | ID/EX | kill |
 | EX/MEM | kill |
-| MEM/WB 输入 | 不因为 interrupt 本身 kill；只有同步 exception 才需要阻止 faulting instruction 进入普通 WB |
+| MEM/WB 输入 | 普通 interrupt 和 `CSR写+interrupt` 不 kill；同步 exception 和 `MRET` 需要阻止当前 MEM 指令进入普通 WB |
 
 这和同步 exception 的最大差异在 MEM/WB。若实现上为了简单把 interrupt 也接到 `kill_mem_wb`，就等价于 replay 当前 MEM 指令，必须额外证明 store/MMIO 副作用不会被执行两次。当前已有 UART/GPIO/MMIO，因此不推荐这种口径。
+
+`MRET+interrupt` 是一个特殊情况：它最终确实进入 interrupt handler，但当前 MEM 指令是 `MRET`，本身没有普通 WB 生命周期，因此仍可以按 `MRET` 口径阻止它进入 MEM/WB。`CSR写+interrupt` 则相反，当前 MEM 指令是正常提交的 CSR 指令，不能因为同拍接受 interrupt 就 kill MEM/WB 输入，否则会丢失 CSR 指令对 rd 的写回观察。
 
 ### 6.3 interrupt 返回 PC 需要随流水线携带
 
@@ -567,9 +622,11 @@ trap_ctrl 接受 interrupt 时使用这个 next PC 写 mepc。
 | MRET valid | `MRET` 被接受 |
 | redirect valid/pc | trap entry 或 MRET 的 PC 重定向 |
 | kill younger | trap entry/MRET 都需要 kill younger |
-| kill current MEM/WB | 仅同步 exception 需要；interrupt 不使用 |
+| kill current MEM/WB | 同步 exception 和 `MRET` 使用；普通 interrupt/`CSR写+interrupt` 不使用 |
 
 这里可以看出，本阶段最好不要继续把 `trap_pc` 理解为“发生错误的指令 PC”。对 exception 它是 fault PC，对 interrupt 它更准确地说是 `mepc` 写入值。
+
+当同拍存在 CSR 写和 interrupt 时，`trap_ctrl` 的 interrupt enable 判断应基于 CSR 写提交后的视图；当同拍存在 `MRET` 和 interrupt 时，判断依据是 `MRET` 恢复后的 `MIE`，也就是原来的 `MPIE`。这两点都属于提交边界语义，不能简单只看进入 MEM 边界前的旧 CSR 值。
 
 ### 6.5 和 branch redirect 的优先级
 

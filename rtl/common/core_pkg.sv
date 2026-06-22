@@ -200,7 +200,7 @@ package core_pkg;
     parameter logic [11:0] CSR_ADDR_MSCRATCH   = 12'h340;   // 硬件存在，软件自由读写（便签）
     parameter logic [11:0] CSR_ADDR_MEPC       = 12'h341;   // trap 返回地址
     parameter logic [11:0] CSR_ADDR_MCAUSE     = 12'h342;   // trap 原因（值相同时，异常/中断也代表不同原因）
-    parameter logic [11:0] CSR_ADDR_MTVAL      = 12'h343;   // 异常附加信息，不同异常对应不同内容，中断写 0
+    parameter logic [11:0] CSR_ADDR_MTVAL      = 12'h343;   // 异常附加信息，不同异常对应不同内容（如非法指令写指令码），中断写 0
 
     // CSR指令只读，固定或硬件自动写
     parameter logic [11:0] CSR_ADDR_MIP        = 12'h344;   // 中断挂起，硬件自动写
