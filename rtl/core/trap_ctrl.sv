@@ -29,7 +29,7 @@ module trap_ctrl (
     // trap 源 1：随流水线传到 MEM 的 exception：
     // pc跳转地址未对齐、普通非法指令、EBREAK、load 地址未对齐、store 地址未对齐、ECALL
     input  logic                      mem_exception_valid_i,     // 随流水线传到 MEM 的 exception 是否有效。
-    input  core_pkg::trap_cause_e     mem_exception_cause_i,     // 随流水线传到 MEM 的 exception cause。
+    input  core_pkg::excp_cause_e     mem_exception_cause_i,     // 随流水线传到 MEM 的 exception cause。
     input  logic [core_pkg::XLEN-1:0] mem_exception_tval_i,      // 随流水线传到 MEM 的 exception tval。
 
     // trap 源 2：非法 CSR 指令访问。
@@ -42,7 +42,7 @@ module trap_ctrl (
     // 根据是否异常，请求系统 trap
     output logic                      trap_valid_o,              // trap entry 被接受，驱动 csr_file 更新 trap CSR。
     output logic [core_pkg::XLEN-1:0] trap_pc_o,                 // fault 指令 PC，写入 mepc。
-    output core_pkg::trap_cause_e     trap_cause_o,              // trap cause，写入 mcause。
+    output core_pkg::excp_cause_e     trap_cause_o,              // 当前只输出 exception cause，写入 mcause 低位。
     output logic [core_pkg::XLEN-1:0] trap_tval_o,               // trap tval，写入 mtval。
 
     output logic                      mret_valid_o,              // MRET 被接受，驱动 csr_file 恢复 mstatus。
@@ -64,7 +64,7 @@ module trap_ctrl (
     always_comb begin : TRAP_ENTRY
         trap_valid_o = pipeline_exception | csr_illegal_exception;
         trap_pc_o    = mem_pc_i;
-        trap_cause_o = TRAP_CAUSE_ILLEGAL_INSTR;    // 用非法指令做统一默认值
+        trap_cause_o = EXCEPTION_CAUSE_ILLEGAL_INSTR;    // 用非法指令做统一默认值
         trap_tval_o  = '0;
         // 正常情况下 pipeline_exception 与 csr_illegal_exception 互斥；
         // 若 rtl 错误导致同时为 1，这里确定优先级。（与0831规划文档一致）
@@ -74,7 +74,7 @@ module trap_ctrl (
         end
         else if (csr_illegal_exception) begin
             // CSR 访问非法：cause - 非法指令，tval - 原始指令编码
-            trap_cause_o = TRAP_CAUSE_ILLEGAL_INSTR;
+            trap_cause_o = EXCEPTION_CAUSE_ILLEGAL_INSTR;
             trap_tval_o  = mem_instr_i;
         end
     end

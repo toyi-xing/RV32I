@@ -335,11 +335,11 @@ rtl/periph/mmio_gpio.sv          GPIO 寄存器块
 | load access fault | 5 | faulting address |
 | store/AMO access fault | 7 | faulting address |
 
-这需要在 `trap_cause_e` 中补：
+这需要在 `excp_cause_e` 中补：
 
 ```systemverilog
-TRAP_CAUSE_LOAD_ACCESS_FAULT  = 5'd5;
-TRAP_CAUSE_STORE_ACCESS_FAULT = 5'd7;
+EXCEPTION_CAUSE_LOAD_ACCESS_FAULT  = 5'd5;
+EXCEPTION_CAUSE_STORE_ACCESS_FAULT = 5'd7;
 ```
 
 同时数据地址译码层需要告诉 core 当前访问是否 fault。由于本阶段仍是固定响应模型，只加组合错误返回，不引入 ready/valid：
@@ -537,8 +537,8 @@ error = address decode fault
 | `UART0_BASE/UART0_SIZE_BYTES` | 当前实现的 UART0 寄存器窗口 |
 | `TIMER0_BASE` | 预留给下一阶段 timer |
 | `ACCEL0_BASE` | 预留给后续 accelerator |
-| `TRAP_CAUSE_LOAD_ACCESS_FAULT` | load 访问未映射或非法地址 |
-| `TRAP_CAUSE_STORE_ACCESS_FAULT` | store 访问未映射或非法地址 |
+| `EXCEPTION_CAUSE_LOAD_ACCESS_FAULT` | load 访问未映射或非法地址 |
+| `EXCEPTION_CAUSE_STORE_ACCESS_FAULT` | store 访问未映射或非法地址 |
 
 也可以考虑新增简单 helper 注释，说明某个地址是否落在 IMEM/DMEM/MMIO。RTL 里不一定要写 function，关键是不要在多个文件散落硬编码地址。
 

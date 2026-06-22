@@ -245,27 +245,28 @@ package core_pkg;
         CSR_OP_RCI    // CSRRCI：CSR = CSR & ~uimm；uimm=0 时不写。
     } csr_op_e;
 
-    // irq_cause_e 和 trap_cause_e 一样存在 cause 寄存器的低五位，根据最高位判定是异常还是中断
+    // excp_cause_e 和 irq_cause_e 都表示 mcause 低 5 bit code；
+    // 最终由 mcause 最高位区分 exception 和 interrupt。
     // 注释掉的是本阶段不实现的条目，保留枚举值便于后续扩展。
-    // trap_cause_e 表示 exception 类型，编码对应 RISC-V Privileged Spec 中 mcause 的 Exception Code。
+    // excp_cause_e 只表示同步 exception 类型，编码对应 RISC-V Privileged Spec 中 mcause 的 Exception Code。
     typedef enum logic [4:0] {
-        TRAP_CAUSE_INST_ADDR_MISALIGNED   = 5'd0,    // 触发源：pc 重定向地址非法
-        // TRAP_CAUSE_INST_ACCESS_FAULT   = 5'd1,       // 暂不做：无访问错误模型
-        TRAP_CAUSE_ILLEGAL_INSTR          = 5'd2,    // 触发源：INSTR_INVALID（包含非法 SYSTEM 编码） + 非法 CSR 访问(访问不存在的 CSR 或写只读 CSR)
-        TRAP_CAUSE_BREAKPOINT             = 5'd3,    // 触发源：EBREAK 指令
-        TRAP_CAUSE_LOAD_ADDR_MISALIGNED   = 5'd4,    // 触发源：load 指令给出的 mem 地址不对齐
-        TRAP_CAUSE_LOAD_ACCESS_FAULT      = 5'd5,    // 触发源：load 访问错误（地址不存在 / 不允许读）
-        TRAP_CAUSE_STORE_ADDR_MISALIGNED  = 5'd6,    // 触发源：store 指令给出的 mem 地址不对齐
-        TRAP_CAUSE_STORE_ACCESS_FAULT     = 5'd7,    // 触发源：store/AMO（原子写）访问错误（AMO目前不涉及，且AMO不允许读也会触发）
-        // TRAP_CAUSE_ECALL_U             = 5'd8,       // 暂不做：只有 M-mode
-        // TRAP_CAUSE_ECALL_S             = 5'd9,       // 暂不做：只有 M-mode
-        // TRAP_CAUSE_RESERVED_10         = 5'd10,   // RISC-V 保留
-        TRAP_CAUSE_ECALL_M                = 5'd11    // 触发源：ECALL 指令
-        // TRAP_CAUSE_INST_PAGE_FAULT     = 5'd12,      // 暂不做：无 MMU
-        // TRAP_CAUSE_LOAD_PAGE_FAULT     = 5'd13,      // 暂不做：无 MMU
-        // TRAP_CAUSE_RESERVED_14         = 5'd14,   // RISC-V 保留
-        // TRAP_CAUSE_STORE_PAGE_FAULT    = 5'd15,      // 暂不做：无 MMU
-    } trap_cause_e;
+        EXCEPTION_CAUSE_INST_ADDR_MISALIGNED   = 5'd0,    // 触发源：pc 重定向地址非法
+        // EXCEPTION_CAUSE_INST_ACCESS_FAULT   = 5'd1,       // 暂不做：无访问错误模型
+        EXCEPTION_CAUSE_ILLEGAL_INSTR          = 5'd2,    // 触发源：INSTR_INVALID（包含非法 SYSTEM 编码） + 非法 CSR 访问(访问不存在的 CSR 或写只读 CSR)
+        EXCEPTION_CAUSE_BREAKPOINT             = 5'd3,    // 触发源：EBREAK 指令
+        EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED   = 5'd4,    // 触发源：load 指令给出的 mem 地址不对齐
+        EXCEPTION_CAUSE_LOAD_ACCESS_FAULT      = 5'd5,    // 触发源：load 访问错误（地址不存在 / 不允许读）
+        EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED  = 5'd6,    // 触发源：store 指令给出的 mem 地址不对齐
+        EXCEPTION_CAUSE_STORE_ACCESS_FAULT     = 5'd7,    // 触发源：store/AMO（原子写）访问错误（AMO目前不涉及，且AMO不允许读也会触发）
+        // EXCEPTION_CAUSE_ECALL_U             = 5'd8,       // 暂不做：只有 M-mode
+        // EXCEPTION_CAUSE_ECALL_S             = 5'd9,       // 暂不做：只有 M-mode
+        // EXCEPTION_CAUSE_RESERVED_10         = 5'd10,   // RISC-V 保留
+        EXCEPTION_CAUSE_ECALL_M                = 5'd11    // 触发源：ECALL 指令
+        // EXCEPTION_CAUSE_INST_PAGE_FAULT     = 5'd12,      // 暂不做：无 MMU
+        // EXCEPTION_CAUSE_LOAD_PAGE_FAULT     = 5'd13,      // 暂不做：无 MMU
+        // EXCEPTION_CAUSE_RESERVED_14         = 5'd14,   // RISC-V 保留
+        // EXCEPTION_CAUSE_STORE_PAGE_FAULT    = 5'd15,      // 暂不做：无 MMU
+    } excp_cause_e;
     typedef enum logic [4:0] {
         // IRQ_CAUSE_U_SOFTWARE           = 5'd0,    // 暂不做：只有 M-mode
         // IRQ_CAUSE_S_SOFTWARE           = 5'd1,    // 暂不做：只有 M-mode

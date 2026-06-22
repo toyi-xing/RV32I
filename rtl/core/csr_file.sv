@@ -4,15 +4,16 @@
 //
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 本模块保存全部 M-mode CSR 状态，集中处理三类 CSR 写来源：
+//   - 本模块保存最小 M-mode CSR 状态，集中处理三类 CSR 写来源：
 //       1. 普通 CSR 指令提交。
 //       2. trap entry（mepc/mcause/mtval/mstatus 更新）。
 //       3. MRET 返回时恢复 mstatus。
 //   - 组合读、同步写。同一拍写优先：trap_valid_i > mret_valid_i > normal csr write
 //
 // 功能：
-//   - 保存 6 个 M-mode CSR 状态寄存器：mstatus、mtvec、mscratch、mepc、mcause、mtval。
-//   - 提供 5 个只读 CSR 常量：misa、mvendorid、marchid、mimpid、mhartid。
+//   - 保存 7 个 M-mode CSR 状态寄存器：mstatus、mie、mtvec、mscratch、mepc、mcause、mtval。
+//   - 组合生成 mip：MTIP/MEIP 来自硬件 pending 输入，其余 bit 读 0。
+//   - 提供 5 个固定只读 CSR 常量：misa、mvendorid、marchid、mimpid、mhartid。
 //   - 根据 csr_addr_i 组合读出 CSR 值。
 //   - 检测非法 CSR 访问（不存在的 CSR 地址、写只读 CSR），输出 csr_illegal_o。
 //   - 接收普通 CSR 指令写请求，按 csr_op_i 计算新值并执行 WARL 处理。
@@ -38,30 +39,39 @@ module csr_file (
 
     // trap entry 接口，非指令，而是系统 trap 时，csr 自动做的事情
     input  logic                      trap_valid_i,          // trap 提交，需更新 mepc/mcause/mtval/mstatus
-    input  logic [core_pkg::XLEN-1:0] trap_pc_i,             // fault 指令的 PC，写入 mepc
-    input  core_pkg::trap_cause_e     trap_cause_i,          // trap 原因，写入 mcause
-    input  logic [core_pkg::XLEN-1:0] trap_tval_i,           // 异常附加信息，写入 mtval
+    input  logic [core_pkg::XLEN-1:0] trap_pc_i,             // 写入 mepc；异常时为 fault PC，中断时为 return PC
+    input  logic                      trap_is_interrupt_i,   // 1 为中断，0 为异常
+    input  logic [4:0]                trap_cause_code_i,     // exception/interrupt cause code，写入 mcause 低位
+    input  logic [core_pkg::XLEN-1:0] trap_tval_i,           // 异常附加信息；中断时写入 mtval 的值由本模块清 0
 
     // MRET，同上，csr 自动做的事情
     input  logic                      mret_valid_i,          // MRET 提交，恢复 mstatus
 
+    // 中断源 pending 请求
+    input  logic                      mtip_i,
+    input  logic                      meip_i,
+
     // 输出 CSR 值供 trap_ctrl 和顶层使用
     output logic [core_pkg::XLEN-1:0] mtvec_o,               // mtvec 当前值（trap 跳转基址）
     output logic [core_pkg::XLEN-1:0] mepc_o,                // mepc 当前值（MRET 返回地址）
-    output logic [core_pkg::XLEN-1:0] mstatus_o              // mstatus 当前值
+    output logic [core_pkg::XLEN-1:0] mstatus_o,             // mstatus 当前值（特权级、全局中断备份与开关）
+    output logic [core_pkg::XLEN-1:0] mie_o,                 // mie 当前值（更细致的中断开关）
+    output logic [core_pkg::XLEN-1:0] mip_o                  // mip 当前值（中断 pending）
 );
 
     import core_pkg::*;
 
     // 寄存器声明
     // 可读可写
-    reg  [core_pkg::XLEN-1:0] mstatus, mtvec, mscratch, mepc, mcause, mtval;
-    // 只读
-    wire [core_pkg::XLEN-1:0] misa        = 32'h4000_0100;
-    wire [core_pkg::XLEN-1:0] mvendorid   = '0;
-    wire [core_pkg::XLEN-1:0] marchid     = '0;
-    wire [core_pkg::XLEN-1:0] mimpid      = '0;
-    wire [core_pkg::XLEN-1:0] mhartid     = '0;
+    reg   [core_pkg::XLEN-1:0] mstatus, mie, mtvec, mscratch, mepc, mcause, mtval;
+    // 只读，硬件自动写
+    logic [core_pkg::XLEN-1:0] mip;
+    // 只读，固定值
+    wire  [core_pkg::XLEN-1:0] misa        = 32'h4000_0100;
+    wire  [core_pkg::XLEN-1:0] mvendorid   = '0;
+    wire  [core_pkg::XLEN-1:0] marchid     = '0;
+    wire  [core_pkg::XLEN-1:0] mimpid      = '0;
+    wire  [core_pkg::XLEN-1:0] mhartid     = '0;
 
     // CSR 读端口 + 非法地址检测
     logic csr_illegal_r;     // 读 CSR 地址非法，组合输出
@@ -71,12 +81,14 @@ module csr_file (
         if (csr_valid_i) begin  // 当前 CSR 无读副作用，只要是 Zicsr 指令，就读 CSR 寄存器
             unique case (csr_addr_i)
                 CSR_ADDR_MSTATUS    : csr_rdata_o = mstatus;
+                CSR_ADDR_MIE        : csr_rdata_o = mie;
                 CSR_ADDR_MTVEC      : csr_rdata_o = mtvec;
                 CSR_ADDR_MSCRATCH   : csr_rdata_o = mscratch;
                 CSR_ADDR_MEPC       : csr_rdata_o = mepc;
                 CSR_ADDR_MCAUSE     : csr_rdata_o = mcause;
                 CSR_ADDR_MTVAL      : csr_rdata_o = mtval;
                 // 只读
+                CSR_ADDR_MIP        : csr_rdata_o = mip;
                 CSR_ADDR_MISA       : csr_rdata_o = misa;
                 CSR_ADDR_MVENDORID  : csr_rdata_o = mvendorid;
                 CSR_ADDR_MARCHID    : csr_rdata_o = marchid;
@@ -112,10 +124,15 @@ module csr_file (
         csr_warl = csr_new;
         unique case (csr_addr_i)
             CSR_ADDR_MSTATUS: begin // 当前 mstatus 仅实现 MIE/MPIE/MPP 这 4 bit，其余 bit 读 0、写忽略。
-                csr_warl = mstatus; // 非已实现 bit 保持旧值（不写入）
+                csr_warl                                  = '0;     // 非已实现 bit 保持 0（不写入）
                 csr_warl[MSTATUS_MIE_BIT]                 = csr_new[MSTATUS_MIE_BIT];
                 csr_warl[MSTATUS_MPIE_BIT]                = csr_new[MSTATUS_MPIE_BIT];
                 csr_warl[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB] = MSTATUS_MPP_M;
+            end
+            CSR_ADDR_MIE:begin
+                csr_warl                = '0;     // 非已实现 bit 保持 0（不写入）
+                csr_warl[MIE_MTIE_BIT]  = csr_new[MIE_MTIE_BIT];
+                csr_warl[MIE_MEIE_BIT]  = csr_new[MIE_MEIE_BIT];
             end
             CSR_ADDR_MTVEC: begin   // 当前只支持 direct mode，MODE 字段 mtvec[1:0]强制为 0。
                 csr_warl[core_pkg::XLEN-1:2] = csr_new[core_pkg::XLEN-1:2]; // BASE 可写
@@ -135,10 +152,10 @@ module csr_file (
         csr_illegal_w = 1'b0;
         if (csr_valid_i && csr_write_en_i) begin
             unique case (csr_addr_i)
-                CSR_ADDR_MSTATUS,   CSR_ADDR_MTVEC,
+                CSR_ADDR_MSTATUS,   CSR_ADDR_MIE,       CSR_ADDR_MTVEC,
                 CSR_ADDR_MSCRATCH,  CSR_ADDR_MEPC,
                 CSR_ADDR_MCAUSE,    CSR_ADDR_MTVAL      : csr_illegal_w = 1'b0;
-                CSR_ADDR_MISA,      CSR_ADDR_MVENDORID,
+                CSR_ADDR_MIP,       CSR_ADDR_MISA,      CSR_ADDR_MVENDORID,
                 CSR_ADDR_MARCHID,   CSR_ADDR_MIMPID,
                 CSR_ADDR_MHARTID    : csr_illegal_w = 1'b1;// 只读的 CSR 寄存器非法写
                 default:    csr_illegal_w = 1'b1;  // 未支持的 CSR 寄存器写
@@ -150,29 +167,31 @@ module csr_file (
         if (!rst_n_i) begin
             mstatus        <= '0;
             mstatus[12:11] <= MSTATUS_MPP_M;    // 当前仅实现 4 bit+M mode，MIE/MPIE 清 0，MPP 固定为 M-mode。
+            mie            <= '0;               // 关闭所有中断开关，软件需自行打开
             mtvec          <= MTVEC_RESET;      // mtvec 指向默认 trap 入口，其余 CSR 清 0。
             mscratch       <= '0;
             mepc           <= '0;
             mcause         <= '0;
             mtval          <= '0;
         end else begin
-            // CSR 写优先级：trap > mret > normal csr write
-            if (trap_valid_i) begin         // trap：该情况 pc <- trap handler
-                mepc                                      <= trap_pc_i;
-                mcause                                    <= core_pkg::XLEN'(trap_cause_i);
-                mtval                                     <= trap_tval_i;
-                mstatus[MSTATUS_MIE_BIT]               <= 1'b0;
+            // CSR 写优先级：trap entry(exception/interrupt) > mret > normal csr write
+            if (trap_valid_i) begin         // trap entry：PC redirect 到 trap handler
+                mepc     <= trap_pc_i;      // trap_pc_i 是异常 pc 还是中断返回 pc 由 trap_ctrl 选择
+                mcause   <= {trap_is_interrupt_i, (XLEN-1)'(trap_cause_code_i)};
+                mtval    <= trap_is_interrupt_i ? '0 : trap_tval_i;    // tval 中断写 0
+                mstatus[MSTATUS_MIE_BIT]                  <= 1'b0;
                 mstatus[MSTATUS_MPIE_BIT]                 <= mstatus[MSTATUS_MIE_BIT];
                 mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
             end
             else if (mret_valid_i) begin    // mret:该情况 pc <- mepc
-                mstatus[MSTATUS_MIE_BIT]                              <= mstatus[MSTATUS_MPIE_BIT];
-                mstatus[MSTATUS_MPIE_BIT]                             <= 1'b1;      // MPIE 复位
+                mstatus[MSTATUS_MIE_BIT]                  <= mstatus[MSTATUS_MPIE_BIT];
+                mstatus[MSTATUS_MPIE_BIT]                 <= 1'b1;      // MPIE 复位
                 mstatus[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB]  <= MSTATUS_MPP_M;
             end
             else if (csr_valid_i && csr_write_en_i) begin   // CSR 指令写，该情况 pc 不重定向
                 unique case (csr_addr_i)
                     CSR_ADDR_MSTATUS    : mstatus    <= csr_warl;
+                    CSR_ADDR_MIE        : mie        <= csr_warl;
                     CSR_ADDR_MTVEC      : mtvec      <= csr_warl;
                     CSR_ADDR_MSCRATCH   : mscratch   <= csr_warl;
                     CSR_ADDR_MEPC       : mepc       <= csr_warl;
@@ -183,12 +202,20 @@ module csr_file (
             end
         end
     end
+    // MIP 由硬件自动写，组合逻辑，中断源自行负责保持 pending
+    always_comb begin : MIP
+        mip               = '0;     // 非已实现 bit 保持 0
+        mip[MIP_MTIP_BIT] = mtip_i;
+        mip[MIP_MEIP_BIT] = meip_i;
+    end
 
     assign csr_illegal_o = csr_illegal_r | csr_illegal_w;
 
     assign mtvec_o      = mtvec;
     assign mepc_o       = mepc;
     assign mstatus_o    = mstatus;
+    assign mie_o        = mie;
+    assign mip_o        = mip;
 
 endmodule
 

@@ -72,7 +72,7 @@ MIE_MEIE_BIT = 11;
 MCAUSE_INTERRUPT_BIT = XLEN - 1;
 ```
 
-当前 `trap_cause_e` 是 5-bit exception code。本阶段不要把 interrupt bit 塞进这个 enum；新增 `irq_cause_e` 表示 interrupt code，后续再由单独 trap kind 信号区分 exception/interrupt。
+当前 `excp_cause_e` 是 5-bit exception code。本阶段不要把 interrupt bit 塞进这个 enum；新增 `irq_cause_e` 表示 interrupt code，后续再由单独 trap kind 信号区分 exception/interrupt。
 
 ```systemverilog
 typedef enum logic [4:0] {
@@ -144,7 +144,7 @@ IRQ_PENDING[0] = rx_irq_pending，R/W1C
 
 ## 2. 流水线 next PC 信息 `已完成`
 
-### 2.1 修改 `rtl/common/pipeline_pkg.sv` `已完成` `只做了 ex_mem_reg_t`
+### 2.1 修改 `rtl/common/pipeline_pkg.sv` `已完成`
 
 interrupt 需要返回到第一条未提交指令，因此 MEM 边界必须知道当前提交指令的实际下一条 PC。
 
@@ -156,7 +156,7 @@ logic [core_pkg::XLEN-1:0] next_pc;
 
 `mem_wb_reg_t` 也不需要新增该字段，因为 interrupt 在 MEM/commit 边界接受，不等到 WB。
 
-### 2.2 修改 `rtl/core/ex_stage.sv` `已完成` `额外复用输入 pc_plus4_i 无需额外计算`
+### 2.2 修改 `rtl/core/ex_stage.sv` `已完成`
 
 新增输入：
 
@@ -205,9 +205,9 @@ ex_mem_data_d.next_pc = ex_next_pc;
 
 其中 `ex_next_pc` 来自 `ex_stage.next_pc_o`。ID/EX 不新增 `next_pc` 字段。
 
-## 3. CSR 文件扩展
+## 3. CSR 文件扩展 `已完成`
 
-### 3.1 修改 `rtl/core/csr_file.sv` 端口
+### 3.1 修改 `rtl/core/csr_file.sv` 端口 `已完成`
 
 新增 raw pending 输入：
 
@@ -228,7 +228,7 @@ input logic [4:0] trap_cause_code_i;
 现有：
 
 ```systemverilog
-input core_pkg::trap_cause_e trap_cause_i
+input core_pkg::excp_cause_e trap_cause_i
 ```
 
 需要调整为低 5 bit code 形式。可选方案：
@@ -236,7 +236,7 @@ input core_pkg::trap_cause_e trap_cause_i
 - 方案 A：保留 `trap_cause_i` 给 exception，另加 `trap_irq_cause_i`。
 - 方案 B：统一改为 `logic [4:0] trap_cause_code_i`，再用 `trap_is_interrupt_i` 区分。
 
-本阶段推荐方案 B，`csr_file` 写 `mcause` 时更直接。
+本阶段选择方案 B，`csr_file` 写 `mcause` 时更直接。
 
 新增输出给 `trap_ctrl`：
 
@@ -245,9 +245,11 @@ output logic [core_pkg::XLEN-1:0] mie_o;
 output logic [core_pkg::XLEN-1:0] mip_o;
 ```
 
-也可以只输出 `interrupt_pending_o` 和 selected code，但本阶段更推荐输出 CSR 原值，让 `trap_ctrl` 统一做优先级选择。
+本阶段输出 CSR 原值，让 `trap_ctrl` 统一做优先级选择。
 
-### 3.2 新增 CSR storage
+当前 core 顶层先做最小适配：`mtip_i/meip_i` 暂接 0，`mie_o/mip_o` 暂未接入 `trap_ctrl`，后续第 4/5 步统一连线。
+
+### 3.2 新增 CSR storage `已完成`
 
 新增：
 
@@ -257,31 +259,39 @@ reg [core_pkg::XLEN-1:0] mie;
 
 `mip` 可以不作为纯 storage 保存全部 bit，因为 `MTIP/MEIP` 来自硬件 raw pending。
 
-建议做法：
+当前做法：
 
 ```systemverilog
-wire [XLEN-1:0] mip_value;
+logic [XLEN-1:0] mip;
 ```
 
 其中：
 
-```text
-mip_value[MSIP] = 0
-mip_value[MTIP] = mtip_i
-mip_value[MEIP] = meip_i
-其它 bit = 0
+```systemverilog
+always_comb begin
+    mip               = '0;
+    mip[MIP_MTIP_BIT] = mtip_i;
+    mip[MIP_MEIP_BIT] = meip_i;
+end
 ```
 
-### 3.3 CSR read decode
+### 3.3 CSR read decode 与 CSR 输出 `已完成`
 
 `CSR_READ` 增加：
 
 ```systemverilog
 CSR_ADDR_MIE: csr_rdata_o = mie;
-CSR_ADDR_MIP: csr_rdata_o = mip_value;
+CSR_ADDR_MIP: csr_rdata_o = mip;
 ```
 
-### 3.4 CSR write illegal 检测
+并驱动新增输出：
+
+```systemverilog
+assign mie_o = mie;
+assign mip_o = mip;
+```
+
+### 3.4 CSR write illegal 检测 `已完成`
 
 `CSR_ILLEGAL_W` 中：
 
@@ -298,7 +308,7 @@ CSR_ADDR_MIP: csr_rdata_o = mip_value;
 
 这样更清楚地区分 enable CSR 和 hardware pending CSR。
 
-### 3.5 CSR WARL 处理
+### 3.5 CSR WARL 处理 `已完成`
 
 `CSR_WARL_CAL` 中增加 `CSR_ADDR_MIE`：
 
@@ -313,7 +323,13 @@ mie[MSIE] 本阶段写忽略，读 0
 
 `mstatus` WARL 保持当前 `MIE/MPIE/MPP` 逻辑。
 
-### 3.6 CSR reset
+普通 CSR 写端口需要同步增加 `mie` 写回：
+
+```systemverilog
+CSR_ADDR_MIE: mie <= csr_warl;
+```
+
+### 3.6 CSR reset  `已完成`
 
 复位值：
 
@@ -324,13 +340,13 @@ mip = raw pending 组合值，不需要复位 storage
 
 `mstatus.MIE = 0`，因此即使 timer/GPIO/UART 复位后 pending 意外为 1，也不会在软件开启前进入 interrupt。
 
-### 3.7 trap entry 写 CSR
+### 3.7 trap entry 写 CSR `已完成`
 
 trap entry 时：
 
 ```systemverilog
 mepc   <= trap_pc_i;
-mcause <= {trap_is_interrupt_i, zeros, trap_cause_code_i};
+mcause <= {trap_is_interrupt_i, (XLEN-1)'(trap_cause_code_i)};
 mtval  <= trap_is_interrupt_i ? '0 : trap_tval_i;
 MPIE   <= MIE;
 MIE    <= 1'b0;
@@ -342,8 +358,9 @@ MPP    <= M;
 - exception 的 `trap_pc_i` 是 faulting PC。
 - interrupt 的 `trap_pc_i` 是 interrupt return PC。
 - 因此 `csr_file` 注释里不要再把 `trap_pc_i` 固定描述为 fault 指令 PC。
+- `mcause` 低 `XLEN-1` 位保存 cause code。当前 `trap_cause_code_i` 只有 5 bit，写入时零扩展；后续如果 cause code 宽度扩展，这里的拼接结构不用变。
 
-## 4. trap_ctrl 扩展
+## 4. trap_ctrl 扩展 `执行中`
 
 ### 4.1 修改 `rtl/core/trap_ctrl.sv` 端口
 
@@ -364,7 +381,7 @@ output logic [4:0]                trap_cause_code_o;
 output logic                      kill_mem_wb_o;
 ```
 
-现有 `trap_cause_o` 若仍是 `trap_cause_e`，需要改为低 5 bit code 或配合 `trap_is_interrupt_o` 重命名。
+现有 `trap_cause_o` 若仍是 `excp_cause_e`，需要改为低 5 bit code 或配合 `trap_is_interrupt_o` 重命名。
 
 建议输出语义：
 
@@ -510,7 +527,7 @@ output logic                      trap_is_interrupt_o;
 output logic [4:0]                trap_cause_code_o;
 ```
 
-现有 `trap_cause_o` 若继续保留 `trap_cause_e` 类型，会不适合表示 interrupt。建议改成：
+现有 `trap_cause_o` 若继续保留 `excp_cause_e` 类型，会不适合表示 interrupt。建议改成：
 
 ```systemverilog
 output logic [4:0] trap_cause_code_o

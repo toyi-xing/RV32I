@@ -50,7 +50,7 @@ module rv32i_soc (
 
     output logic                          trap_valid_o,          // trap entry 有效（异常/中断），不含 MRET。
     output logic [core_pkg::XLEN-1:0]     trap_pc_o,             // 发生异常/中断时的指令 PC。
-    output core_pkg::trap_cause_e         trap_cause_o,          // 异常/中断原因编码。
+    output core_pkg::excp_cause_e         trap_cause_o,          // 当前 trap entry 的 exception cause；interrupt 接入后将改为 code+kind。
     output logic [core_pkg::XLEN-1:0]     trap_tval_o,           // 异常相关附加值。
     output logic                          trap_return_o,         // MRET 返回事件有效。
     output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o     // trap 或 MRET 的跳转目标 PC。

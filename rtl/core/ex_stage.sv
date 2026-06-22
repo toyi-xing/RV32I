@@ -41,7 +41,7 @@ module ex_stage (
 
     // CSR、trap 相关
     input  logic                          exception_valid_i, // 前级已发现的 exception 是否有效；有效时 EX 不再产生普通 redirect。
-    input  core_pkg::trap_cause_e         exception_cause_i, // 前级 exception cause，EX 透传或在更高优先级时替换。
+    input  core_pkg::excp_cause_e         exception_cause_i, // 前级 exception cause，EX 透传或在更高优先级时替换。
     input  logic [core_pkg::XLEN-1:0]     exception_tval_i,  // 前级 exception tval，EX 透传或在更高优先级时替换。
     input  logic                          csr_i,             // 当前 EX 指令是否为 CSR 指令。
     input  core_pkg::csr_op_e             csr_op_i,          // CSR 操作类型，用于选择 rs1 还是 uimm 作为 CSR 操作数。
@@ -56,7 +56,7 @@ module ex_stage (
 
     // CSR、trap 相关
     output logic                          exception_valid_o, // EX 输出的 exception 是否有效，包含前级透传和 target misaligned。
-    output core_pkg::trap_cause_e         exception_cause_o, // EX 输出 exception cause。
+    output core_pkg::excp_cause_e         exception_cause_o, // EX 输出 exception cause。
     output logic [core_pkg::XLEN-1:0]     exception_tval_o,  // EX 输出 exception tval。
     output logic [core_pkg::XLEN-1:0]     csr_operand_o,     // 送入 CSR 文件的操作数；register 形式来自 forwarding 后 rs1，immediate 形式来自零扩展 uimm。
     output logic                          mret_o,            // MRET 标志透传输出。
@@ -95,7 +95,7 @@ module ex_stage (
     // csr、trap 相关---------------------------------------------------------------------
     wire   ex_exception_valid   = valid_i & instr_redirect & (redirect_pc_o[1:0] != 2'b0);    // 指令请求 redirect 但地址非法，则异常
     assign exception_valid_o    = exception_valid_i ? exception_valid_i : ex_exception_valid;
-    assign exception_cause_o    = exception_valid_i ? exception_cause_i : TRAP_CAUSE_INST_ADDR_MISALIGNED;
+    assign exception_cause_o    = exception_valid_i ? exception_cause_i : EXCEPTION_CAUSE_INST_ADDR_MISALIGNED;
     assign exception_tval_o     = exception_valid_i ? exception_tval_i : redirect_pc_o;
 
     wire csr_op_reg             = (csr_op_i == CSR_OP_RW)  || (csr_op_i == CSR_OP_RS)  || (csr_op_i == CSR_OP_RC);

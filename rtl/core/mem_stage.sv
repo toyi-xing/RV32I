@@ -38,7 +38,7 @@ module mem_stage (
 
     // trap 相关
     input  logic                          exception_valid_i,   // 前级已经发现的 exception 是否有效。
-    input  core_pkg::trap_cause_e         exception_cause_i,   // 前级 exception cause。
+    input  core_pkg::excp_cause_e         exception_cause_i,   // 前级 exception cause。
     input  logic [core_pkg::XLEN-1:0]     exception_tval_i,    // 前级 exception tval。
     input  logic                          lsu_access_fault_i,  // 当前有效 load/store 地址没有命中已实现 data region。
 
@@ -55,7 +55,7 @@ module mem_stage (
 
     //  trap 相关
     output logic                          exception_valid_o,    // MEM 边界最终 exception 是否有效，包含前级透传和本级 misaligned。
-    output core_pkg::trap_cause_e         exception_cause_o,    // MEM 边界最终 exception cause。
+    output core_pkg::excp_cause_e         exception_cause_o,    // MEM 边界最终 exception cause。
     output logic [core_pkg::XLEN-1:0]     exception_tval_o,     // MEM 边界最终 exception tval。
     // 可作为观察信号输出
     output logic                          mem_misaligned_o,     // 为 1 时表示当前 load/store 地址不满足访问宽度对齐要求
@@ -88,7 +88,7 @@ module mem_stage (
                                (mem_size_i == MEM_HALF ? {{16{~mem_unsigned_i & load_raw[15]}}, load_raw[15:0]} :
                                (mem_size_i == MEM_BYTE ? {{24{~mem_unsigned_i & load_raw[ 7]}}, load_raw[ 7:0]} : '0));
 
-    // 未对齐异常（TRAP_CAUSE_LOAD_ADDR_MISALIGNED, TRAP_CAUSE_STORE_ADDR_MISALIGNED）
+    // 未对齐异常（EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED, EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED）
     wire misa_lw            = valid_i && (mem_re_i || mem_we_i) && (mem_size_i == MEM_WORD) && (|alu_result_i[1:0]);
     wire misa_lh            = valid_i && (mem_re_i || mem_we_i) && (mem_size_i == MEM_HALF) && (alu_result_i[0]);
     assign mem_misaligned_o = valid_i && misa_lw || misa_lh;
@@ -96,18 +96,18 @@ module mem_stage (
     assign load_misaligned_o    = valid_i & mem_misaligned_o & mem_re_i;
     assign store_misaligned_o   = valid_i & mem_misaligned_o & mem_we_i;
 
-    // 访问错误异常（TRAP_CAUSE_LOAD_ACCESS_FAULT, TRAP_CAUSE_STORE_ACCESS_FAULT）
+    // 访问错误异常（EXCEPTION_CAUSE_LOAD_ACCESS_FAULT, EXCEPTION_CAUSE_STORE_ACCESS_FAULT）
     assign load_access_fault_o  = valid_i & lsu_access_fault_i & mem_re_i;
     assign store_access_fault_o = valid_i & lsu_access_fault_i & mem_we_i;
     assign mem_access_fault_o   = load_access_fault_o | store_access_fault_o;
 
     assign exception_valid_o    = exception_valid_i | mem_misaligned_o | mem_access_fault_o;
     assign exception_cause_o    = exception_valid_i    ? exception_cause_i                  :
-                                  load_misaligned_o    ? TRAP_CAUSE_LOAD_ADDR_MISALIGNED    :
-                                  store_misaligned_o   ? TRAP_CAUSE_STORE_ADDR_MISALIGNED   :
-                                  load_access_fault_o  ? TRAP_CAUSE_LOAD_ACCESS_FAULT       :
-                                  store_access_fault_o ? TRAP_CAUSE_STORE_ACCESS_FAULT      :
-                                  TRAP_CAUSE_ILLEGAL_INSTR;             // 默认值设为非法指令，此处无实意
+                                  load_misaligned_o    ? EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED    :
+                                  store_misaligned_o   ? EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED   :
+                                  load_access_fault_o  ? EXCEPTION_CAUSE_LOAD_ACCESS_FAULT       :
+                                  store_access_fault_o ? EXCEPTION_CAUSE_STORE_ACCESS_FAULT      :
+                                  EXCEPTION_CAUSE_ILLEGAL_INSTR;             // 默认值设为非法指令，此处无实意
     assign exception_tval_o     = exception_valid_i    ? exception_tval_i :
                                   mem_misaligned_o     ? alu_result_i     :
                                   mem_access_fault_o   ? alu_result_i     : '0;

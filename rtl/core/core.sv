@@ -53,7 +53,7 @@ module core (
     // trap/MRET 提交观察
     output logic                          trap_valid_o,         // trap entry 有效（异常/中断），不含 MRET。
     output logic [core_pkg::XLEN-1:0]     trap_pc_o,            // 发生异常/中断时的指令 PC（mepc 写入值）。
-    output core_pkg::trap_cause_e         trap_cause_o,         // 异常/中断原因编码。
+    output core_pkg::excp_cause_e         trap_cause_o,         // 当前 trap entry 的 exception cause；interrupt 接入后将改为 code+kind。
     output logic [core_pkg::XLEN-1:0]     trap_tval_o,          // 异常相关附加值（mtval 写入值）。
     output logic                          trap_return_o,        // MRET 返回事件有效。
     output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o    // trap 或 MRET 的跳转目标 PC。
@@ -147,7 +147,7 @@ module core (
     wire                      id_csr_writes_rd;
     wire                      id_csr_write_en;
     wire                      id_exception_valid;
-    core_pkg::trap_cause_e    id_exception_cause;
+    core_pkg::excp_cause_e    id_exception_cause;
     wire [core_pkg::XLEN-1:0] id_exception_tval;
 
     // forwarding 前递结果 -> EX 操作数
@@ -158,7 +158,7 @@ module core (
     wire [core_pkg::XLEN-1:0] ex_alu_result;
     wire [core_pkg::XLEN-1:0] ex_store_data;
     wire                      ex_exception_valid;
-    core_pkg::trap_cause_e    ex_exception_cause;
+    core_pkg::excp_cause_e    ex_exception_cause;
     wire [core_pkg::XLEN-1:0] ex_exception_tval;
     wire [core_pkg::XLEN-1:0] ex_csr_operand;
     wire                      ex_mret;
@@ -167,7 +167,7 @@ module core (
     // MEM
     wire [core_pkg::XLEN-1:0] mem_load_data;
     wire                      mem_exception_valid;
-    core_pkg::trap_cause_e    mem_exception_cause;
+    core_pkg::excp_cause_e    mem_exception_cause;
     wire [core_pkg::XLEN-1:0] mem_exception_tval;
 
     // CSR 信号
@@ -181,7 +181,7 @@ module core (
     // 系统级 trap 信号
     wire                      trap_valid;
     wire [core_pkg::XLEN-1:0] trap_pc;
-    core_pkg::trap_cause_e    trap_cause;
+    core_pkg::excp_cause_e    trap_cause;
     wire [core_pkg::XLEN-1:0] trap_tval;
     wire                      mret_valid;
 
@@ -552,14 +552,20 @@ module core (
 
         .trap_valid_i       (trap_valid),
         .trap_pc_i          (trap_pc),
-        .trap_cause_i       (trap_cause),
+        .trap_is_interrupt_i(1'b0),     // 暂时接 0 ，第 5 步改
+        .trap_cause_code_i  (trap_cause),
         .trap_tval_i        (trap_tval),
 
         .mret_valid_i       (mret_valid),
 
+        .mtip_i             (1'b0),
+        .meip_i             (1'b0),
+
         .mtvec_o            (csr_mtvec),
         .mepc_o             (csr_mepc),
-        .mstatus_o          (csr_mstatus)
+        .mstatus_o          (csr_mstatus),
+        .mie_o              (),
+        .mip_o              ()
     );
 
     trap_ctrl u_trap_ctrl (

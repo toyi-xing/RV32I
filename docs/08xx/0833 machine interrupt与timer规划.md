@@ -262,7 +262,7 @@ MPP  <= M     // 当前 M-only 实现保持 M-mode 合法值
 
 ### 3.3 `mcause` 的 interrupt bit
 
-0831 当前把 `trap_cause_e` 作为 5-bit exception code 使用。本阶段不能继续只写低 5 bit，因为 interrupt 需要设置 `mcause[31]`。
+0831 当前把 `excp_cause_e` 作为 5-bit exception code 使用。本阶段不能继续只写低 5 bit，因为 interrupt 需要设置 `mcause[31]`。
 
 `mcause` 布局：
 

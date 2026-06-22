@@ -64,7 +64,7 @@ package pipeline_pkg;
 
         // CSR、trap 相关
         logic                       exception_valid;        // exception：非法指令、非法 CSR 访问、ECALL、EBREAK、地址不对齐时置位
-        core_pkg::trap_cause_e      exception_cause;
+        core_pkg::excp_cause_e      exception_cause;
         logic [core_pkg::XLEN-1:0]  exception_tval;
         logic                       fence;                  // 仅 FENCE 指令时置位，当前 fence 指令实现为 nop
         logic                       mret;                   // 仅 MRET 指令时置位
@@ -100,7 +100,7 @@ package pipeline_pkg;
 
         // CSR、trap 相关
         logic                       exception_valid;
-        core_pkg::trap_cause_e      exception_cause;
+        core_pkg::excp_cause_e      exception_cause;
         logic [core_pkg::XLEN-1:0]  exception_tval;
         logic                       fence;
         logic                       mret;

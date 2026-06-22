@@ -66,7 +66,7 @@ module tb_core_pipeline5;
 
     logic                          trap_valid;
     logic [core_pkg::XLEN-1:0]     trap_pc;
-    core_pkg::trap_cause_e         trap_cause;
+    core_pkg::excp_cause_e         trap_cause;
     logic [core_pkg::XLEN-1:0]     trap_tval;
     logic                          trap_return;
     logic [core_pkg::XLEN-1:0]     trap_redirect_pc;

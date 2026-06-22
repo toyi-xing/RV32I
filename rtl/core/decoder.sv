@@ -63,7 +63,7 @@ module decoder (
     output logic                      csr_write_en_o,           // CSR 指令是否尝试写 CSR，用于 CSR 文件写使能和只读 CSR 非法写判断。
 
     output logic                      exception_valid_o,        // decoder/ID 已能确认的 synchronous exception 是否有效。
-    output core_pkg::trap_cause_e     exception_cause_o,        // decoder/ID exception 的 cause。
+    output core_pkg::excp_cause_e     exception_cause_o,        // decoder/ID exception 的 cause。
     output logic [core_pkg::XLEN-1:0] exception_tval_o,         // decoder/ID exception 的 tval。非法指令通常为原始指令，ECALL/EBREAK 为 0。
 
     output logic                      illegal_instr_o   // 当前指令是否非法或暂未支持。
@@ -215,10 +215,10 @@ module decoder (
 
     // 识别异常： 基础非法指令（不包含非法CSR指令），EBREAK，ECALL
     assign exception_valid_o  = instr_id_o == INSTR_INVALID || instr_id_o == INSTR_EBREAK || instr_id_o == INSTR_ECALL;
-    assign exception_cause_o  = instr_id_o == INSTR_EBREAK ? TRAP_CAUSE_BREAKPOINT      :
-                                instr_id_o == INSTR_ECALL  ? TRAP_CAUSE_ECALL_M         :
-                                                            TRAP_CAUSE_ILLEGAL_INSTR;
-    assign exception_tval_o   = exception_cause_o == TRAP_CAUSE_ILLEGAL_INSTR ? instr_i : '0;
+    assign exception_cause_o  = instr_id_o == INSTR_EBREAK ? EXCEPTION_CAUSE_BREAKPOINT      :
+                                instr_id_o == INSTR_ECALL  ? EXCEPTION_CAUSE_ECALL_M         :
+                                                            EXCEPTION_CAUSE_ILLEGAL_INSTR;
+    assign exception_tval_o   = exception_cause_o == EXCEPTION_CAUSE_ILLEGAL_INSTR ? instr_i : '0;
 
 
     assign illegal_instr_o = instr_id_o == INSTR_INVALID;

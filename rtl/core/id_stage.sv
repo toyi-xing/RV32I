@@ -67,7 +67,7 @@ module id_stage (
     output logic                          csr_write_en_o,       // CSR 指令是否尝试写 CSR。
 
     output logic                          exception_valid_o,    // ID 阶段发现的 exception 是否有效。
-    output core_pkg::trap_cause_e         exception_cause_o,    // ID 阶段 exception cause。
+    output core_pkg::excp_cause_e         exception_cause_o,    // ID 阶段 exception cause。
     output logic [core_pkg::XLEN-1:0]     exception_tval_o,     // ID 阶段 exception tval。
 
     output logic                          illegal_instr_o,   // 当前指令是否非法或暂未支持。
