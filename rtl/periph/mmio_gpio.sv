@@ -152,7 +152,7 @@ module mmio_gpio #(
     assign gpio_ro[IN_IDX]          = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, gpio_in_sync};
     assign gpio_ro[IRQ_STATUS_IDX]  = gpio_rw[IRQ_EN_IDX] & gpio_rw1c[IRQ_PENDING_IDX];
 
-    // 写端口与 IRQ_PENDING 硬件 set 合并更新。
+    // 写端口 与 可写寄存器硬件、写合并更新
     always_ff @(posedge clk_i or negedge rst_n_i) begin : GPIO_WRITE
         if (!rst_n_i) begin
             for (int i = 0; i < RW_N; i++) begin
@@ -199,7 +199,7 @@ module mmio_gpio #(
             //------------------------------------------------------------------
             // 硬件自动更新
             //------------------------------------------------------------------
-            // IRQ_PENDING 合并软件 W1C clear 和硬件 set；同拍冲突时 set 优先。
+            // IRQ_PENDING 合并软件 W1C clear 和硬件 set；同拍冲突时硬件 set 优先。
             gpio_rw1c[IRQ_PENDING_IDX] <= (gpio_rw1c[IRQ_PENDING_IDX] & ~clear_pending_mask) | pending_valid;
         end
     end

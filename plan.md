@@ -138,13 +138,13 @@ STATUS[0] = tx_ready
 STATUS[1] = rx_valid
 STATUS[2] = irq_pending，即 IRQ_PENDING[0] 的只读镜像
 
-CTRL[0] = enable
+CTRL[0] = tx_enable
 CTRL[1] = rx_irq_enable
 
 IRQ_PENDING[0] = rx_irq_pending，R/W1C
 ```
 
-本阶段保留独立 `IRQ_PENDING`，便于软件 W1C；`STATUS[2]` 只作为轮询视图，不参与清除语义。
+本阶段保留独立 `IRQ_PENDING`，便于软件 W1C；`STATUS[2]` 只作为轮询视图，不参与清除语义。读 `IRQ_PENDING` 本身只观察 pending，不清除；读 `RXDATA` 会作为 RXDATA 的读副作用清 `rx_irq_pending`。
 
 ## 2. 流水线 next PC 信息 `已完成`
 
@@ -1221,9 +1221,9 @@ gpio_irq_o = |IRQ_STATUS
 
 `gpio_irq_o` 是 level 信号，不是 pulse。
 
-## 8. UART0 RX 与中断扩展 `执行中`
+## 8. UART0 RX 与中断扩展 `已完成`
 
-### 8.1 修改 `rtl/periph/mmio_uart.sv` 端口
+### 8.1 修改 `rtl/periph/mmio_uart.sv` 端口 `已完成`
 
 新增输入：
 
@@ -1240,7 +1240,15 @@ output logic uart_irq_o
 
 `rx_valid_i` 来自 SoC/testbench，用于模拟外部收到一个字节，不是真实串口采样。
 
-### 8.2 扩展 UART 寄存器
+本阶段约定 `rx_valid_i/rx_data_i` 已经在 `clk_i` 域：
+
+- `rx_valid_i` 是 `clk_i` 域内的单拍 event pulse。
+- `rx_data_i` 在 `rx_valid_i=1` 的该拍保持稳定。
+- `mmio_uart` 不在内部对 `rx_data_i` 做逐 bit 两级同步；多 bit 数据若来自异步域，必须由外层 UART RX 前端、握手同步或异步 FIFO 先转换到 `clk_i` 域。
+
+原因是 `rx_valid_i/rx_data_i` 是一组事件接口，不是 GPIO 那种独立引脚电平。直接对 data bus 各 bit 分别同步可能得到不一致的数据字节。
+
+### 8.2 扩展 UART 寄存器 `已完成`
 
 现有：
 
@@ -1254,8 +1262,8 @@ output logic uart_irq_o
 
 | offset | 名称 | 属性 | 行为 |
 |---:|---|---|---|
-| `0x0C` | `RXDATA` | RO | 返回最近收到的 RX byte；读取可清 `rx_valid/rx_irq_pending` |
-| `0x10` | `IRQ_PENDING` | R/W1C | bit0 为 RX pending，写 1 清 |
+| `0x0C` | `RXDATA` | RO | 返回最近收到的 RX byte；读取清 `rx_valid/rx_irq_pending` |
+| `0x10` | `IRQ_PENDING` | R/W1C | bit0 为 RX pending；读本寄存器只观察；写 1 清 pending |
 
 `STATUS` bit：
 
@@ -1268,16 +1276,16 @@ STATUS[2] = irq_pending
 `CTRL` bit：
 
 ```text
-CTRL[0] = enable
+CTRL[0] = tx_enable
 CTRL[1] = rx_irq_enable
 ```
 
-### 8.3 UART RX event
+### 8.3 UART RX event `已完成`
 
 当：
 
 ```text
-rx_valid_i && CTRL.enable
+rx_valid_i
 ```
 
 发生时：
@@ -1293,26 +1301,20 @@ rx_irq_pending <= 1
 - 第一版可以覆盖旧值。
 - 可在注释里说明当前无 FIFO，软件应及时读取。
 
-### 8.4 UART pending 清除
+### 8.4 UART pending 清除 `已完成`
 
-清除方式：
+本阶段确定采用第一版清除语义：
 
-- 读 `RXDATA` 清 `rx_valid` 和 `rx_irq_pending`；或
-- 写 `IRQ_PENDING[0]=1` 清 `rx_irq_pending`，是否清 `rx_valid` 由实现统一决定。
-
-推荐第一版：
-
-```text
-读 RXDATA：清 rx_valid 和 rx_irq_pending
-写 IRQ_PENDING[0]=1：只清 rx_irq_pending，不清 RXDATA/rx_valid
-```
+- 读 `RXDATA`：清 `rx_valid` 和 `rx_irq_pending`，并返回最近收到的 byte。
+- 读 `IRQ_PENDING`：只观察 `rx_irq_pending`，不清除。
+- 写 `IRQ_PENDING[0]=1`：只清 `rx_irq_pending`，不清 `RXDATA/rx_valid`。
 
 这样软件可以先关中断或清 pending，再决定是否读取数据。
 
-### 8.5 UART irq 输出
+### 8.5 UART irq 输出 `已完成`
 
 ```text
-uart_irq_o = CTRL.enable && CTRL.rx_irq_enable && rx_irq_pending
+uart_irq_o = CTRL.rx_irq_enable && rx_irq_pending
 ```
 
 `uart_irq_o` 是 level 信号，不是 pulse。

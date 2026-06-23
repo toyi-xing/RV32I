@@ -763,17 +763,23 @@ uart_irq = rx_irq_pending && rx_irq_enable
 meip_raw 包含 uart_irq
 ```
 
+本阶段的 `uart_rx_valid_i/uart_rx_data_i` 是已经同步到 core `clk_i` 域的仿真 RX event 接口，不是真实异步串口线。`uart_rx_valid_i` 应为单拍 pulse，且 `uart_rx_data_i` 在该拍稳定。若后续接真实 UART RX 或其它异步来源，需要在 `mmio_uart` 外部先用 RX 前端、握手同步或异步 FIFO 转换到 `clk_i` 域；不要在 `mmio_uart` 内部简单对 8-bit data bus 逐 bit 两级同步，否则可能采到不一致的字节。
+
+本阶段仍应把 UART 的 MMIO 寄存器协议当成稳定的软件接口。后续如果把单拍仿真 TX/RX 替换成真实串口收发状态机，应优先保持 `TXDATA/STATUS/CTRL/RXDATA/IRQ_PENDING` 的软件可见语义不变：CPU core、trap/interrupt 控制和大部分驱动代码不需要知道 UART 内部是单拍模型、baud-rate 状态机，还是带 FIFO 的实现。可能变化的主要是 SoC 外侧端口，例如从仿真 `uart_rx_valid_i/uart_rx_data_i` 变成真实 `uart_rx_i/uart_tx_o`，以及 UART 内部的 ready/valid、FIFO full/empty 等状态生成。
+
 UART0 本阶段寄存器规划：
 
 | offset | 名称 | 属性 | 作用 |
 |---:|---|---|---|
-| `0x00` | `TXDATA` | WO | 发送数据字节（只写，读返回 0）；`CTRL.enable=1` 时写入触发 TX event |
+| `0x00` | `TXDATA` | WO | 发送数据字节（只写，读返回 0）；`CTRL.tx_enable=1` 时写入触发 TX event |
 | `0x04` | `STATUS` | RO | `[0]=tx_ready`（当前固定 1），`[1]=rx_valid`（RX 数据有效），`[2]=irq_pending`（`IRQ_PENDING[0]` 的只读镜像） |
 | `0x08` | `CTRL` | RW | `[0]=tx_enable`，`[1]=rx_irq_enable`；其余 bit 读 0 写忽略 |
-| `0x0C` | `RXDATA` | RO | 接收数据字节，来自 `uart_rx_data_i`；读操作同时清 `irq_pending` |
-| `0x10` | `IRQ_PENDING` | R/W1C | 读表示 RX 中断 pending；写 1 清 pending（当不使用 RXDATA 读取清除时） |
+| `0x0C` | `RXDATA` | RO | 接收数据字节，来自 `uart_rx_data_i`；读操作同时清 `rx_valid` 和 `irq_pending` |
+| `0x10` | `IRQ_PENDING` | R/W1C | 读本寄存器只观察 RX 中断 pending；写 1 清 pending |
 
 UART RX event 必须被保存成 pending 状态，不能只输出单周期 pulse。否则 core 没有在同一拍接受 interrupt 时，UART 中断会丢失。
+
+`IRQ_PENDING` 本身是 R/W1C 寄存器：读本寄存器只观察 pending，不清 pending；写 `IRQ_PENDING[0]=1` 清 `rx_irq_pending`。此外，读 `RXDATA` 有读副作用，会清 `rx_valid/rx_irq_pending`。
 
 ## 第8章 软件和测试注意事项
 

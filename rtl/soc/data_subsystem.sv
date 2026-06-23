@@ -102,7 +102,8 @@ module data_subsystem (
 
         .gpio_in_i      (gpio0_in_i),
         .gpio_out_o     (gpio0_out_o),
-        .gpio_oe_o      (gpio0_oe_o)
+        .gpio_oe_o      (gpio0_oe_o),
+        .gpio_irq_o     ()
     );
 
     wire [core_pkg::XLEN-1:0] uart0_rdata;
@@ -114,6 +115,7 @@ module data_subsystem (
         .rst_n_i        (rst_n_i),
 
         .valid_i        (uart0_valid),
+        .re_i           (core_re_i),
         .we_i           (core_we_i),
         .be_i           (core_be_i),
         .addr_i         (core_addr_i),
@@ -122,7 +124,12 @@ module data_subsystem (
         .access_fault_o (uart0_access_fault),
 
         .tx_valid_o     (uart0_tx_valid_o),
-        .tx_data_o      (uart0_tx_data_o)
+        .tx_data_o      (uart0_tx_data_o),
+
+        .rx_valid_i     (),
+        .rx_data_i      (),
+
+        .uart_irq_o     ()
     );
 
     // core_rdata_o MUX
