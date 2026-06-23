@@ -1110,9 +1110,9 @@ STATUS[0] = mtip_o
 
 否则 `MRET` 后会立刻再次进入 timer interrupt。
 
-## 7. GPIO0 中断扩展 `执行中`
+## 7. GPIO0 中断扩展 `已完成`
 
-### 7.1 修改 `rtl/periph/mmio_gpio.sv` 端口
+### 7.1 修改 `rtl/periph/mmio_gpio.sv` 端口 `已完成`
 
 新增输出：
 
@@ -1120,7 +1120,7 @@ STATUS[0] = mtip_o
 output logic gpio_irq_o
 ```
 
-### 7.2 扩展 GPIO 寄存器
+### 7.2 扩展 GPIO 寄存器 `已完成`
 
 在现有 `OUT/IN/OE` 后新增：
 
@@ -1134,30 +1134,62 @@ output logic gpio_irq_o
 | `0x20` | `IRQ_PENDING` | R/W1C | 读 pending；写 1 清对应 bit；写 0 保持 |
 | `0x24` | `IRQ_STATUS` | RO | `IRQ_PENDING & IRQ_EN` |
 
-### 7.3 GPIO 输入采样
+当前实现按寄存器属性分组：
+
+```text
+RW   : OUT/OE/IRQ_EN/IRQ_RISE_EN/IRQ_FALL_EN/IRQ_HIGH_EN/IRQ_LOW_EN
+RO   : IN/IRQ_STATUS
+RW1C : IRQ_PENDING
+```
+
+读 mux 需要覆盖全部已定义 offset：
+
+```text
+OUT/OE/IRQ_*_EN      -> 对应 RW 寄存器
+IN                   -> 同步后的 gpio_in_sync
+IRQ_PENDING          -> RW1C pending 寄存器
+IRQ_STATUS           -> IRQ_PENDING & IRQ_EN
+未知 offset           -> access_fault_o
+```
+
+写语义：
+
+```text
+RW 写     : 按 byte enable 更新被写 byte，未选 byte 保持。
+RW1C 写   : clear_mask 由 byte enable 展开后的 wdata 产生；写 1 清对应 pending bit，写 0 保持。
+reset     : RW 和 RW1C 寄存器都清 0。
+```
+
+`IRQ_PENDING` 的硬件 set 与软件 W1C clear 合并在 7.4 处理；最终语义仍以 7.4 的 `(pending & ~clear_mask) | set_mask` 为准。
+
+### 7.3 GPIO 输入同步与采样 `已完成`
 
 新增寄存器：
 
 ```systemverilog
-reg [GPIO_WIDTH-1:0] gpio_in_q;
+reg [GPIO_WIDTH-1:0] gpio_in_meta;
+reg [GPIO_WIDTH-1:0] gpio_in_sync;
+reg [GPIO_WIDTH-1:0] gpio_in_sync_q;
 ```
 
-每拍采样：
+`gpio_in_i` 可能来自 core 时钟域外部，本阶段在 GPIO 内部做两级同步。每拍更新：
 
 ```systemverilog
-gpio_in_q <= gpio_in_i;
+gpio_in_meta   <= gpio_in_i;
+gpio_in_sync   <= gpio_in_meta;
+gpio_in_sync_q <= gpio_in_sync;
 ```
 
-触发检测：
+`GPIO_IN` 读值返回 `gpio_in_sync`。触发检测同样使用同步后的输入：
 
 ```text
-rise_hit =  gpio_in_i & ~gpio_in_q
-fall_hit = ~gpio_in_i &  gpio_in_q
-high_hit =  gpio_in_i
-low_hit  = ~gpio_in_i
+rise_hit =  gpio_in_sync & ~gpio_in_sync_q
+fall_hit = ~gpio_in_sync &  gpio_in_sync_q
+high_hit =  gpio_in_sync
+low_hit  = ~gpio_in_sync
 ```
 
-### 7.4 pending 更新
+### 7.4 pending 更新 `已完成`
 
 组合：
 
@@ -1180,7 +1212,7 @@ IRQ_PENDING <= (IRQ_PENDING & ~clear_mask) | set_mask
 
 `set` 与 `clear` 同拍冲突时建议 `set` 优先。原因是如果外部 level 仍保持触发状态，软件清 pending 后应继续看到 pending。
 
-### 7.5 GPIO irq 输出
+### 7.5 GPIO irq 输出 `已完成`
 
 ```text
 IRQ_STATUS = IRQ_PENDING & IRQ_EN
@@ -1189,7 +1221,7 @@ gpio_irq_o = |IRQ_STATUS
 
 `gpio_irq_o` 是 level 信号，不是 pulse。
 
-## 8. UART0 RX 与中断扩展
+## 8. UART0 RX 与中断扩展 `执行中`
 
 ### 8.1 修改 `rtl/periph/mmio_uart.sv` 端口
 

@@ -12,9 +12,14 @@
 // 功能：
 //   - 普通 RW 寄存器按 byte enable 更新。
 //   - OUT（offset 0x00）是 RW，保存 GPIO 输出值。
-//   - IN（offset 0x04）是 RO，返回 gpio_in_i。
+//   - IN（offset 0x04）是 RO，返回两级同步后的 gpio_in_i。
 //   - OE（offset 0x08）是 RW，保存 GPIO 输出使能。
-//   - 当前只对未知 offset 输出 access_fault_o；写 IN 等无害访问先忽略。
+//   - IRQ_EN/IRQ_RISE_EN/IRQ_FALL_EN/IRQ_HIGH_EN/IRQ_LOW_EN 是 RW 中断配置寄存器。
+//   - IRQ_PENDING 是 R/W1C pending 寄存器，软件写 1 清除对应 bit，硬件触发同拍 set 优先。
+//   - IRQ_STATUS 是 RO，返回 IRQ_PENDING & IRQ_EN。
+//   - gpio_irq_o 是 level interrupt 输出。
+//   - gpio_in_i 先同步到 clk_i 域，再用于 IN 读值和 interrupt 触发检测。
+//   - 当前只对未知 offset 输出 access_fault_o；写 RO 寄存器等无害访问先忽略。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -36,11 +41,28 @@ module mmio_gpio #(
 
     input  logic [GPIO_WIDTH-1:0]     gpio_in_i,       // 来自 SoC/testbench 的 GPIO 输入。
     output logic [GPIO_WIDTH-1:0]     gpio_out_o,      // GPIO OUT 寄存器值。
-    output logic [GPIO_WIDTH-1:0]     gpio_oe_o        // GPIO OE 寄存器值。
+    output logic [GPIO_WIDTH-1:0]     gpio_oe_o,       // GPIO OE 寄存器值。
+
+    output logic                      gpio_irq_o       // GPIO 产生中断，电平信号
 );
 
     import core_pkg::*;
     import soc_pkg::*;
+
+    // GPIO 输入来自 SoC/testbench 外部，可能跨时钟域；先同步到 clk_i 域。
+    reg [GPIO_WIDTH-1:0] gpio_in_meta, gpio_in_sync, gpio_in_sync_q;
+    always_ff @(posedge clk_i or negedge rst_n_i) begin : GPIO_SYNC
+        if (!rst_n_i) begin
+            gpio_in_meta  <= '0;
+            gpio_in_sync   <= '0;
+            gpio_in_sync_q <= '0;
+        end
+        else begin
+            gpio_in_meta   <= gpio_in_i;
+            gpio_in_sync   <= gpio_in_meta;
+            gpio_in_sync_q <= gpio_in_sync;
+        end
+    end
 
     // 直接设为 12 位宽，方便与 soc 包中的 OFFSET 比较
     // valid_i 保证地址已命中本外设窗口；本模块只检查窗口内 offset 是否为已定义寄存器。
@@ -49,14 +71,24 @@ module mmio_gpio #(
 
     // 内部寄存器声明，保持 XLEN 位宽；RW/RO 按属性分组，便于后续扩展。
     // RW 属性寄存器
-    localparam RW_N = 2;
+    localparam RW_N = 7;
     reg  [core_pkg::XLEN-1:0] gpio_rw[RW_N];
-    localparam OUT_IDX = 0;
-    localparam OE_IDX  = 1;
+    localparam OUT_IDX          = 0;
+    localparam OE_IDX           = 1;
+    localparam IRQ_EN_IDX       = 2;
+    localparam IRQ_RISE_EN_IDX  = 3;
+    localparam IRQ_FALL_EN_IDX  = 4;
+    localparam IRQ_HIGH_EN_IDX  = 5;
+    localparam IRQ_LOW_EN_IDX   = 6;
     // RO 属性寄存器
-    localparam RO_N = 1;
+    localparam RO_N = 2;
     wire [core_pkg::XLEN-1:0] gpio_ro[RO_N];
-    localparam IN_IDX  = 0;
+    localparam IN_IDX           = 0;
+    localparam IRQ_STATUS_IDX   = 1;
+    // RW1C 属性寄存器，可读，写 1 清除，写 0 保持
+    localparam RW1C_N = 1;
+    reg  [core_pkg::XLEN-1:0] gpio_rw1c[RW1C_N];
+    localparam IRQ_PENDING_IDX  = 0;
 
     // 输出端口与状态寄存器的控制关系
     assign gpio_out_o       = gpio_rw[OUT_IDX][GPIO_WIDTH-1:0];
@@ -72,9 +104,16 @@ module mmio_gpio #(
         offset_illegal = 1'b0;
         if (valid_i) begin
             unique case (offset)
-                GPIO_OUT_OFFSET: rdata_o = gpio_rw[OUT_IDX];
-                GPIO_IN_OFFSET : rdata_o = gpio_ro[IN_IDX];
-                GPIO_OE_OFFSET : rdata_o = gpio_rw[OE_IDX];
+                GPIO_OUT_OFFSET         : rdata_o = gpio_rw[OUT_IDX];
+                GPIO_IN_OFFSET          : rdata_o = gpio_ro[IN_IDX];
+                GPIO_OE_OFFSET          : rdata_o = gpio_rw[OE_IDX];
+                GPIO_IRQ_EN_OFFSET      : rdata_o = gpio_rw[IRQ_EN_IDX];
+                GPIO_IRQ_RISE_EN_OFFSET : rdata_o = gpio_rw[IRQ_RISE_EN_IDX];
+                GPIO_IRQ_FALL_EN_OFFSET : rdata_o = gpio_rw[IRQ_FALL_EN_IDX];
+                GPIO_IRQ_HIGH_EN_OFFSET : rdata_o = gpio_rw[IRQ_HIGH_EN_IDX];
+                GPIO_IRQ_LOW_EN_OFFSET  : rdata_o = gpio_rw[IRQ_LOW_EN_IDX];
+                GPIO_IRQ_PENDING_OFFSET : rdata_o = gpio_rw1c[IRQ_PENDING_IDX];
+                GPIO_IRQ_STATUS_OFFSET  : rdata_o = gpio_ro[IRQ_STATUS_IDX];
                 default: offset_illegal  = 1'b1;
             endcase
         end
@@ -87,20 +126,40 @@ module mmio_gpio #(
         rw_idx = '0;
         rw_hit = 1'b1;
         unique case (offset)
-            GPIO_OUT_OFFSET: rw_idx = OUT_IDX;
-            GPIO_OE_OFFSET : rw_idx = OE_IDX;
+            GPIO_OUT_OFFSET         : rw_idx = OUT_IDX;
+            GPIO_OE_OFFSET          : rw_idx = OE_IDX;
+            GPIO_IRQ_EN_OFFSET      : rw_idx = IRQ_EN_IDX;
+            GPIO_IRQ_RISE_EN_OFFSET : rw_idx = IRQ_RISE_EN_IDX;
+            GPIO_IRQ_FALL_EN_OFFSET : rw_idx = IRQ_FALL_EN_IDX;
+            GPIO_IRQ_HIGH_EN_OFFSET : rw_idx = IRQ_HIGH_EN_IDX;
+            GPIO_IRQ_LOW_EN_OFFSET  : rw_idx = IRQ_LOW_EN_IDX;
             default: rw_hit = 1'b0;
         endcase
     end
+    // RW1C 寄存器 IDX 译码
+    logic rw1c_hit;
+    logic rw1c_idx;   // 后续多于 2 个寄存器时应使用 [$clog2(RW1C_N)-1:0]
+    always_comb begin : GPIO_RW1C_IDX_DECODE
+        rw1c_idx = '0;
+        rw1c_hit = 1'b1;
+        unique case (offset)
+            GPIO_IRQ_PENDING_OFFSET : rw1c_idx = IRQ_PENDING_IDX;
+            default: rw1c_hit = 1'b0;
+        endcase
+    end
 
-    // 非可写寄存器硬件自动更新：IN GPIO 输入值
-    assign gpio_ro[IN_IDX]  = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, gpio_in_i};
+    // 非可写寄存器硬件自动更新：IN GPIO 同步输入值
+    assign gpio_ro[IN_IDX]          = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, gpio_in_sync};
+    assign gpio_ro[IRQ_STATUS_IDX]  = gpio_rw[IRQ_EN_IDX] & gpio_rw1c[IRQ_PENDING_IDX];
 
-    // 写端口 (与 可写寄存器硬件自动更新，暂无)
+    // 写端口与 IRQ_PENDING 硬件 set 合并更新。
     always_ff @(posedge clk_i or negedge rst_n_i) begin : GPIO_WRITE
         if (!rst_n_i) begin
             for (int i = 0; i < RW_N; i++) begin
-                gpio_rw[i] <= '0;
+                gpio_rw[i]   <= '0;
+            end
+            for (int i = 0; i < RW1C_N; i++) begin
+                gpio_rw1c[i] <= '0;
             end
         end
         else begin
@@ -118,11 +177,59 @@ module mmio_gpio #(
                     gpio_rw[rw_idx][31:24] <= wdata_i[31:24];
                 end
             end
+            // 通用 RW1C 写分支当前不用单独启用；IRQ_PENDING 在后面的合并逻辑中统一处理。
+            // else if (valid_i && we_i && rw1c_hit) begin
+            //     if (be_i[0]) begin
+            //         gpio_rw1c[rw1c_idx][7:0]   <= ~wdata_i[7:0] & gpio_rw1c[rw1c_idx][7:0];
+            //     end
+            //     if (be_i[1]) begin
+            //         gpio_rw1c[rw1c_idx][15:8]  <= ~wdata_i[15:8] & gpio_rw1c[rw1c_idx][15:8];
+            //     end
+            //     if (be_i[2]) begin
+            //         gpio_rw1c[rw1c_idx][23:16] <= ~wdata_i[23:16] & gpio_rw1c[rw1c_idx][23:16];
+            //     end
+            //     if (be_i[3]) begin
+            //         gpio_rw1c[rw1c_idx][31:24] <= ~wdata_i[31:24] & gpio_rw1c[rw1c_idx][31:24];
+            //     end
+            // end
             // else if (valid_i && we_i) begin
             //     // 后续可拓展”写只读“、“写未定义”触发异常，当前不实现
             // end
+
+            //------------------------------------------------------------------
+            // 硬件自动更新
+            //------------------------------------------------------------------
+            // IRQ_PENDING 合并软件 W1C clear 和硬件 set；同拍冲突时 set 优先。
+            gpio_rw1c[IRQ_PENDING_IDX] <= (gpio_rw1c[IRQ_PENDING_IDX] & ~clear_pending_mask) | pending_valid;
         end
     end
+
+    // 请求挂起信号处理
+    wire [GPIO_WIDTH-1:0] rise_hit      =  gpio_in_sync & ~gpio_in_sync_q;
+    wire [GPIO_WIDTH-1:0] fall_hit      = ~gpio_in_sync &  gpio_in_sync_q;
+    wire [GPIO_WIDTH-1:0] high_hit      =  gpio_in_sync;
+    wire [GPIO_WIDTH-1:0] low_hit       = ~gpio_in_sync;
+        // 不考虑中断使能，可能要挂起的位
+    wire [GPIO_WIDTH-1:0] pending_hit   = (gpio_rw[IRQ_RISE_EN_IDX][GPIO_WIDTH-1:0] & rise_hit) |
+                                          (gpio_rw[IRQ_FALL_EN_IDX][GPIO_WIDTH-1:0] & fall_hit) |
+                                          (gpio_rw[IRQ_HIGH_EN_IDX][GPIO_WIDTH-1:0] & high_hit) |
+                                          (gpio_rw[IRQ_LOW_EN_IDX][GPIO_WIDTH-1:0]  & low_hit);
+        // 将要挂起的位
+    wire [core_pkg::XLEN-1:0] pending_valid = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, pending_hit & gpio_rw[IRQ_EN_IDX]};
+        // 本拍要被清掉的挂起位
+    logic [core_pkg::XLEN-1:0] clear_pending_mask;
+    always_comb begin
+        clear_pending_mask = '0;
+        if(valid_i && we_i && rw1c_hit && rw1c_idx == IRQ_PENDING_IDX) begin
+            clear_pending_mask[7:0]   = be_i[0] ? wdata_i[7:0]   : 8'h00;
+            clear_pending_mask[15:8]  = be_i[1] ? wdata_i[15:8]  : 8'h00;
+            clear_pending_mask[23:16] = be_i[2] ? wdata_i[23:16] : 8'h00;
+            clear_pending_mask[31:24] = be_i[3] ? wdata_i[31:24] : 8'h00;
+        end
+    end
+
+    // 中断输出
+    assign gpio_irq_o = |gpio_ro[IRQ_STATUS_IDX];
 
 endmodule
 
@@ -146,12 +253,12 @@ endmodule
 //   - 控制每个 bit 的方向：1=输出模式，0=输入模式（高阻）。
 //
 // IN 寄存器含义：
-//   - 读回引脚实时电平（由 gpio_in_i 输入）。
+//   - 读回同步后的引脚电平（由 gpio_in_i 两级同步得到）。
 //   - 不受 OE 影响：输出模式下仍可读引脚。
 //   - 不受 OUT 影响：写 OUT 不会改变 IN 的返回值。
 //
 // 外部中断检测：
-//   - 检测 IN 的变化（引脚电平变化），与 OUT/OE 无关。
+//   - 检测同步后 IN 的变化（引脚电平变化），与 OUT/OE 无关。
 //   - 因此本模块的 in_i 始终来自外部输入（TB 驱动或 pad），
 //     不与 out_o/oe_o 耦合，简化了中断信号的产生逻辑。
 //
