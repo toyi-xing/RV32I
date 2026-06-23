@@ -6,37 +6,19 @@
 
 ## 1. 仿真命令
 
-### 1.1 core-only 仿真（不含 MMIO）
-
-```bash
-# 编译汇编 → .mem
-sim/pipeline5_asm/05_build_mem.sh <test>
-
-# 构建 Verilator 仿真 + 运行
-sim/pipeline5_asm/06_run_sim.sh <test>
-
-# 两步合一
-sim/pipeline5_asm/run_test.sh <test>
-
-# 回归全部 core-only 汇编测试
-sim/pipeline5_asm/run_all.sh
-```
-
-`<test>` 可以是四位编号或完整 basename，例如：
-
-```bash
-sim/pipeline5_asm/run_test.sh 0303
-sim/pipeline5_asm/run_test.sh 0303_pipeline5_fwd_redirect
-```
-
-### 1.2 SoC 仿真（含 MMIO 外设）
+当前仓库统一使用 SoC 仿真入口。旧 core-only testbench 和 `sim/pipeline5_asm/` 入口已删除。
 
 ```bash
 sim/soc_asm/run_test.sh <test>
 sim/soc_asm/run_all.sh
 ```
 
-SoC 测试（06xx）必须使用 `sim/soc_asm/`，因为 MMIO 译码和外设在 core-only 环境下不存在。
+`<test>` 可以是四位编号或完整 basename，例如：
+
+```bash
+sim/soc_asm/run_test.sh 0303
+sim/soc_asm/run_test.sh 0303_pipeline5_fwd_redirect
+```
 
 ## 2. 仿真流程
 
@@ -45,12 +27,12 @@ SoC 测试（06xx）必须使用 `sim/soc_asm/`，因为 MMIO 译码和外设在
 ```text
 sw/asm/<test>.S
   ↓ riscv64-unknown-elf-gcc -march=rv32i -mabi=ilp32
-build/<test>.elf
+build/soc_asm/<test>.elf
   ↓ objdump
-build/<test>.dump
+build/soc_asm/<test>.dump
   ↓ objcopy + scripts/bin2mem32.py
-build/<test>.mem
-  ↓ Verilator tb_core_pipeline5 / tb_rv32i_soc + simple_rom/simple_ram
+build/soc_asm/<test>.mem
+  ↓ Verilator tb_rv32i_soc + simple_rom/simple_ram + MMIO 外设
 PASS / FAIL / TIMEOUT
 ```
 
@@ -58,21 +40,13 @@ PASS / FAIL / TIMEOUT
 
 | 文件 | 说明 |
 |---|---|
-| `build/<test>.elf` | 链接后的 ELF |
-| `build/<test>.dump` | 反汇编，debug 时优先看它 |
-| `build/<test>.bin` | 裸二进制 |
-| `build/<test>.mem` | `$readmemh` 使用的 32-bit word 镜像 |
+| `build/soc_asm/<test>.elf` | 链接后的 ELF |
+| `build/soc_asm/<test>.dump` | 反汇编，debug 时优先看它 |
+| `build/soc_asm/<test>.bin` | 裸二进制 |
+| `build/soc_asm/<test>.mem` | `$readmemh` 使用的 32-bit word 镜像 |
 
-仿真脚本按平台收集 RTL 文件：
+仿真脚本收集 RTL 文件：
 
-**core-only（sim/pipeline5_asm/）：**
-```
-rtl/common/*.sv
-rtl/core/*.sv
-rtl/mem/*.sv
-```
-
-**SoC（sim/soc_asm/）：**
 ```
 rtl/common/*.sv
 rtl/core/*.sv
@@ -87,10 +61,10 @@ rtl/soc/*.sv
 
 | 分组 | 编号 | 关注点 | 仿真平台 |
 |------|------|--------|---------|
-| `00xx` | `0001_smoke.S` | 最小取指、执行、访存、PASS/FAIL | core-only |
-| `01xx` | `0101`～`0106` | 基础 RV32I 指令语义 | core-only |
-| `03xx` | `0301`～`0303` | data/control hazard | core-only |
-| `05xx` | `0501`～`0503` | trap entry、全异常、CSR 指令 | core-only |
+| `00xx` | `0001_smoke.S` | 最小取指、执行、访存、PASS/FAIL | SoC |
+| `01xx` | `0101`～`0106` | 基础 RV32I 指令语义 | SoC |
+| `03xx` | `0301`～`0303` | data/control hazard | SoC |
+| `05xx` | `0501`～`0503` | trap entry、全异常、CSR 指令 | SoC |
 | `06xx` | `0601`～`0606` | SoC 冒烟、UART、GPIO、MMIO fault/优先级/wrong-path | SoC |
 
 ### 3.2 branch/JAL/JALR 已支持

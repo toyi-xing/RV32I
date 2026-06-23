@@ -6,39 +6,19 @@
 
 ## 1. 仿真命令
 
-### 1.1 core-only 仿真（不含 MMIO）
-
-```bash
-# 编译 C 测试 → imem.mem + dmem.mem
-sim/pipeline5_c/05_build_mem.sh <test>
-
-# 构建 Verilator 仿真 + 运行
-sim/pipeline5_c/06_run_sim.sh <test>
-
-# 两步合一
-sim/pipeline5_c/run_test.sh <test>
-
-# core-only C 回归
-sim/pipeline5_c/run_all.sh
-```
-
-`<test>` 可以是四位编号或完整 basename，例如：
-
-```bash
-sim/pipeline5_c/run_test.sh 0401
-sim/pipeline5_c/run_test.sh 0401_control_mix
-```
-
-`run_all.sh` 自动枚举 `sw/c/` 下 core-only 适用的 C 测试（当前为 `0000` 到 `0599` 编号段）。`06xx` 之后依赖 SoC/MMIO 的 C 测试不放入 core-only 回归，应使用 SoC 平台脚本。
-
-### 1.2 SoC 仿真（含 MMIO 外设）
+当前仓库统一使用 SoC 仿真入口。旧 core-only testbench 和 `sim/pipeline5_c/` 入口已删除。
 
 ```bash
 sim/soc_c/run_test.sh <test>
 sim/soc_c/run_all.sh
 ```
 
-SoC 测试（06xx）必须使用 `sim/soc_c/`，因为 MMIO 译码和外设在 core-only 环境下不存在。
+`<test>` 可以是四位编号或完整 basename，例如：
+
+```bash
+sim/soc_c/run_test.sh 0401
+sim/soc_c/run_test.sh 0401_control_mix
+```
 
 ## 2. 与汇编测试的差异
 
@@ -51,16 +31,10 @@ SoC 测试（06xx）必须使用 `sim/soc_c/`，因为 MMIO 译码和外设在 c
 | 内存镜像 | 单文件 `.mem`（只含 imem） | 双文件 `_imem.mem` + `_dmem.mem`（`.dmem_image` 段初始数据） |
 | dmem 初始化 | 否（RAM 默认全 0） | 是（C 全局变量初始值通过 dmem 镜像加载） |
 
-### 2.2 仿真命令区别
+### 2.2 仿真命令
 
 C 仿真同时加载 imem 和 dmem：
 
-**core-only：**
-```bash
-Vtb_core_pipeline5 "+imem=build/pipeline5_c/<test>_imem.mem" "+dmem=build/pipeline5_c/<test>_dmem.mem"
-```
-
-**SoC：**
 ```bash
 Vtb_rv32i_soc "+imem=build/soc_c/<test>_imem.mem" "+dmem=build/soc_c/<test>_dmem.mem"
 ```
@@ -69,10 +43,10 @@ Vtb_rv32i_soc "+imem=build/soc_c/<test>_imem.mem" "+dmem=build/soc_c/<test>_dmem
 
 | 文件 | 描述 | 仿真平台 |
 |------|------|---------|
-| `sw/c/0201_c_smoke.c` | 最小冒烟：1+2=3 自检，通过返回 0 | core-only |
-| `sw/c/0202_dmem_init.c` | .rodata/.data/.bss 初始化验证 | core-only |
-| `sw/c/0401_control_mix.c` | 嵌套循环冒泡排序、函数调用栈、byte/halfword 访存、分支密集路径 | core-only |
-| `sw/c/0551_trap_smoke.c` | C trap handler：ECALL 触发、CSR 读取、mret 返回 | core-only |
+| `sw/c/0201_c_smoke.c` | 最小冒烟：1+2=3 自检，通过返回 0 | SoC |
+| `sw/c/0202_dmem_init.c` | .rodata/.data/.bss 初始化验证 | SoC |
+| `sw/c/0401_control_mix.c` | 嵌套循环冒泡排序、函数调用栈、byte/halfword 访存、分支密集路径 | SoC |
+| `sw/c/0551_trap_smoke.c` | C trap handler：ECALL 触发、CSR 读取、mret 返回 | SoC |
 | `sw/c/0651_soc_mmio_smoke.c` | GPIO OUT/OE/IN 读写、UART 使能/状态查询/TX 发送 | SoC |
 
 ## 4. 新建 C 测试
@@ -101,10 +75,6 @@ int main(void)
 ### 4.2 生成 Memory Image
 
 ```bash
-# core-only
-sim/pipeline5_c/05_build_mem.sh <test>
-
-# SoC
 sim/soc_c/05_build_mem.sh <test>
 ```
 
@@ -115,15 +85,11 @@ sim/soc_c/05_build_mem.sh <test>
 3. `objcopy -j .text.init -j .text.trap -j .text` → `_imem.bin` → `_imem.mem`
 4. `objcopy -j .dmem_image` → `_dmem.bin` → `_dmem.mem`
 
-输出在 `build/pipeline5_c/` 或 `build/soc_c/` 下。**每次修改 .c 后都需重新运行此脚本。**
+输出在 `build/soc_c/` 下。**每次修改 .c 后都需重新运行此脚本。**
 
 ### 4.3 运行仿真
 
 ```bash
-# core-only
-sim/pipeline5_c/06_run_sim.sh <test>
-
-# SoC
 sim/soc_c/06_run_sim.sh <test>
 ```
 
@@ -145,4 +111,4 @@ Stack max used:    80 bytes
 - C trap 测试的 commit trace 会额外看到 `trap_entry/trap_return` 打印，以及 runtime 中保存/恢复寄存器的指令。
 - `sw/linker/c_baremetal.ld` 中 `__stack_top` 的值和栈指针初始化代码（`crt0.S`）必须一致，否则 `main()` 内的函数调用会异常。
 - 全局变量的 dmem 地址可通过 `.map` 文件或 `.dump` 中的符号地址确认。
-- RTL 文件由仿真脚本自动收集：core-only 收集 `rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/mem/*.sv`；SoC 额外收集 `rtl/periph/*.sv`、`rtl/soc/*.sv`。
+- RTL 文件由 SoC 仿真脚本自动收集：`rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/mem/*.sv`、`rtl/periph/*.sv`、`rtl/soc/*.sv`。

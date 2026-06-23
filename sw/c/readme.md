@@ -80,6 +80,18 @@ SoC 平台提供 `sw/include/platform.h`，封装了 `mmio_read32`/`mmio_write32
 
 `0652_soc_mmio_gpio_uart.c` 在 0651 基础上进一步验证外设寄存器独立性：Stage1~2 做 GPIO 全 bit 翻转（`0xAAAAAAAA` / `0x55555555` 覆盖 OUT，`0x0000FFFF` / `0xFFFF0000` 覆盖 OE）；Stage3~4 验证 OUT 和 OE 互不影响；Stage5 写 IN 地址后读回确认仍为 0xA5A55A5A；Stage6 连续发送 3 个字符串验证 UART TX 稳定性。全部正确时返回 0。
 
+---
+
+## 1.7 timer interrupt 测试 `已通过`
+
+| 文件 | 验证内容 |
+|------|----------|
+| `0751_timer_smoke.c` | 最小 timer interrupt — 配置 TIMER0、开中断、handler 关定时器清 pending、main 检测 flag 后 return 0 |
+
+用 `platform.h` 封装的 CSR 访问函数（`csr_write_mie`、`csr_set_mstatus` 等），不再在测试 .c 内重复定义内联汇编。
+
+测试顺序：关全局中断 → 清 `mie` → 配置 `MTIMECMP=16`、`MTIME=0` → 写 `mie.MTIE` → 开启 timer → 开全局中断 → 等待 handler 置 flag。handler 写 `CTRL=0` 停 timer（`MTIP` 随 `CTRL.enable=0` 变为 0），完成 level pending 清除。
+
 # 2 C 与汇编测试的分工
 
 汇编测试逐个覆盖 RISC-V ISA 的边缘情况。C 测试不追求指令覆盖，而是验证 **C 编译器生成的正常指令流** 在 core 上能正确运行：
@@ -186,7 +198,7 @@ unsigned int __trap_handler_c(unsigned int mcause,
 ### 运行方式
 
 ```bash
-sim/pipeline5_c/run_test.sh 0551
+sim/soc_c/run_test.sh 0551
 ```
 
 ### 日志预期
@@ -206,7 +218,7 @@ PASS after N cycles
 
 ## 3.3 编写 C MMIO 测试
 
-SoC 平台提供 `sw/include/platform.h`，封装了 GPIO/UART 的 MMIO 读写宏和函数。
+SoC 平台提供 `sw/include/platform.h`，封装了 GPIO/UART/TIMER32 的 MMIO 地址、offset、bit mask 和基础读写函数。
 
 ### MMIO 辅助 API
 
@@ -223,7 +235,8 @@ uint32_t gpio_reg(uint32_t base, uint32_t offset);   // base + offset
 
 // UART 寄存器地址计算
 uint32_t uart_reg(uint32_t base, uint32_t offset);
-// UART_TXDATA_OFFSET = 0x000, UART_STATUS_OFFSET = 0x004, UART_CTRL_OFFSET = 0x008
+// UART_TXDATA_OFFSET = 0x000, UART_STATUS_OFFSET = 0x004, UART_CTRL_OFFSET = 0x008,
+// UART_RXDATA_OFFSET = 0x00c, UART_IRQ_PENDING_OFFSET = 0x010
 
 // UART 便捷函数
 void uart_enable(uint32_t base);   // 写 UART_CTRL_ENABLE
@@ -290,7 +303,7 @@ PASS after N cycles
 
 ### 注意事项
 
-- MMIO 测试**不可在 core-only 仿真**（`sim/pipeline5_c/`）下运行，因为没有 MMIO 译码和外设，访问会触发 access fault。
+- 当前所有 C 测试统一使用 SoC 仿真入口（`sim/soc_c/`）。旧 core-only 仿真入口已删除。
 - MMIO 寄存器是固定响应模型（无等待），`mmio_read32` 直接返回结果，不需等待状态。
 - `GPIO_IN` 的值由 testbench 驱动，C 程序只能读不能写。
 - UART 的 `uart_putc` 包含忙等循环，测试的是 UART STATUS 寄存器的正确性。

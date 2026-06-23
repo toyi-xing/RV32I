@@ -1506,21 +1506,21 @@ core-only 旧测试不主动触发 interrupt，预期仍全部通过。
 
 本章只写验证必备支持，不写完整测试方案。
 
-### 12.0 删除 core-only 仿真平台准备 `待执行`
+### 12.0 删除 core-only 仿真平台准备 `已完成`
 
 目标：删除 `tb/sv/tb_core_pipeline5.sv`，后续统一使用 SoC testbench 运行已有 ISA、流水线、trap、MMIO 和 interrupt 测试。
 
 需要同步调整：
 
-- 删除或停用 `tb/sv/tb_core_pipeline5.sv`。
-- 删除或迁移 `sim/pipeline5_asm/`、`sim/pipeline5_c/` 下依赖 `tb_core_pipeline5` 的脚本入口。
-- 将 README 中 core-only 仿真命令改为 SoC 仿真命令，避免继续推荐 `sim/pipeline5_*`。
-- 检查 `docs/simulation_flow_asm.md`、`docs/simulation_flow_c.md` 中的 core-only 流程描述，保留历史说明或改成 SoC-only 口径。
-- 检查 `sw/asm/readme.md`、`sw/c/readme.md` 中关于“MMIO 测试不可在 core-only 仿真运行”的说明，删除 core-only 平台后应改为统一 SoC 运行。
-- 检查 `sw/linker/readme.md` 中提到 `tb_core_pipeline5.sv` 的 PASS/FAIL 地址、DMEM/stack 统计说明，迁移到 `tb_rv32i_soc.sv`。
-- 清理构建产物命名或文档中 `Vtb_core_pipeline5`、`build/pipeline5_*` 的引用，避免保留不可运行入口。
+- 已删除 `tb/sv/tb_core_pipeline5.sv`。
+- 已删除 `sim/pipeline5_asm/`、`sim/pipeline5_c/` 下依赖 `tb_core_pipeline5` 的脚本入口。
+- 已将 README 中 core-only 仿真命令改为 SoC 仿真命令，避免继续推荐 `sim/pipeline5_*`。
+- 已将 `docs/simulation_flow_asm.md`、`docs/simulation_flow_c.md` 中的当前流程改成 SoC-only 口径。
+- 已更新 `sw/asm/readme.md`、`sw/c/readme.md` 中的运行平台说明，删除“MMIO 不可在 core-only 运行”的当前流程依赖。
+- 已将 `sw/linker/readme.md` 中 `tb_core_pipeline5.sv` 的 PASS/FAIL 地址、DMEM/stack 统计说明迁移到 `tb_rv32i_soc.sv`。
+- 历史 `docs/08xx` 规划文档中仍可能出现旧入口作为阶段历史说明，不作为当前执行入口。
 
-### 12.1 修改 `tb/sv/tb_rv32i_soc.sv`
+### 12.1 修改 `tb/sv/tb_rv32i_soc.sv` `已完成`
 
 新增驱动信号：
 
@@ -1542,7 +1542,7 @@ trap_is_interrupt
 trap_cause_code
 ```
 
-### 12.2 UART RX 注入任务
+### 12.2 UART RX 注入任务 `执行中`
 
 增加 task：
 
@@ -1587,7 +1587,7 @@ interrupt code = 7/11
 exception code = ...
 ```
 
-### 12.5 平台头文件准备
+### 12.5 平台头文件准备 `已完成`
 
 新增或更新：
 
