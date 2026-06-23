@@ -75,6 +75,9 @@ module rv32i_soc (
         .lsu_rdata_i            (data_rdata_o),
         .lsu_access_fault_i     (data_access_fault_o),
 
+        .mtip_i                 (1'b0),// 先接 0，第 10 步统一改
+        .meip_i                 (1'b0),// 先接 0，第 10 步统一改
+
         .commit_valid_o         (commit_valid_o),
         .commit_pc_o            (commit_pc_o),
         .commit_instr_o         (commit_instr_o),
@@ -85,7 +88,8 @@ module rv32i_soc (
 
         .trap_valid_o           (trap_valid_o),
         .trap_pc_o              (trap_pc_o),
-        .trap_cause_o           (trap_cause_o),
+        .trap_is_interrupt_o    (),// 第 10 步统一改
+        .trap_cause_code_o      (5'(trap_cause_o)),// 第 10 步统一改
         .trap_tval_o            (trap_tval_o),
         .trap_return_o          (trap_return_o),
         .trap_redirect_pc_o     (trap_redirect_pc_o)

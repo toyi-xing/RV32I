@@ -58,12 +58,11 @@ module mmio_gpio #(
     wire [core_pkg::XLEN-1:0] gpio_ro[RO_N];
     localparam IN_IDX  = 0;
 
-    // 输入输出端口与状态寄存器的控制关系
+    // 输出端口与状态寄存器的控制关系
     assign gpio_out_o       = gpio_rw[OUT_IDX][GPIO_WIDTH-1:0];
-    assign gpio_ro[IN_IDX]  = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, gpio_in_i};
     assign gpio_oe_o        = gpio_rw[OE_IDX ][GPIO_WIDTH-1:0];
 
-    // 目前 access_fault_o 仅检测未知 offset ，写只读等情况不触发，后续可以用 | 扩展
+    // 目前 access_fault_o 仅检测未知 offset，写只读等情况不触发，后续可以用 | 扩展
     assign access_fault_o = offset_illegal;
 
     // 读端口与 offset 非法检测
@@ -93,7 +92,11 @@ module mmio_gpio #(
             default: rw_hit = 1'b0;
         endcase
     end
-    // 写端口
+
+    // 非可写寄存器硬件自动更新：IN GPIO 输入值
+    assign gpio_ro[IN_IDX]  = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, gpio_in_i};
+
+    // 写端口 (与 可写寄存器硬件自动更新，暂无)
     always_ff @(posedge clk_i or negedge rst_n_i) begin : GPIO_WRITE
         if (!rst_n_i) begin
             for (int i = 0; i < RW_N; i++) begin

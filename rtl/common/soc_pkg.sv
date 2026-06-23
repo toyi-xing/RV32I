@@ -56,17 +56,17 @@ package soc_pkg;
     parameter logic [core_pkg::XLEN-1:0] TIMER_SIZE_BYTES   = 32'h0000_0600;
     parameter logic [core_pkg::XLEN-1:0] TIMER_STRIDE       = 32'h0000_0100;
     parameter int unsigned               TIMER_NUM          = 6;
+        // TIMER32 公用寄存器
+    parameter logic [11:0]               TIMER32_MTIME_OFFSET    = 12'h000;  // RW，计数值
+    parameter logic [11:0]               TIMER32_MTIMECMP_OFFSET = 12'h004;  // RW，比较值
+    parameter logic [11:0]               TIMER32_CTRL_OFFSET     = 12'h008;  // RW
+    parameter int unsigned               TIMER32_CTRL_EN_BIT     = 0;        // CTRL[0] 定时器使能
+    parameter logic [11:0]               TIMER32_STATUS_OFFSET   = 12'h00c;  // RO
+    parameter int unsigned               TIMER32_STATUS_MTIP_BIT = 0;        // STATUS[0] 中断状态
 
-        // TIMER0 地址
+        // TIMER0 使用 TIMER32 实例
     parameter logic [core_pkg::XLEN-1:0] TIMER0_BASE        = TIMER_BASE;
     parameter logic [core_pkg::XLEN-1:0] TIMER0_SIZE_BYTES  = TIMER_STRIDE;
-        // TIMER0 寄存器
-    parameter logic [11:0]               TIMER0_MTIME_OFFSET    = 12'h000;  // RW，计数值
-    parameter logic [11:0]               TIMER0_MTIMECMP_OFFSET = 12'h004;  // RW，比较值
-    parameter logic [11:0]               TIMER0_CTRL_OFFSET     = 12'h008;  // RW
-    parameter int unsigned               TIMER0_CTRL_EN_BIT     = 0;        // CTRL[0] 定时器使能
-    parameter logic [11:0]               TIMER0_STATUS_OFFSET   = 12'h00c;  // RO
-    parameter int unsigned               TIMER0_STATUS_MTIP_BIT = 0;        // STATUS[0] 中断状态
 
     // UART 预留 6 个
     parameter logic [core_pkg::XLEN-1:0] UART_BASE          = 32'h0008_2000;

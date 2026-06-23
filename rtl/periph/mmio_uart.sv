@@ -59,9 +59,7 @@ module mmio_uart #(
     reg  [core_pkg::XLEN-1:0] uart_wo[WO_N];
     localparam TXDATA_IDX  = 0;
 
-    assign uart_ro[STATUS_IDX] = 32'h1;       // 当前 bit0 固定为 1，表示 ready
-
-    // 输入输出端口与状态寄存器的控制关系
+    // 输出端口与状态寄存器的控制关系
     // TX event 条件：enable=1，写 TXDATA，且 byte0 真正被写入。
     always_ff @(posedge clk_i or negedge rst_n_i) begin : UART_TX_EVENT
         if (!rst_n_i) begin
@@ -74,7 +72,7 @@ module mmio_uart #(
     assign tx_data_o = uart_wo[TXDATA_IDX][7:0];
 
 
-    // 目前 access_fault_o 仅检测未知 offset ，写只读等情况不触发，后续可以用 | 扩展
+    // 目前 access_fault_o 仅检测未知 offset，写只读等情况不触发，后续可以用 | 扩展
     assign access_fault_o = offset_illegal;
 
     // 读端口与 offset 非法检测
@@ -115,7 +113,11 @@ module mmio_uart #(
             default: wo_hit = 1'b0;
         endcase
     end
-    // 写端口
+
+    // 寄存器硬件自动更新：STATUS 当前保持 ready
+    assign uart_ro[STATUS_IDX] = 32'h1;       // 当前 bit0 固定为 1，表示 ready
+
+    // 写端口 (与 可写寄存器硬件自动更新，暂无)
     always_ff @(posedge clk_i or negedge rst_n_i) begin : UART_WRITE
         if (!rst_n_i) begin
             for (int i = 0; i < RW_N; i++) begin

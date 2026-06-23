@@ -657,16 +657,16 @@ core
   |<- mtip/meip
   |
 data_subsystem
-  |-> mmio_timer -> mtip
+  |-> mmio_timer32 -> mtip
   |-> mmio_gpio  -> gpio_irq ----\
   |-> mmio_uart  -> uart_irq ----+-> meip
 ```
 
 core 不需要知道 timer/GPIO/UART 寄存器细节，只需要看到 pending 输入或由 CSR 文件汇总后的 pending 状态。timer 也不需要知道流水线状态，只负责维护 `MTIME/MTIMECMP` 并输出 `mtip_raw`。
 
-### 7.2 `mmio_timer` 的定位
+### 7.2 `mmio_timer32` 的定位
 
-`mmio_timer` 和当前 `mmio_uart/mmio_gpio` 一样，是教学 SoC 外设模型：
+`mmio_timer32` 和当前 `mmio_uart/mmio_gpio` 一样，是教学 SoC 外设模型。当前 TIMER0 使用 32-bit timer 实例，后续如果加入 64-bit timer 可以新增对应规格而不改变 TIMER0 地址图口径：
 
 - 它通过 MMIO 被 load/store 访问。
 - 它在硬件侧产生 `mtip_raw`。
@@ -879,7 +879,7 @@ RTL 完成后，可以考虑按下面方向补 directed test：
 | `rtl/core/ex_stage.sv` | 生成当前指令实际 next PC |
 | `rtl/soc/rv32i_soc.sv` | 实例化 timer，汇总 `mtip`、GPIO irq 和 UART irq |
 | `rtl/soc/data_subsystem.sv` | 将 TIMER0 窗口从预留改为已实现外设 |
-| `rtl/periph/mmio_timer.sv` | 新增 timer MMIO 寄存器块 |
+| `rtl/periph/mmio_timer32.sv` | 新增 32-bit timer MMIO 寄存器块 |
 | `rtl/periph/mmio_gpio.sv` | 新增 GPIO interrupt enable/pending/clear 逻辑和 `gpio_irq_o` |
 | `rtl/periph/mmio_uart.sv` | 新增仿真 RX、RX pending/clear 逻辑和 `uart_irq_o` |
 

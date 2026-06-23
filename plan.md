@@ -88,20 +88,20 @@ typedef enum logic [4:0] {
 
 ### 1.2 修改 `rtl/common/soc_pkg.sv` `已完成`
 
-补 TIMER0 offset：
+补 TIMER32 公用 offset；TIMER0 本阶段使用一个 32-bit timer 实例：
 
 ```systemverilog
-TIMER0_MTIME_OFFSET    = 12'h000;
-TIMER0_MTIMECMP_OFFSET = 12'h004;
-TIMER0_CTRL_OFFSET     = 12'h008;
-TIMER0_STATUS_OFFSET   = 12'h00c;
+TIMER32_MTIME_OFFSET    = 12'h000;
+TIMER32_MTIMECMP_OFFSET = 12'h004;
+TIMER32_CTRL_OFFSET     = 12'h008;
+TIMER32_STATUS_OFFSET   = 12'h00c;
 ```
 
 补 TIMER bit：
 
 ```systemverilog
-TIMER0_CTRL_EN_BIT     = 0;
-TIMER0_STATUS_MTIP_BIT = 0;
+TIMER32_CTRL_EN_BIT     = 0;
+TIMER32_STATUS_MTIP_BIT = 0;
 ```
 
 补 GPIO interrupt offset：
@@ -917,9 +917,9 @@ kill_mem_wb_o  = exception_trap | mret_accept
 
 注意：`MRET+interrupt` 同拍时 `mret_accept=1`，因此仍然 kill MEM/WB 输入。这里 kill 的是 MRET 指令本身，不是被 interrupt 打断的普通旧指令。
 
-## 5. core 顶层接线 `执行中`
+## 5. core 顶层接线 `已完成`
 
-### 5.1 修改 `rtl/core/core.sv` 端口
+### 5.1 修改 `rtl/core/core.sv` 端口 `已完成`
 
 新增输入：
 
@@ -945,7 +945,7 @@ output logic [4:0] trap_cause_code_o
 
 或者保留旧名但改类型。为了减少歧义，推荐使用新名。
 
-### 5.2 core 内部 CSR/trap 信号
+### 5.2 core 内部 CSR/trap 信号 `已完成`
 
 新增 wire：
 
@@ -965,7 +965,7 @@ wire [core_pkg::XLEN-1:0] ex_next_pc;
 
 `csr_mie/csr_mtvec` 是当前 CSR 值，`csr_mie_commit/csr_mtvec_commit` 是普通 CSR 写提交后的视图。两类信号都保留，便于 `trap_ctrl` 按不同路径选择。
 
-### 5.3 ex_stage 实例连接
+### 5.3 ex_stage 实例连接 `已完成`
 
 连接新增端口：
 
@@ -979,7 +979,7 @@ EX/MEM 组包：
 assign ex_mem_data_d.next_pc = ex_next_pc;
 ```
 
-### 5.4 csr_file 实例连接
+### 5.4 csr_file 实例连接 `已完成`
 
 新增连接：
 
@@ -1000,7 +1000,7 @@ assign ex_mem_data_d.next_pc = ex_next_pc;
 
 如果 `csr_file` 端口从 `trap_cause_i` 改为 `trap_cause_code_i`，同步替换原连接。`trap_cause_code_i` 的输入类型是低 5 bit code，不能继续直接接 `excp_cause_e` 类型的旧 `trap_cause` 信号。
 
-### 5.5 trap_ctrl 实例连接
+### 5.5 trap_ctrl 实例连接 `已完成`
 
 新增连接：
 
@@ -1020,7 +1020,7 @@ assign ex_mem_data_d.next_pc = ex_next_pc;
 
 原 `trap_cause_o` 连接同步改名或改类型。
 
-### 5.6 commit/trap 观察输出
+### 5.6 commit/trap 观察输出 `已完成`
 
 导出：
 
@@ -1035,14 +1035,14 @@ assign trap_cause_code_o   = trap_cause_code;
 写入 mepc 的 PC；exception 时为 fault PC，interrupt 时为 return PC。
 ```
 
-## 6. TIMER0 外设
+## 6. TIMER0 外设 `已完成`
 
-### 6.1 新建 `rtl/periph/mmio_timer.sv`
+### 6.1 新建 `rtl/periph/mmio_timer32.sv`
 
 端口建议：
 
 ```systemverilog
-module mmio_timer #(
+module mmio_timer32 #(
     parameter logic [core_pkg::XLEN-1:0] BASE_ADDR = soc_pkg::TIMER0_BASE
 ) (
     input  logic                      clk_i,
@@ -1060,7 +1060,7 @@ module mmio_timer #(
 );
 ```
 
-### 6.2 TIMER0 寄存器
+### 6.2 TIMER32 寄存器 `已完成`
 
 寄存器：
 
@@ -1071,7 +1071,7 @@ module mmio_timer #(
 | `0x08` | `CTRL` | RW | bit0 enable |
 | `0x0C` | `STATUS` | RO | bit0 raw `MTIP` |
 
-### 6.3 TIMER0 行为
+### 6.3 TIMER32 行为 `已完成`
 
 复位：
 
@@ -1095,13 +1095,13 @@ mtip_o = CTRL.enable && (MTIME >= MTIMECMP)
 STATUS[0] = mtip_o
 ```
 
-写 `MTIME/MTIMECMP/CTRL` 按 byte enable 更新。
+写 `MTIME/MTIMECMP/CTRL` 按 byte enable 更新。当前实现中，写 `MTIME` 时本拍不执行 `MTIME` 自增；写 `MTIMECMP/CTRL` 不阻止计数器自增，是否自增取决于时钟沿前的 `CTRL.enable`。
 
 写 `STATUS` 忽略。
 
 未知 offset 输出 `access_fault_o`。
 
-### 6.4 timer 与软件 pending
+### 6.4 timer 与软件 pending `无需操作`
 
 `MTIP` 是 level pending。handler 必须：
 
@@ -1110,7 +1110,7 @@ STATUS[0] = mtip_o
 
 否则 `MRET` 后会立刻再次进入 timer interrupt。
 
-## 7. GPIO0 中断扩展
+## 7. GPIO0 中断扩展 `执行中`
 
 ### 7.1 修改 `rtl/periph/mmio_gpio.sv` 端口
 
@@ -1323,14 +1323,14 @@ TIMER0_BASE <= core_addr_i < TIMER0_BASE + TIMER0_SIZE_BYTES
 
 `mmio_access_o` 增加 `timer0_valid`。
 
-### 9.3 实例化 `mmio_timer`
+### 9.3 实例化 `mmio_timer32`
 
 在 `simple_ram/mmio_gpio/mmio_uart` 同级实例化：
 
 ```systemverilog
-mmio_timer #(
+mmio_timer32 #(
     .BASE_ADDR (soc_pkg::TIMER0_BASE)
-) u_mmio_timer0 (...);
+) u_mmio_timer32_0 (...);
 ```
 
 连接：
@@ -1578,5 +1578,5 @@ RTL 完成后同步检查：
 - `rtl/core/trap_ctrl.sv` 头注释是否区分 exception、interrupt、MRET。
 - `rtl/periph/mmio_gpio.sv` 头注释是否写明 `R/W1C IRQ_PENDING`。
 - `rtl/periph/mmio_uart.sv` 头注释是否写明仿真 RX 和 UART interrupt。
-- `rtl/periph/mmio_timer.sv` 头注释是否写明 32-bit 教学 timer。
+- `rtl/periph/mmio_timer32.sv` 头注释是否写明 32-bit 教学 timer。
 - SoC/testbench 注释是否说明 `MEIP = GPIO irq | UART irq`、`MTIP = TIMER0`。
