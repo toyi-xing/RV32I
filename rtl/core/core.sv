@@ -57,7 +57,7 @@ module core (
     // trap/MRET 提交观察
     output logic                          trap_valid_o,         // trap entry 有效（异常/中断），不含 MRET。
     output logic [core_pkg::XLEN-1:0]     trap_pc_o,            // 写入 mepc 的 PC；exception 时为 fault PC，interrupt 时为 return PC。
-    output logic                          trap_is_interrupt_o,
+    output logic                          trap_is_interrupt_o,  // 该 trap 是中断。
     output logic [4:0]                    trap_cause_code_o,    // 当前 trap entry 的 cause code，配合 trap_is_interrupt_o 区分异常和中断。
     output logic [core_pkg::XLEN-1:0]     trap_tval_o,          // 异常相关附加值（mtval 写入值）。
     output logic                          trap_return_o,        // MRET 返回事件有效。

@@ -12,8 +12,8 @@
 //   - MTIME（offset 0x00）是 32-bit RW 计数器，使能时每个 clk 递增。
 //   - MTIMECMP（offset 0x04）是 32-bit RW 比较值。
 //   - CTRL（offset 0x08）是 RW 控制寄存器，CTRL[0]=enable。
-//   - STATUS（offset 0x0C）是 RO 状态寄存器，STATUS[0]=mtip_o。
-//   - mtip_o = CTRL.enable && (MTIME >= MTIMECMP)。
+//   - STATUS（offset 0x0C）是 RO 状态寄存器，STATUS[0]=timer32_irq_o。
+//   - timer32_irq_o = CTRL.enable && (MTIME >= MTIMECMP)。
 //   - 写 STATUS 忽略；未知 offset 输出 access_fault_o。
 //   - 写 MTIME 时本拍不自增；写 MTIMECMP/CTRL 时，若旧 CTRL.enable=1，MTIME 仍会自增。
 //------------------------------------------------------------------------------
@@ -34,7 +34,7 @@ module mmio_timer32 #(
     output logic [core_pkg::XLEN-1:0] rdata_o,         // 读返回数据。
     output logic                      access_fault_o,  // offset 不存在时拉高。
 
-    output logic                      mtip_o           // timer interrupt pending（level）。
+    output logic                      timer32_irq_o    // timer interrupt pending（level）。
 );
 
     import core_pkg::*;
@@ -136,7 +136,7 @@ module mmio_timer32 #(
     end
 
     // 中断输出
-    assign mtip_o = timer32_ro[STATUS_IDX][TIMER32_STATUS_MTIP_BIT];
+    assign timer32_irq_o = timer32_ro[STATUS_IDX][TIMER32_STATUS_MTIP_BIT];
 
 endmodule
 

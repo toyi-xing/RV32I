@@ -1056,7 +1056,7 @@ module mmio_timer32 #(
     output logic [core_pkg::XLEN-1:0] rdata_o,
     output logic                      access_fault_o,
 
-    output logic                      mtip_o
+    output logic                      timer32_irq_o
 );
 ```
 
@@ -1091,8 +1091,8 @@ if CTRL.enable:
 比较：
 
 ```text
-mtip_o = CTRL.enable && (MTIME >= MTIMECMP)
-STATUS[0] = mtip_o
+timer32_irq_o = CTRL.enable && (MTIME >= MTIMECMP)
+STATUS[0] = timer32_irq_o
 ```
 
 写 `MTIME/MTIMECMP/CTRL` 按 byte enable 更新。当前实现中，写 `MTIME` 时本拍不执行 `MTIME` 自增；写 `MTIMECMP/CTRL` 不阻止计数器自增，是否自增取决于时钟沿前的 `CTRL.enable`。
@@ -1319,9 +1319,9 @@ uart_irq_o = CTRL.rx_irq_enable && rx_irq_pending
 
 `uart_irq_o` 是 level 信号，不是 pulse。
 
-## 9. data_subsystem 集成
+## 9. data_subsystem 集成 `已完成`
 
-### 9.1 修改 `rtl/soc/data_subsystem.sv` 端口
+### 9.1 修改 `rtl/soc/data_subsystem.sv` 端口 `已完成`
 
 新增 UART RX 输入：
 
@@ -1333,12 +1333,12 @@ input logic [7:0] uart0_rx_data_i;
 新增 interrupt 输出：
 
 ```systemverilog
-output logic timer0_mtip_o;
+output logic timer0_irq_o;
 output logic gpio0_irq_o;
 output logic uart0_irq_o;
 ```
 
-### 9.2 地址命中
+### 9.2 地址命中 `已完成`
 
 新增：
 
@@ -1357,7 +1357,7 @@ TIMER0_BASE <= core_addr_i < TIMER0_BASE + TIMER0_SIZE_BYTES
 
 `mmio_access_o` 增加 `timer0_valid`。
 
-### 9.3 实例化 `mmio_timer32`
+### 9.3 实例化 `mmio_timer32` `已完成`
 
 在 `simple_ram/mmio_gpio/mmio_uart` 同级实例化：
 
@@ -1377,10 +1377,10 @@ addr_i         = core_addr_i
 wdata_i        = core_wdata_i
 rdata_o        = timer0_rdata
 access_fault_o = timer0_access_fault
-mtip_o         = timer0_mtip_o
+timer32_irq_o  = timer0_irq_o
 ```
 
-### 9.4 更新 read mux 和 access fault
+### 9.4 更新 read mux 和 access fault `已完成`
 
 `core_rdata_o` mux 增加：
 
@@ -1394,7 +1394,7 @@ else if (timer0_valid) core_rdata_o = timer0_rdata;
 | timer0_access_fault
 ```
 
-### 9.5 GPIO/UART irq 连接
+### 9.5 GPIO/UART irq 连接 `已完成`
 
 `u_mmio_gpio0` 连接：
 
@@ -1410,9 +1410,9 @@ else if (timer0_valid) core_rdata_o = timer0_rdata;
 .uart_irq_o (uart0_irq_o)
 ```
 
-## 10. SoC 顶层集成
+## 10. SoC 顶层集成 `已完成`
 
-### 10.1 修改 `rtl/soc/rv32i_soc.sv` 端口
+### 10.1 修改 `rtl/soc/rv32i_soc.sv` 端口 `已完成`
 
 新增 UART RX 输入：
 
@@ -1424,10 +1424,11 @@ input logic [7:0] uart0_rx_data_i;
 新增 interrupt 观察输出：
 
 ```systemverilog
-output logic timer0_mtip_o;
+output logic timer0_irq_o;
 output logic gpio0_irq_o;
 output logic uart0_irq_o;
 output logic meip_o;
+output logic mtip_o;
 ```
 
 新增 trap 观察输出：
@@ -1437,35 +1438,37 @@ output logic       trap_is_interrupt_o;
 output logic [4:0] trap_cause_code_o;
 ```
 
-### 10.2 汇总 MEIP
+### 10.2 汇总 MEIP `已完成`
 
 内部：
 
 ```systemverilog
 wire meip = gpio0_irq_o | uart0_irq_o;
+wire mtip = timer0_irq_o;
 assign meip_o = meip;
+assign mtip_o = mtip;
 ```
 
 `core` 连接：
 
 ```systemverilog
-.mtip_i (timer0_mtip_o)
+.mtip_i (timer0_irq_o)
 .meip_i (meip)
 ```
 
-### 10.3 data_subsystem 连接
+### 10.3 data_subsystem 连接 `已完成`
 
 `u_data_subsystem` 连接新增端口：
 
 ```systemverilog
 .uart0_rx_valid_i (uart0_rx_valid_i)
 .uart0_rx_data_i  (uart0_rx_data_i)
-.timer0_mtip_o    (timer0_mtip_o)
+.timer0_irq_o     (timer0_irq_o)
 .gpio0_irq_o      (gpio0_irq_o)
 .uart0_irq_o      (uart0_irq_o)
 ```
 
-### 10.4 观察口注释
+### 10.4 观察口注释 `已完成`
 
 更新文件头注释：
 
@@ -1473,8 +1476,9 @@ assign meip_o = meip;
 - UART0 支持 TX event 和仿真 RX event。
 - GPIO0/UART0 interrupt 汇总为 `MEIP`。
 - TIMER0 interrupt 作为 `MTIP` 输入 core。
+- `trap_cause_code_o` 需要配合 `trap_is_interrupt_o` 解读。
 
-## 11. core-only testbench 最小适配
+## 11. core-only testbench 最小适配 `不再执行`
 
 ### 11.1 修改 `tb/sv/tb_core_pipeline5.sv`
 
@@ -1496,9 +1500,25 @@ tb 要同步连线，并在 trace 中使用新 `trap_cause_code`。
 
 core-only 旧测试不主动触发 interrupt，预期仍全部通过。
 
+计划调整：当前项目已经以 SoC 平台作为主要仿真入口，后续准备删除 `tb/sv/tb_core_pipeline5.sv` 及 core-only 仿真脚本，因此不再继续维护 core-only tb 的最小适配。删除动作和相关文件调整纳入 12.0。
+
 ## 12. SoC testbench 验证准备
 
 本章只写验证必备支持，不写完整测试方案。
+
+### 12.0 删除 core-only 仿真平台准备 `待执行`
+
+目标：删除 `tb/sv/tb_core_pipeline5.sv`，后续统一使用 SoC testbench 运行已有 ISA、流水线、trap、MMIO 和 interrupt 测试。
+
+需要同步调整：
+
+- 删除或停用 `tb/sv/tb_core_pipeline5.sv`。
+- 删除或迁移 `sim/pipeline5_asm/`、`sim/pipeline5_c/` 下依赖 `tb_core_pipeline5` 的脚本入口。
+- 将 README 中 core-only 仿真命令改为 SoC 仿真命令，避免继续推荐 `sim/pipeline5_*`。
+- 检查 `docs/simulation_flow_asm.md`、`docs/simulation_flow_c.md` 中的 core-only 流程描述，保留历史说明或改成 SoC-only 口径。
+- 检查 `sw/asm/readme.md`、`sw/c/readme.md` 中关于“MMIO 测试不可在 core-only 仿真运行”的说明，删除 core-only 平台后应改为统一 SoC 运行。
+- 检查 `sw/linker/readme.md` 中提到 `tb_core_pipeline5.sv` 的 PASS/FAIL 地址、DMEM/stack 统计说明，迁移到 `tb_rv32i_soc.sv`。
+- 清理构建产物命名或文档中 `Vtb_core_pipeline5`、`build/pipeline5_*` 的引用，避免保留不可运行入口。
 
 ### 12.1 修改 `tb/sv/tb_rv32i_soc.sv`
 
@@ -1514,7 +1534,7 @@ logic [7:0] uart0_rx_data;
 新增观察信号：
 
 ```systemverilog
-timer0_mtip
+timer0_irq
 gpio0_irq
 uart0_irq
 meip

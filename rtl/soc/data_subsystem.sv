@@ -11,12 +11,12 @@
 //
 // 功能：
 //   - 接收 core 的 lsu_* request（re/we/be/addr/wdata）。
-//   - 判断地址命中 DMEM、UART0、GPIO0，还是未映射。
-//   - 实例化 simple_ram、mmio_uart、mmio_gpio。
+//   - 判断地址命中 DMEM、UART0、GPIO0、TIMER0，还是未映射。
+//   - 实例化 simple_ram、mmio_uart、mmio_gpio、mmio_timer32。
 //   - 对 store，只把写使能送到命中的设备。
 //   - 对 load，返回命中设备的 32-bit rdata。
 //   - 对未映射 load/store，返回 core_access_fault_o = 1，读数据返回 0。
-//   - 暴露 UART/GPIO 观察信号给 SoC/testbench。
+//   - 暴露 GPIO 输出、UART TX/RX 事件接口和 GPIO/UART/TIMER0 中断给 SoC/testbench。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -39,6 +39,13 @@ module data_subsystem (
 
     output logic                      uart0_tx_valid_o,
     output logic [7:0]                uart0_tx_data_o,
+    input  logic                      uart0_rx_valid_i,
+    input  logic [7:0]                uart0_rx_data_i,
+
+    // 中断输出
+    output logic                      gpio0_irq_o,
+    output logic                      uart0_irq_o,
+    output logic                      timer0_irq_o,
 
     output logic                      dmem_access_o,        // 观察信号：本拍访问命中 DMEM。
     output logic                      mmio_access_o         // 观察信号：本拍访问命中 MMIO。
@@ -51,18 +58,17 @@ module data_subsystem (
     wire access_valid = core_re_i | core_we_i;
 
     // core_addr 命中分配
-    wire dmem_hit, gpio0_hit, uart0_hit;
-    wire mapped_hit;    // addr 命中已实现的地址
-    assign dmem_hit   = (core_addr_i >= DMEM_BASE)  & (core_addr_i < DMEM_BASE  + DMEM_SIZE_BYTES);
-    assign gpio0_hit  = (core_addr_i >= GPIO0_BASE) & (core_addr_i < GPIO0_BASE + GPIO0_SIZE_BYTES);
-    assign uart0_hit  = (core_addr_i >= UART0_BASE) & (core_addr_i < UART0_BASE + UART0_SIZE_BYTES);
-    assign mapped_hit = dmem_hit | gpio0_hit | uart0_hit;
+    wire dmem_hit   = (core_addr_i >= DMEM_BASE)   & (core_addr_i < DMEM_BASE   + DMEM_SIZE_BYTES);
+    wire gpio0_hit  = (core_addr_i >= GPIO0_BASE)  & (core_addr_i < GPIO0_BASE  + GPIO0_SIZE_BYTES);
+    wire uart0_hit  = (core_addr_i >= UART0_BASE)  & (core_addr_i < UART0_BASE  + UART0_SIZE_BYTES);
+    wire timer0_hit = (core_addr_i >= TIMER0_BASE) & (core_addr_i < TIMER0_BASE + TIMER0_SIZE_BYTES);
+    wire mapped_hit = dmem_hit | gpio0_hit | uart0_hit | timer0_hit;    // addr 命中已实现的地址
 
     // 命中窗口 + cpu 是访存信号则有效
-    wire   dmem_valid, gpio0_valid, uart0_valid;
-    assign dmem_valid   = dmem_hit  & access_valid;
-    assign gpio0_valid  = gpio0_hit & access_valid;
-    assign uart0_valid  = uart0_hit & access_valid;
+    wire dmem_valid   = dmem_hit   & access_valid;
+    wire gpio0_valid  = gpio0_hit  & access_valid;
+    wire uart0_valid  = uart0_hit  & access_valid;
+    wire timer0_valid = timer0_hit & access_valid;
 
     //==============================================================
     // 子模块实例化
@@ -103,7 +109,8 @@ module data_subsystem (
         .gpio_in_i      (gpio0_in_i),
         .gpio_out_o     (gpio0_out_o),
         .gpio_oe_o      (gpio0_oe_o),
-        .gpio_irq_o     ()
+
+        .gpio_irq_o     (gpio0_irq_o)
     );
 
     wire [core_pkg::XLEN-1:0] uart0_rdata;
@@ -126,10 +133,29 @@ module data_subsystem (
         .tx_valid_o     (uart0_tx_valid_o),
         .tx_data_o      (uart0_tx_data_o),
 
-        .rx_valid_i     (),
-        .rx_data_i      (),
+        .rx_valid_i     (uart0_rx_valid_i),
+        .rx_data_i      (uart0_rx_data_i),
 
-        .uart_irq_o     ()
+        .uart_irq_o     (uart0_irq_o)
+    );
+
+    wire [core_pkg::XLEN-1:0] timer0_rdata;
+    wire timer0_access_fault;
+    mmio_timer32 #(
+        .BASE_ADDR (soc_pkg::TIMER0_BASE)
+    ) u_mmio_timer32_0 (
+        .clk_i          (clk_i),
+        .rst_n_i        (rst_n_i),
+
+        .valid_i        (timer0_valid),
+        .we_i           (core_we_i),
+        .be_i           (core_be_i),
+        .addr_i         (core_addr_i),
+        .wdata_i        (core_wdata_i),
+        .rdata_o        (timer0_rdata),
+        .access_fault_o (timer0_access_fault),
+
+        .timer32_irq_o  (timer0_irq_o)
     );
 
     // core_rdata_o MUX
@@ -144,15 +170,18 @@ module data_subsystem (
         else if (uart0_valid) begin
             core_rdata_o = uart0_rdata;
         end
+        else if (timer0_valid) begin
+            core_rdata_o = timer0_rdata;
+        end
     end
 
     // 外设输出的 access_fault 已检测是否为本外设，此处不做重复逻辑
     assign core_access_fault_o = (access_valid & !mapped_hit) |
-                                  gpio0_access_fault | uart0_access_fault;
+                                  gpio0_access_fault | uart0_access_fault | timer0_access_fault;
 
     // 观察信号驱动
     assign dmem_access_o = dmem_valid;
-    assign mmio_access_o = gpio0_valid | uart0_valid;
+    assign mmio_access_o = gpio0_valid | uart0_valid | timer0_valid;
 
 endmodule
 

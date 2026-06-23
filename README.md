@@ -2,7 +2,7 @@
 
 本仓库是一个 RV32I 教学核实现仓库，当前维护对象是五级流水线顶层 `core.sv`，已完成最小 M-mode CSR/trap 支持、最简 MMIO 地址图及外设，搭建了 SoC 平台顶层 `rv32i_soc.sv`。
 
-## 当前特性
+## 当前特性（已经过定向验证）
 
 - **40 条 RV32I 指令**：完整 ALU、分支、跳转、访存、LUI/AUIPC、FENCE（当前为nop）、ECALL、EBREAK 全量支持。
 - **五级流水线**：IF/ID/EX/MEM/WB 经典五级流水线结构。
@@ -39,7 +39,7 @@
 | 单周期 RV32I | `core_single_cycle.sv` | 历史版本已完成，当前不再维护 | v1.0 | 最终兼容版本为 v2.0，自 v2.10 起删除该文件 |
 | 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | 后续开发持续在该文件上累积 |
 | 同步异常扩展、CSR 与最小特权级（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | 自 v3.4 起，将 `core_pipeline5.sv` 改名为 `core.sv` |
-| 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 当前兼容旧的 cpu 核测试平台 |
+| 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` |
 
 ---
 

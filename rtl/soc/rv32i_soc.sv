@@ -10,9 +10,10 @@
 // 功能：
 //   - 实例化 core 作为 CPU core。
 //   - 实例化 simple_rom 作为 IMEM。
-//   - 实例化 data_subsystem 作为 DMEM/MMIO 数据侧。
+//   - 实例化 data_subsystem 作为 DMEM/MMIO 数据侧，包含 GPIO0、UART0、TIMER0。
 //   - 将 data_subsystem.core_access_fault_o 接回 core.lsu_access_fault_i。
-//   - 透传 commit/trap、GPIO、UART 和 data access 观察信号给 testbench。
+//   - 汇总 GPIO0/UART0 中断为 MEIP，将 TIMER0 中断作为 MTIP 接入 core。
+//   - 透传 commit/trap、GPIO、UART、interrupt 和 data access 观察信号给 testbench。
 //------------------------------------------------------------------------------
 
 `default_nettype none
@@ -27,6 +28,8 @@ module rv32i_soc (
 
     output logic                          uart0_tx_valid_o,      // UART0 TX event 有效脉冲。
     output logic [7:0]                    uart0_tx_data_o,       // UART0 TX event 对应字节。
+    input  logic                          uart0_rx_valid_i,      // UART0 RX event 脉冲。
+    input  logic [7:0]                    uart0_rx_data_i,       // UART0 RX event 对应字节。
 
     // load/store 指令既可能是访问 dmem,也可能是访问外设寄存器
     output logic                          data_re_o,             // load 指令观察口。
@@ -40,6 +43,7 @@ module rv32i_soc (
     output logic                          dmem_access_o,         // 本拍 data access 是否命中 DMEM。
     output logic                          mmio_access_o,         // 本拍 data access 是否命中已实现 MMIO。
 
+    // 指令提交
     output logic                          commit_valid_o,        // 当前拍是否有有效指令提交。
     output logic [core_pkg::XLEN-1:0]     commit_pc_o,           // 提交指令的 PC。
     output logic [core_pkg::ILEN-1:0]     commit_instr_o,        // 提交指令的原始 instruction。
@@ -48,17 +52,32 @@ module rv32i_soc (
     output logic [4:0]                    commit_rd_addr_o,      // 提交指令写回的 rd 编号。
     output logic [core_pkg::XLEN-1:0]     commit_rd_wdata_o,     // 提交指令写回 rd 的数据。
 
+    // trap 提交
     output logic                          trap_valid_o,          // trap entry 有效（异常/中断），不含 MRET。
     output logic [core_pkg::XLEN-1:0]     trap_pc_o,             // 发生异常/中断时的指令 PC。
-    output core_pkg::excp_cause_e         trap_cause_o,          // 当前 trap entry 的 exception cause；interrupt 接入后将改为 code+kind。
+    output logic                          trap_is_interrupt_o,   // 该 trap 是中断。
+    output logic [4:0]                    trap_cause_code_o,     // 当前 trap entry 的 cause code，配合 trap_is_interrupt_o 区分异常和中断。
     output logic [core_pkg::XLEN-1:0]     trap_tval_o,           // 异常相关附加值。
     output logic                          trap_return_o,         // MRET 返回事件有效。
-    output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o     // trap 或 MRET 的跳转目标 PC。
+    output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o,    // trap 或 MRET 的跳转目标 PC。
+
+    // 中断观察
+    output logic                          gpio0_irq_o,           // GPIO0 中断。
+    output logic                          uart0_irq_o,           // UART0 中断。
+    output logic                          timer0_irq_o,          // TIMER0 中断（MTIP）。
+    output logic                          meip_o,                // MEIP = gpio0_irq_o | uart0_irq_o。
+    output logic                          mtip_o                 // MTIP = timer0_irq_o。
 );
 
     // core <-> IMEM
     wire [core_pkg::ILEN-1:0]     core_imem_rdata;
     wire [core_pkg::XLEN-1:0]     core_imem_addr;
+
+    // interrupt 汇总
+    wire   meip   = gpio0_irq_o | uart0_irq_o;
+    wire   mtip   = timer0_irq_o;
+    assign meip_o = meip;
+    assign mtip_o = mtip;
 
     core u_core (
         .clk_i                  (clk_i),
@@ -75,8 +94,8 @@ module rv32i_soc (
         .lsu_rdata_i            (data_rdata_o),
         .lsu_access_fault_i     (data_access_fault_o),
 
-        .mtip_i                 (1'b0),// 先接 0，第 10 步统一改
-        .meip_i                 (1'b0),// 先接 0，第 10 步统一改
+        .mtip_i                 (mtip),
+        .meip_i                 (meip),
 
         .commit_valid_o         (commit_valid_o),
         .commit_pc_o            (commit_pc_o),
@@ -88,8 +107,8 @@ module rv32i_soc (
 
         .trap_valid_o           (trap_valid_o),
         .trap_pc_o              (trap_pc_o),
-        .trap_is_interrupt_o    (),// 第 10 步统一改
-        .trap_cause_code_o      (5'(trap_cause_o)),// 第 10 步统一改
+        .trap_is_interrupt_o    (trap_is_interrupt_o),
+        .trap_cause_code_o      (trap_cause_code_o),
         .trap_tval_o            (trap_tval_o),
         .trap_return_o          (trap_return_o),
         .trap_redirect_pc_o     (trap_redirect_pc_o)
@@ -118,6 +137,12 @@ module rv32i_soc (
 
         .uart0_tx_valid_o      (uart0_tx_valid_o),
         .uart0_tx_data_o       (uart0_tx_data_o),
+        .uart0_rx_valid_i      (uart0_rx_valid_i),
+        .uart0_rx_data_i       (uart0_rx_data_i),
+
+        .gpio0_irq_o           (gpio0_irq_o),
+        .uart0_irq_o           (uart0_irq_o),
+        .timer0_irq_o          (timer0_irq_o),
 
         .dmem_access_o         (dmem_access_o),
         .mmio_access_o         (mmio_access_o)

@@ -10,8 +10,10 @@
 // 功能：
 //   - 产生 clk/rst 驱动 rv32i_soc。
 //   - 驱动 gpio0_in 为固定值，供 MMIO GPIO 读取。
+//   - 当前 UART0 RX 事件固定拉低；后续 interrupt directed test 会改为 task 注入。
 //   - 在每次提交时打印当前指令的 PC、原始指令、指令类型、rd 写使能和写回数据。
-//   - 观察 trap/MRET trace 信号。
+//   - 观察 trap/MRET trace 信号，并打印 trap_is_interrupt/trap_cause_code。
+//   - 观察 GPIO0/UART0/TIMER0 interrupt 和 MEIP/MTIP 汇总信号。
 //   - 观察 UART TX event 并打印字符。
 //   - 通过写约定 DMEM 地址作为 PASS/FAIL 标志自动结束仿真。
 //------------------------------------------------------------------------------
@@ -54,6 +56,8 @@ module tb_rv32i_soc;
 
     logic                          uart0_tx_valid;
     logic [7:0]                    uart0_tx_data;
+    logic                          uart0_rx_valid;
+    logic [7:0]                    uart0_rx_data;
 
     logic                          data_re;
     logic                          data_we;
@@ -76,10 +80,17 @@ module tb_rv32i_soc;
 
     logic                          trap_valid;
     logic [core_pkg::XLEN-1:0]     trap_pc;
-    core_pkg::excp_cause_e         trap_cause;
+    logic                          trap_is_interrupt;
+    logic [4:0]                    trap_cause_code;
     logic [core_pkg::XLEN-1:0]     trap_tval;
     logic                          trap_return;
     logic [core_pkg::XLEN-1:0]     trap_redirect_pc;
+
+    logic                          gpio0_irq;
+    logic                          uart0_irq;
+    logic                          timer0_irq;
+    logic                          meip;
+    logic                          mtip;
 
     // -------------------------------------------------------------------------
     // rv32i_soc 实例化
@@ -94,6 +105,8 @@ module tb_rv32i_soc;
 
         .uart0_tx_valid_o      (uart0_tx_valid),
         .uart0_tx_data_o       (uart0_tx_data),
+        .uart0_rx_valid_i      ('0),
+        .uart0_rx_data_i       ('0),
 
         .data_re_o             (data_re),
         .data_we_o             (data_we),
@@ -116,10 +129,17 @@ module tb_rv32i_soc;
 
         .trap_valid_o          (trap_valid),
         .trap_pc_o             (trap_pc),
-        .trap_cause_o          (trap_cause),
+        .trap_is_interrupt_o   (trap_is_interrupt),
+        .trap_cause_code_o     (trap_cause_code),
         .trap_tval_o           (trap_tval),
         .trap_return_o         (trap_return),
-        .trap_redirect_pc_o    (trap_redirect_pc)
+        .trap_redirect_pc_o    (trap_redirect_pc),
+
+        .gpio0_irq_o           (gpio0_irq),
+        .uart0_irq_o           (uart0_irq),
+        .timer0_irq_o          (timer0_irq),
+        .meip_o                (meip),
+        .mtip_o                (mtip)
     );
 
     // -------------------------------------------------------------------------
@@ -253,7 +273,7 @@ module tb_rv32i_soc;
         if (trap_valid) begin
             $display("^^^^^^^^^^ this cycle happen trap_entry  ^^^^^^^^^^");
             $display("[TRAP_ENTRY] trap_pc   :0x%08h;    trap_redirect_pc:0x%08h", trap_pc, trap_redirect_pc);
-            $display("[TRAP_ENTRY] trap_tval :0x%08h;    trap_cause      :%s", trap_tval, trap_cause.name());
+            $display("[TRAP_ENTRY] trap_tval :0x%08h;    trap_is_interrupt:%0d;    trap_cause_code:%0d", trap_tval, trap_is_interrupt, trap_cause_code);
         end
         else if (trap_return) begin
             $display("^^^^^^^^^^ this cycle happen trap_return ^^^^^^^^^^");
