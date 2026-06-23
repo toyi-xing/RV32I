@@ -56,7 +56,9 @@ module csr_file (
     // commit view 只表示普通 CSR 写提交后的值，用于 CSR 写同拍 interrupt 的判断和 redirect。
     output logic [core_pkg::XLEN-1:0] mstatus_o,             // mstatus 当前值（特权级、全局中断备份与开关）
     output logic [core_pkg::XLEN-1:0] mstatus_commit_o,      // 普通 CSR 写提交后的 mstatus；无合法 mstatus 写时等于当前值
+    output logic [core_pkg::XLEN-1:0] mie_o,                 // mie 当前值
     output logic [core_pkg::XLEN-1:0] mie_commit_o,          // 普通 CSR 写提交后的 mie；无合法 mie 写时等于当前值
+    output logic [core_pkg::XLEN-1:0] mtvec_o,               // mtvec 当前值
     output logic [core_pkg::XLEN-1:0] mtvec_commit_o,        // 普通 CSR 写提交后的 mtvec；无合法 mtvec 写时等于当前值
     output logic [core_pkg::XLEN-1:0] mepc_o,                // mepc 当前值（MRET 返回地址）
     output logic [core_pkg::XLEN-1:0] mip_o                  // mip 当前值（中断 pending）
@@ -263,7 +265,9 @@ module csr_file (
     always_comb begin : CSR_STATUS_OUT
         mstatus_o           = mstatus;
         mstatus_commit_o    = mstatus;
+        mie_o               = mie;
         mie_commit_o        = mie;
+        mtvec_o             = mtvec;
         mtvec_commit_o      = mtvec;
         mepc_o              = mepc;
         mip_o               = mip;

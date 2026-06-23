@@ -465,6 +465,8 @@ MEIP > MTIP
 
 软件不应依赖多个 pending 同拍时的细节顺序；若后续接入 PLIC/CLINT 或想更贴近某个平台规范，只需要调整 interrupt select 的优先级选择块和文档声明。
 
+这里需要区分 interrupt 优先级和同步 exception 优先级的不同含义。同步 exception 的优先级决定的是"哪个异常类型应该先被处理"——不同异常（ECALL、非法指令、access fault）的 fault PC、mtval、是否需要修改 mepc 都可能不同，优先级选的是**哪一个异常语义生效**。interrupt 优先级则不同：所有 interrupt 的硬件 entry 行为完全一致——写 mepc、写 mcause[31]=1 和低 5 bit cause code、清 MIE、跳 mtvec。在 direct mode 下，无论接受的是 MEIP 还是 MTIP，mtvec 都是同一个地址，硬件动作没有差异。优先级在这里只负责在多个 pending 同拍时决定**把哪个 interrupt code 写入 mcause**，供软件 handler 做后续分发。因此，interrupt 优先级本质上是一个 cause code 选择器，不是多路径硬件选择器。
+
 ## 第5章 TIMER0 MMIO 规划
 
 ### 5.1 timer 在当前地址图中的位置

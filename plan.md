@@ -38,12 +38,14 @@
 中断与 trap/MRET 优先级：
 
 ```text
-同步 exception > MRET+MEIP > MRET+MTIP > CSR写+MEIP > CSR写+MTIP > MRET > MEIP > MTIP > 普通指令提交
+同步 exception > MRET+interrupt > CSR写+interrupt > MRET > interrupt > 普通指令提交
 ```
 
 `MRET+interrupt` 表示当前 MEM 指令为 MRET，且同一提交边界已经满足 interrupt 接受条件。此时先按 MRET 的目标地址作为 interrupt return PC，再直接进入 interrupt handler。
 
-`CSR写+interrupt` 表示当前 MEM 指令为合法 CSR 写，且该 CSR 写提交后的状态满足 interrupt 接受条件。此时语义等价于“先提交 CSR 写，再接受 interrupt”，不能吞掉 CSR 写。`MEIP > MTIP` 是本阶段固定选择；后续若加入 PLIC 或更完整平台，可以再调整。
+`CSR写+interrupt` 表示当前 MEM 指令为合法 CSR 写，且该 CSR 写提交后的状态满足 interrupt 接受条件。此时语义等价于“先提交 CSR 写，再接受 interrupt”，不能吞掉 CSR 写。
+
+`MEIP > MTIP` 是本阶段固定 interrupt cause 选择；后续若加入 PLIC 或更完整平台，可以再调整。它只决定同拍多个 interrupt pending 时写入 `mcause` 的 interrupt code，不改变 redirect/kill 行为。
 
 ## 1. 公共常量和类型 `已完成`
 
@@ -245,13 +247,19 @@ input core_pkg::excp_cause_e trap_cause_i
 ```systemverilog
 output logic [core_pkg::XLEN-1:0] mstatus_o;
 output logic [core_pkg::XLEN-1:0] mstatus_commit_o;
+output logic [core_pkg::XLEN-1:0] mie_o;
 output logic [core_pkg::XLEN-1:0] mie_commit_o;
+output logic [core_pkg::XLEN-1:0] mtvec_o;
 output logic [core_pkg::XLEN-1:0] mtvec_commit_o;
 output logic [core_pkg::XLEN-1:0] mepc_o;
 output logic [core_pkg::XLEN-1:0] mip_o;
 ```
 
-当前实现不再单独输出 `mie_o/mtvec_o`。`trap_ctrl` 需要的中断使能视图来自 `mie_commit_o`，trap 入口地址来自 `mtvec_commit_o`；在没有合法普通 CSR 写时，这两个 commit view 就等于当前 CSR 值。
+当前实现同时输出 CSR 当前值和普通 CSR 写后的 commit view：
+
+- `mie_o/mtvec_o` 是当前寄存器值，普通 interrupt、MRET+interrupt 和 exception redirect 使用它们，语义直观。
+- `mie_commit_o/mtvec_commit_o` 是普通 CSR 写提交后的值，专门用于 `CSR写+interrupt` 这种同拍复合提交。
+- 在没有合法普通 CSR 写时，commit view 仍等于当前 CSR 值，但计划中不强制所有路径都复用 commit view。
 
 ### 3.2 新增 CSR storage `已完成`
 
@@ -292,11 +300,13 @@ CSR_ADDR_MIP: csr_rdata_o = mip;
 
 ```systemverilog
 mstatus_o = mstatus;
+mie_o     = mie;
+mtvec_o   = mtvec;
 mepc_o    = mepc;
 mip_o     = mip;
 ```
 
-`mie` 和 `mtvec` 当前不直接对外输出，只通过 `mie_commit_o/mtvec_commit_o` 给 `trap_ctrl` 使用。
+`mie_commit_o/mtvec_commit_o` 在后续 `CSR_STATUS_OUT` 中生成，用来描述普通 CSR 写提交后的视图。
 
 ### 3.4 CSR write illegal 检测 `已完成`
 
@@ -481,24 +491,26 @@ mie_commit_o     = mie;
 mtvec_commit_o   = mtvec;
 ```
 
-- 同时输出当前 `mstatus_o/mepc_o/mip_o`。
+- 同时输出当前 `mstatus_o/mie_o/mtvec_o/mepc_o/mip_o`。
 - 当 `csr_valid_i && csr_write_en_i && !csr_illegal_o` 且地址命中 `mstatus/mie/mtvec` 时，用 `csr_warl` 覆盖对应提交视图。
 - commit view 不包含 MRET 后的硬件写效果。`MRET+interrupt` 是否可接受由 `trap_ctrl` 看旧 `mstatus_o[MSTATUS_MPIE_BIT]` 判断；如果把 MRET 后的结果也放入 commit view，反而容易和 `trap_ctrl -> csr_file` 的硬件写控制形成组合环。
-- `trap_ctrl` 用这些提交视图判断普通 interrupt / CSR写同拍 interrupt 是否可接受，并用 `mtvec_commit_o` 作为所有 trap entry redirect 目标。
+- `trap_ctrl` 用当前 CSR 值处理普通 interrupt、MRET+interrupt 和 exception redirect；用 commit view 处理 `CSR写+interrupt` 的中断使能判断和 redirect。
 
 一条 MEM 指令要么是普通 Zicsr 指令，要么是 MRET，不存在“CSR写 + MRET+interrupt”这种同一条指令同时成立的情况。
 
 纯 CSR 读指令不修改 CSR 状态，可以按普通指令处理；如果同拍接受 interrupt，仍然不 kill MEM/WB 输入，保证 CSR 读出的 rd 写回可以正常完成。
 
-## 4. trap_ctrl 扩展 `执行中`
+## 4. trap_ctrl 扩展 `已完成`
 
-### 4.1 修改 `rtl/core/trap_ctrl.sv` 端口 `未完成`
+### 4.1 修改 `rtl/core/trap_ctrl.sv` 端口 `已完成`
 
 新增/调整输入：
 
 ```systemverilog
 input logic [core_pkg::XLEN-1:0] mem_interrupt_return_pc_i;
 input logic [core_pkg::XLEN-1:0] csr_mstatus_i;
+input logic [core_pkg::XLEN-1:0] csr_mie_i;
+input logic [core_pkg::XLEN-1:0] csr_mtvec_i;
 input logic [core_pkg::XLEN-1:0] csr_mip_i;
 input logic                      mem_csr_write_en_i;
 ```
@@ -513,10 +525,10 @@ input logic [core_pkg::XLEN-1:0] csr_mie_commit_i;
 input logic [core_pkg::XLEN-1:0] csr_mtvec_commit_i;
 ```
 
-`trap_ctrl` 不再接 `csr_mie_i/csr_mtvec_i`：
+`trap_ctrl` 同时接当前值和 commit view：
 
-- 中断使能判断使用 `csr_mie_commit_i`。没有合法 CSR 写 `mie` 时，它等于当前 `mie`。
-- 所有 trap entry redirect 使用 `csr_mtvec_commit_i`。没有合法 CSR 写 `mtvec` 时，它等于当前 `mtvec`；同拍写 `mtvec` 并接受 interrupt 时，则跳到新入口。
+- 当前 `csr_mie_i/csr_mtvec_i` 用于普通 interrupt、MRET+interrupt 和 exception trap entry。
+- `csr_mie_commit_i/csr_mtvec_commit_i` 只用于 `CSR写+interrupt`，保证同拍写 `mie/mtvec` 后按新值判断和跳转。
 - 普通 MRET redirect 仍使用 `csr_mepc_i`。
 
 新增输出：
@@ -539,34 +551,44 @@ trap_cause_code_o     // mcause 低 5 bit
 trap_tval_o           // interrupt 时为 0
 ```
 
-### 4.2 生成 interrupt pending `未完成`
+### 4.2 生成 interrupt request/accept `已完成`
 
 组合逻辑：
 
 ```text
-global_en = csr_mstatus_commit_i[MSTATUS_MIE_BIT]
-mtip_en   = csr_mie_commit_i[MIE_MTIE_BIT]
-meip_en   = csr_mie_commit_i[MIE_MEIE_BIT]
+global_en = csr_mstatus_i[MSTATUS_MIE_BIT]
+mtip_en   = csr_mie_i[MIE_MTIE_BIT]
+meip_en   = csr_mie_i[MIE_MEIE_BIT]
 mtip_pend = csr_mip_i[MIP_MTIP_BIT]
 meip_pend = csr_mip_i[MIP_MEIP_BIT]
 ```
 
-普通指令 / CSR 写提交后的有效 interrupt：
+普通指令提交后的 interrupt request：
 
 ```text
-meip_take = global_en & meip_en & meip_pend
-mtip_take = global_en & mtip_en & mtip_pend
+irq_only_meip_request = global_en & meip_en & meip_pend
+irq_only_mtip_request = global_en & mtip_en & mtip_pend
+```
+
+CSR 写同拍 interrupt 单独使用 commit view：
+
+```text
+csr_global_en     = csr_mstatus_commit_i[MSTATUS_MIE_BIT]
+csr_mtip_en       = csr_mie_commit_i[MIE_MTIE_BIT]
+csr_meip_en       = csr_mie_commit_i[MIE_MEIE_BIT]
+csr_meip_request = csr_global_en & csr_meip_en & meip_pend
+csr_mtip_request = csr_global_en & csr_mtip_en & mtip_pend
 ```
 
 MRET 同拍 interrupt 需要单独判断，因为 MRET 后的 `MIE` 来自旧 `MPIE`，不是旧 `MIE`：
 
 ```text
 mret_global_en = csr_mstatus_i[MSTATUS_MPIE_BIT]
-mret_meip_take = mret_global_en & meip_en & meip_pend
-mret_mtip_take = mret_global_en & mtip_en & mtip_pend
+mret_meip_request = mret_global_en & meip_en & meip_pend
+mret_mtip_request = mret_global_en & mtip_en & mtip_pend
 ```
 
-这里的 `meip_en/mtip_en` 仍来自 `csr_mie_commit_i`。对于 MRET 指令，当前 MEM 指令不是 CSR 写，所以 commit view 与当前 `mie` 等价。
+这里的 `meip_en/mtip_en` 来自当前 `csr_mie_i`。MRET 指令不是 CSR 写，因此无需看 `mie_commit_i`。
 
 优先级：
 
@@ -574,61 +596,64 @@ mret_mtip_take = mret_global_en & mtip_en & mtip_pend
 MEIP > MTIP
 ```
 
-具体实现建议：
+当前实现口径：
 
-- 在 `rtl/core/trap_ctrl.sv` 中补齐现有 interrupt 相关 wire 的分号。
-- 新增统一 interrupt 选择信号：
+- `request` 表示 interrupt pending/enable 条件满足。
+- `accept` 表示在有效 MEM/commit 边界、且没有同步 exception 时真正接受 interrupt。
+- `MRET+interrupt` 和 `CSR写+interrupt` 的 request 先用对应提交类型限定，避免没有 MRET/CSR 写时误判该路径成立。
 
 ```systemverilog
-wire irq_meip_take      = irq_global_en & irq_meip_en & irq_meip_pending;
-wire irq_mtip_take      = irq_global_en & irq_mtip_en & irq_mtip_pending;
-wire irq_take           = irq_meip_take | irq_mtip_take;
+wire exception_trap = mem_valid_i &  exception_valid;
+wire mret_accept    = mem_valid_i & !exception_valid &  mem_mret_i;
+wire csr_we_accept  = mem_valid_i & !exception_valid &  mem_csr_valid_i &  mem_csr_write_en_i;
 
-wire mret_irq_global_en = csr_mstatus_i[MSTATUS_MPIE_BIT];
-wire mret_irq_meip_take = mret_irq_global_en & irq_meip_en & irq_meip_pending;
-wire mret_irq_mtip_take = mret_irq_global_en & irq_mtip_en & irq_mtip_pending;
-wire mret_irq_take      = mret_irq_meip_take | mret_irq_mtip_take;
+wire irq_only_meip_request = !mret_accept & !csr_we_accept & irq_global_en & irq_meip_en & irq_meip_pending;
+wire irq_only_mtip_request = !mret_accept & !csr_we_accept & irq_global_en & irq_mtip_en & irq_mtip_pending;
+wire irq_only_request      = irq_only_meip_request | irq_only_mtip_request;
+
+wire csr_irq_global_en    = csr_mstatus_commit_i[MSTATUS_MIE_BIT];
+wire csr_irq_meip_en      = csr_mie_commit_i[MIE_MEIE_BIT];
+wire csr_irq_mtip_en      = csr_mie_commit_i[MIE_MTIE_BIT];
+wire csr_irq_meip_request = csr_we_accept & csr_irq_global_en & csr_irq_meip_en & irq_meip_pending;
+wire csr_irq_mtip_request = csr_we_accept & csr_irq_global_en & csr_irq_mtip_en & irq_mtip_pending;
+wire csr_irq_request      = csr_irq_meip_request | csr_irq_mtip_request;
+
+wire mret_irq_global_en   = csr_mstatus_i[MSTATUS_MPIE_BIT];
+wire mret_irq_meip_request = mret_accept & mret_irq_global_en & irq_meip_en & irq_meip_pending;
+wire mret_irq_mtip_request = mret_accept & mret_irq_global_en & irq_mtip_en & irq_mtip_pending;
+wire mret_irq_request      = mret_irq_meip_request | mret_irq_mtip_request;
+
+wire irq_request = irq_only_request | csr_irq_request | mret_irq_request;
+wire irq_accept  = mem_valid_i & !exception_valid & irq_request;
 ```
 
-- cause 选择也要区分普通/CSR interrupt 与 `MRET+interrupt`：
-  - 普通/CSR interrupt 使用 `irq_meip_take/irq_mtip_take` 选择 cause。
-  - `MRET+interrupt` 使用 `mret_irq_meip_take/mret_irq_mtip_take` 选择 cause。
-  - 不能只用普通 `irq_*_take` 生成一个全局 cause 后复用给 MRET 分支，因为可能出现旧 `MIE=0`、旧 `MPIE=1`，普通 interrupt 不成立但 MRET 后 interrupt 成立的情况。
-
-示例口径：
+- cause 最终只需要一套 `irq_cause`，因为同一拍最终只会接受一类 interrupt。
+- 生成 `irq_cause` 时使用汇总后的 `irq_meip_request/irq_mtip_request`，保持 `MEIP > MTIP`。
 
 ```systemverilog
-irq_cause = IRQ_CAUSE_M_EXTERNAL;
-if (irq_meip_take) begin
+wire irq_meip_request = mret_irq_meip_request | csr_irq_meip_request | irq_only_meip_request;
+wire irq_mtip_request = mret_irq_mtip_request | csr_irq_mtip_request | irq_only_mtip_request;
+
+irq_cause = IRQ_CAUSE_M_TIMER;
+if (irq_meip_request) begin
     irq_cause = IRQ_CAUSE_M_EXTERNAL;
 end
-else if (irq_mtip_take) begin
+else if (irq_mtip_request) begin
     irq_cause = IRQ_CAUSE_M_TIMER;
-end
-
-mret_irq_cause = IRQ_CAUSE_M_EXTERNAL;
-if (mret_irq_meip_take) begin
-    mret_irq_cause = IRQ_CAUSE_M_EXTERNAL;
-end
-else if (mret_irq_mtip_take) begin
-    mret_irq_cause = IRQ_CAUSE_M_TIMER;
 end
 ```
 
-### 4.3 trap entry 优先级 `未完成`
+### 4.3 trap entry 优先级 `已完成`
 
-最终优先级：
+控制分支优先级：
 
 ```text
 pipeline_exception
 csr_illegal_exception
-MRET + MEIP
-MRET + MTIP
-CSR write + MEIP
-CSR write + MTIP
+MRET + interrupt
+CSR write + interrupt
 MRET
-MEIP
-MTIP
+interrupt
 none
 ```
 
@@ -636,19 +661,20 @@ none
 
 - `pipeline_exception` 与 `csr_illegal_exception` 都是同步 exception。
 - 同步 exception 优先于 MRET 和 interrupt；如果 MRET 指令本身异常，不能先完成 MRET。
-- 当前 MEM 指令是 MRET 且同拍满足 interrupt 接受条件时，直接支持 `MRET+interrupt` 复合语义：
+- 当前 MEM 指令是 MRET 且同拍满足任一 interrupt 接受条件时，直接支持 `MRET+interrupt` 复合语义：
   - `mret_valid_o = 1`，表示 CSR 文件需要执行 MRET 相关的 `mstatus` 语义。
   - `trap_valid_o = 1` 且 `trap_is_interrupt_o = 1`，表示同一拍接受 interrupt。
   - interrupt 写入 `mepc` 的返回 PC 不是 `mem_interrupt_return_pc_i`，而是 `csr_mepc_i`，也就是 MRET 本来要跳回的位置。
-  - 最终 redirect 目标是 `csr_mtvec_commit_i`，因为本拍最终进入 interrupt handler，而不是跳回 `mepc` 后继续执行。MRET 本身不会写 `mtvec`，所以该值等价于当前 `mtvec`。
-- 当前 MEM 指令是合法 CSR 写且该 CSR 写提交后的状态满足 interrupt 接受条件时，直接支持 `CSR写+interrupt` 复合语义：
+  - 最终 redirect 目标是当前 `csr_mtvec_i`，因为本拍最终进入 interrupt handler，而不是跳回 `mepc` 后继续执行。MRET 本身不会写 `mtvec`。
+- 当前 MEM 指令是合法 CSR 写且该 CSR 写提交后的状态满足任一 interrupt 接受条件时，直接支持 `CSR写+interrupt` 复合语义：
   - 普通 CSR 写不能被吞掉，`csr_file` 需要同时完成普通 CSR 写和 interrupt trap entry 的合并更新。
   - interrupt enable 判断使用 `csr_mstatus_commit_i/csr_mie_commit_i`，而不是旧 CSR 值。
   - redirect 目标使用 `csr_mtvec_commit_i`，使同拍写 `mtvec` 后发生 interrupt 时跳到新入口。
 - 当前 MEM 指令是 MRET 但没有有效 interrupt 时，执行普通 MRET，redirect 到 `csr_mepc_i`。
 - interrupt 只在 `mem_valid_i=1` 的提交边界接受。
+- `MEIP > MTIP` 只体现在 `irq_cause` 选择上。二者同拍 pending 时，本次 trap 的 `mcause` 写 external interrupt；进入 handler、kill younger 指令、是否保留 MEM/WB 等控制动作不区分 MEIP/MTIP。
 
-具体实现建议：
+当前实现：
 
 - 保留已有：
 
@@ -660,25 +686,21 @@ wire csr_illegal_exception = mem_valid_i & mem_csr_valid_i & mem_csr_illegal_i;
 - 新增：
 
 ```systemverilog
-wire exception_trap_valid = pipeline_exception | csr_illegal_exception;
-wire mret_request         = mem_valid_i & mem_mret_i & ~exception_trap_valid;
-wire csr_write_request    = mem_valid_i & mem_csr_valid_i & mem_csr_write_en_i & ~exception_trap_valid;
-wire irq_request          = mem_valid_i & irq_take & ~exception_trap_valid;
-wire mret_irq_request     = mret_request & mret_irq_take;
-wire csr_irq_request      = csr_write_request & irq_take;
-wire normal_irq_request   = irq_request & ~mem_mret_i & ~csr_write_request;
+wire exception_trap = mem_valid_i &  exception_valid;
+wire mret_accept    = mem_valid_i & !exception_valid &  mem_mret_i;
+wire csr_we_accept  = mem_valid_i & !exception_valid &  mem_csr_valid_i &  mem_csr_write_en_i;
+wire irq_accept     = mem_valid_i & !exception_valid & irq_request;
 ```
 
 说明：
 
-- `mret_request` 要被 exception 屏蔽，因为 MRET 指令如果本身异常，不能完成 MRET。
-- `irq_request` 也要被 exception 屏蔽，保证同步 exception 优先。
-- `mret_irq_request` 使用 old `MPIE` 判断 MRET 后是否允许 interrupt；普通/CSR interrupt 使用提交视图中的 `MIE`。
-- `csr_write_request` 要被 exception 屏蔽，但不屏蔽 interrupt；若 interrupt 同拍成立，则进入 `csr_irq_request` 分支，表示普通 CSR 写与 interrupt 同拍提交。
-- `mret_irq_request`、`csr_irq_request` 和 `normal_irq_request` 是互斥的，便于后面输出。
-- 也可以不完全照抄这些 wire 名，只要最终输出语义一致即可。
+- `mret_accept/csr_we_accept/irq_accept` 都被同步 exception 屏蔽。
+- `mret_accept` 与 `csr_we_accept` 用名字表示“当前 MEM 指令自身在本边界提交”，不是 interrupt trap entry。
+- `irq_request` 表示中断条件请求，`irq_accept` 才表示本拍真正接受 interrupt。
+- `MRET+interrupt` 使用 old `MPIE` 判断 MRET 后是否允许 interrupt；普通 interrupt 使用当前 `MIE`；`CSR写+interrupt` 使用 commit view 中的 `MIE`。
+- `mret_accept` 优先于 `csr_we_accept`；正常译码下一条指令不会同时是 MRET 和 CSR 写，这里也形成防御性优先级。
 
-### 4.4 exception 和 interrupt 输出差异 `未完成`
+### 4.4 exception 和 interrupt 输出差异 `已完成`
 
 同步 exception：
 
@@ -688,7 +710,7 @@ trap_is_interrupt_o = 0
 trap_pc_o           = mem_pc_i
 trap_cause_code_o   = exception cause code
 trap_tval_o         = exception tval
-redirect_pc_o       = csr_mtvec_commit_i
+redirect_pc_o       = csr_mtvec_i
 kill IF/ID, ID/EX, EX/MEM
 kill MEM/WB 输入
 ```
@@ -701,7 +723,7 @@ trap_is_interrupt_o = 0
 trap_pc_o           = mem_pc_i
 trap_cause_code_o   = ILLEGAL_INSTR
 trap_tval_o         = mem_instr_i
-redirect_pc_o       = csr_mtvec_commit_i
+redirect_pc_o       = csr_mtvec_i
 kill IF/ID, ID/EX, EX/MEM
 kill MEM/WB 输入
 ```
@@ -714,7 +736,7 @@ trap_is_interrupt_o = 1
 trap_pc_o           = mem_interrupt_return_pc_i
 trap_cause_code_o   = IRQ_CAUSE_M_EXTERNAL 或 IRQ_CAUSE_M_TIMER
 trap_tval_o         = 0
-redirect_pc_o       = csr_mtvec_commit_i
+redirect_pc_o       = csr_mtvec_i
 kill IF/ID, ID/EX, EX/MEM
 不 kill MEM/WB 输入
 ```
@@ -745,7 +767,7 @@ trap_pc_o           = csr_mepc_i
 trap_cause_code_o   = IRQ_CAUSE_M_EXTERNAL 或 IRQ_CAUSE_M_TIMER
 trap_tval_o         = 0
 mret_valid_o        = 1
-redirect_pc_o       = csr_mtvec_commit_i
+redirect_pc_o       = csr_mtvec_i
 kill IF/ID, ID/EX, EX/MEM
 kill MEM/WB 输入
 ```
@@ -769,50 +791,46 @@ kill MEM/WB 输入
 
 MRET 是否 kill MEM/WB 输入沿用当前实现即可。MRET 本身没有普通 WB 行为，让它不进入 WB 更符合当前 trap_ctrl 语义。
 
-### 4.5 `TRAP_ENTRY` 组合块改造 `未完成`
+### 4.5 `TRAP_CTRL` 组合块改造 `已完成`
 
-当前 `TRAP_ENTRY` 组合块只处理 exception，且后面的 `assign` 仍按 `trap_valid_o | mret_valid_o` 简单生成 redirect/kill。本阶段需要把 trap/MRET/interrupt 输出统一放进一个组合块，避免多个 `assign` 分散后互相覆盖。
+原 `TRAP_ENTRY` 组合块只处理 exception，且后面的 `assign` 仍按 `trap_valid_o | mret_valid_o` 简单生成 redirect/kill。当前已改为一个统一的 `TRAP_CTRL` 组合块生成 trap/MRET/interrupt 输出，kill 输出则单独用组合 assign 表达。
 
-建议改法：
+当前实现：
 
-- 删除或改写当前只计算 exception 的 `always_comb begin : TRAP_ENTRY`。
-- 删除当前这些简单 assign：
+- 删除原只计算 exception 的 `always_comb begin : TRAP_ENTRY`。
+- 删除原先这些简单 assign：
 
 ```systemverilog
 assign mret_valid_o     = mem_valid_i & mem_mret_i & ~trap_valid_o;
 assign redirect_valid_o = trap_valid_o | mret_valid_o;
-assign redirect_pc_o    = trap_valid_o ? csr_mtvec_commit_i : mret_valid_o ? csr_mepc_i : '0;
+assign redirect_pc_o    = trap_valid_o ? csr_mtvec_i : mret_valid_o ? csr_mepc_i : '0;
 assign kill_if_id_o     = redirect_valid_o;
 assign kill_id_ex_o     = redirect_valid_o;
 assign kill_ex_mem_o    = redirect_valid_o;
 assign kill_mem_wb_o    = redirect_valid_o;
 ```
 
-- 在新的组合块里先给所有输出默认值：
+- 在新的组合块里集中生成输出。当前实现先给出无副作用默认值，并让 trap 相关只在 `trap_valid_o=1` 时有意义：
 
 ```systemverilog
-trap_valid_o        = 1'b0;
-trap_pc_o           = '0;
-trap_is_interrupt_o = 1'b0;
-trap_cause_code_o   = EXCEPTION_CAUSE_ILLEGAL_INSTR;
+trap_valid_o        = exception_trap | irq_accept;
+trap_pc_o           = exception_trap ? mem_pc_i : mem_interrupt_return_pc_i;
+trap_is_interrupt_o = exception_trap ? 1'b0 : 1'b1;
+trap_cause_code_o   = exception_trap ? 5'(exception_cause) : 5'(irq_cause);
 trap_tval_o         = '0;
 mret_valid_o        = 1'b0;
 redirect_valid_o    = 1'b0;
-redirect_pc_o       = '0;
-kill_if_id_o        = 1'b0;
-kill_id_ex_o        = 1'b0;
-kill_ex_mem_o       = 1'b0;
-kill_mem_wb_o       = 1'b0;
+redirect_pc_o       = csr_mtvec_i;
 ```
 
-- 然后按 4.3 优先级写 `if/else if`：
+- 然后按 4.3 控制分支优先级写 `if/else if`：
 
 ```text
-exception_trap_valid
-MRET + MEIP/MTIP
-CSR写 + MEIP/MTIP
+exception_trap
+MRET + interrupt
+CSR写 + interrupt
 MRET
-MEIP/MTIP
+interrupt
 none
 ```
 
@@ -829,11 +847,11 @@ csr_illegal_exception -> cause=ILLEGAL_INSTR, tval=mem_instr_i
 trap_valid_o        = 1
 trap_is_interrupt_o = 1
 trap_pc_o           = csr_mepc_i
-trap_cause_code_o   = mret_irq_cause
+trap_cause_code_o   = irq_cause
 trap_tval_o         = 0
 mret_valid_o        = 1
 redirect_valid_o    = 1
-redirect_pc_o       = csr_mtvec_commit_i
+redirect_pc_o       = csr_mtvec_i
 kill IF/ID, ID/EX, EX/MEM, MEM/WB
 ```
 
@@ -872,22 +890,23 @@ trap_cause_code_o   = irq_cause
 trap_tval_o         = 0
 mret_valid_o        = 0
 redirect_valid_o    = 1
-redirect_pc_o       = csr_mtvec_commit_i
+redirect_pc_o       = csr_mtvec_i
 kill IF/ID, ID/EX, EX/MEM
 不 kill MEM/WB
 ```
 
-### 4.6 `kill_mem_wb_o` 语义修正 `未完成`
+### 4.6 `kill_mem_wb_o` 语义修正 `已完成`
 
-当前 `kill_mem_wb_o = redirect_valid_o`。
-
-本阶段需要改为：
+当前实现：
 
 ```text
-kill_mem_wb_o = exception_trap_valid | mret_valid
+kill_if_id_o   = exception_trap | irq_accept | mret_accept
+kill_id_ex_o   = exception_trap | irq_accept | mret_accept
+kill_ex_mem_o  = exception_trap | irq_accept | mret_accept
+kill_mem_wb_o  = exception_trap | mret_accept
 ```
 
-不能包含 interrupt trap。
+`kill_mem_wb_o` 不包含普通 interrupt trap。
 
 原因：
 
@@ -896,9 +915,9 @@ kill_mem_wb_o = exception_trap_valid | mret_valid
 - interrupt：当前 MEM 指令是旧指令，应允许正常完成；interrupt 在它之后被接受。
 - CSR写+interrupt：当前 MEM 指令是正常提交的 CSR 指令，不应 kill MEM/WB 输入，否则会吞掉 rd 写回；CSR 状态合并写由 `csr_file` 内部处理。
 
-注意：`MRET+interrupt` 同拍时 `mret_valid_o=1`，因此仍然 kill MEM/WB 输入。这里 kill 的是 MRET 指令本身，不是被 interrupt 打断的普通旧指令。
+注意：`MRET+interrupt` 同拍时 `mret_accept=1`，因此仍然 kill MEM/WB 输入。这里 kill 的是 MRET 指令本身，不是被 interrupt 打断的普通旧指令。
 
-## 5. core 顶层接线
+## 5. core 顶层接线 `执行中`
 
 ### 5.1 修改 `rtl/core/core.sv` 端口
 
@@ -933,6 +952,8 @@ output logic [4:0] trap_cause_code_o
 ```systemverilog
 wire [core_pkg::XLEN-1:0] csr_mip;
 wire [core_pkg::XLEN-1:0] csr_mstatus;
+wire [core_pkg::XLEN-1:0] csr_mie;
+wire [core_pkg::XLEN-1:0] csr_mtvec;
 wire [core_pkg::XLEN-1:0] csr_mstatus_commit;
 wire [core_pkg::XLEN-1:0] csr_mie_commit;
 wire [core_pkg::XLEN-1:0] csr_mtvec_commit;
@@ -942,7 +963,7 @@ wire [4:0]                trap_cause_code;
 wire [core_pkg::XLEN-1:0] ex_next_pc;
 ```
 
-删除/替换旧的 `csr_mtvec`、`csr_mie` 线。当前 `csr_file` 不再输出这两个原值；`csr_mtvec_commit` 和 `csr_mie_commit` 在无合法普通 CSR 写时就等价于原值。
+`csr_mie/csr_mtvec` 是当前 CSR 值，`csr_mie_commit/csr_mtvec_commit` 是普通 CSR 写提交后的视图。两类信号都保留，便于 `trap_ctrl` 按不同路径选择。
 
 ### 5.3 ex_stage 实例连接
 
@@ -968,18 +989,13 @@ assign ex_mem_data_d.next_pc = ex_next_pc;
 .trap_is_interrupt_i (trap_is_interrupt),
 .trap_cause_code_i   (trap_cause_code),
 .mstatus_o           (csr_mstatus),
+.mie_o               (csr_mie),
+.mtvec_o             (csr_mtvec),
 .mstatus_commit_o    (csr_mstatus_commit),
 .mie_commit_o        (csr_mie_commit),
 .mtvec_commit_o      (csr_mtvec_commit),
 .mepc_o              (csr_mepc),
 .mip_o               (csr_mip)
-```
-
-同步删除旧连接：
-
-```systemverilog
-.mtvec_o (...)
-.mie_o   (...)
 ```
 
 如果 `csr_file` 端口从 `trap_cause_i` 改为 `trap_cause_code_i`，同步替换原连接。`trap_cause_code_i` 的输入类型是低 5 bit code，不能继续直接接 `excp_cause_e` 类型的旧 `trap_cause` 信号。
@@ -992,6 +1008,8 @@ assign ex_mem_data_d.next_pc = ex_next_pc;
 .mem_interrupt_return_pc_i (ex_mem_data_q.next_pc),
 .mem_csr_write_en_i        (ex_mem_data_q.csr_write_en),
 .csr_mstatus_i             (csr_mstatus),
+.csr_mie_i                 (csr_mie),
+.csr_mtvec_i               (csr_mtvec),
 .csr_mip_i                 (csr_mip),
 .csr_mstatus_commit_i      (csr_mstatus_commit),
 .csr_mie_commit_i          (csr_mie_commit),

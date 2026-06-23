@@ -553,51 +553,64 @@ module core (
         .trap_valid_i       (trap_valid),
         .trap_pc_i          (trap_pc),
         .trap_is_interrupt_i(1'b0),     // 暂时接 0 ，第 5 步改
-        .trap_cause_code_i  (trap_cause),
+        .trap_cause_code_i  (5'(trap_cause)),
         .trap_tval_i        (trap_tval),
 
         .mret_valid_i       (mret_valid),
 
-        .mtip_i             (1'b0),
-        .meip_i             (1'b0),
+        .mtip_i             (1'b0),// 暂时接 0 ，第 5 步改
+        .meip_i             (1'b0),// 暂时接 0 ，第 5 步改
 
-        .mtvec_o            (csr_mtvec),
-        .mepc_o             (csr_mepc),
         .mstatus_o          (csr_mstatus),
+        .mstatus_commit_o   (),
         .mie_o              (),
+        .mie_commit_o       (),
+        .mtvec_o            (csr_mtvec),
+        .mtvec_commit_o     (),
+        .mepc_o             (csr_mepc),
         .mip_o              ()
     );
 
     trap_ctrl u_trap_ctrl (
-        .mem_valid_i            (ex_mem_valid),
-        .mem_pc_i               (ex_mem_data_q.pc),
-        .mem_instr_i            (ex_mem_data_q.instr),
-        .mem_mret_i             (ex_mem_data_q.mret),
+        .mem_valid_i                (ex_mem_valid),
+        .mem_pc_i                   (ex_mem_data_q.pc),
+        .mem_instr_i                (ex_mem_data_q.instr),
+        .mem_mret_i                 (ex_mem_data_q.mret),
 
-        .mem_exception_valid_i  (mem_exception_valid),
-        .mem_exception_cause_i  (mem_exception_cause),
-        .mem_exception_tval_i   (mem_exception_tval),
+        .mem_exception_valid_i      (mem_exception_valid),
+        .mem_exception_cause_i      (mem_exception_cause),
+        .mem_exception_tval_i       (mem_exception_tval),
 
-        .mem_csr_valid_i        (mem_csr_valid),
-        .mem_csr_illegal_i      (mem_csr_illegal),
+        .mem_csr_valid_i            (mem_csr_valid),
+        .mem_csr_illegal_i          (mem_csr_illegal),
 
-        .csr_mtvec_i            (csr_mtvec),
-        .csr_mepc_i             (csr_mepc),
+        .csr_mtvec_i                (csr_mtvec),
+        .csr_mepc_i                 (csr_mepc),
 
-        .trap_valid_o           (trap_valid),
-        .trap_pc_o              (trap_pc),
-        .trap_cause_o           (trap_cause),
-        .trap_tval_o            (trap_tval),
+        .mem_interrupt_return_pc_i  ('0),// 暂时接 0 ，第 5 步改
+        .csr_mstatus_i              ('0),// 暂时接 0 ，第 5 步改
+        .csr_mie_i                  ('0),// 暂时接 0 ，第 5 步改
+        .csr_mip_i                  ('0),// 暂时接 0 ，第 5 步改
+        .mem_csr_write_en_i         ('0),// 暂时接 0 ，第 5 步改
+        .csr_mstatus_commit_i       ('0),// 暂时接 0 ，第 5 步改
+        .csr_mie_commit_i           ('0),// 暂时接 0 ，第 5 步改
+        .csr_mtvec_commit_i         ('0),// 暂时接 0 ，第 5 步改
 
-        .mret_valid_o           (mret_valid),
+        .trap_valid_o               (trap_valid),
+        .trap_pc_o                  (trap_pc),
+        .trap_is_interrupt_o        (),
+        .trap_cause_code_o          (5'(trap_cause)),
+        .trap_tval_o                (trap_tval),
 
-        .redirect_valid_o       (trap_redirect_valid),
-        .redirect_pc_o          (trap_redirect_pc),
+        .mret_valid_o               (mret_valid),
 
-        .kill_if_id_o           (kill_if_id),
-        .kill_id_ex_o           (kill_id_ex),
-        .kill_ex_mem_o          (kill_ex_mem),
-        .kill_mem_wb_o          (kill_mem_wb)
+        .redirect_valid_o           (trap_redirect_valid),
+        .redirect_pc_o              (trap_redirect_pc),
+
+        .kill_if_id_o               (kill_if_id),
+        .kill_id_ex_o               (kill_id_ex),
+        .kill_ex_mem_o              (kill_ex_mem),
+        .kill_mem_wb_o              (kill_mem_wb)
     );
 
     // trap/MRET 随流水线在 MEM 边界精确提交，这里只把观察信号导出给 testbench。
