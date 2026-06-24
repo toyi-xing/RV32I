@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0302_pipeline5_fwd_noredirect.S - RV32I data hazard forwarding + load-use test
 #
@@ -38,7 +40,8 @@ _start:
 
 .section .text
 test_main:
-    lui   x10, 0x40           # x10 = DMEM_BASE = 0x00040000
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)           # x10 = DMEM_BASE = 0x00040000
 
     # ---- 1+2: EX/MEM->EX + MEM/WB->EX, WB_ALU ----
     # x4 = 1 (若两段 forwarding 都正常)
@@ -79,7 +82,7 @@ test_main:
     add   x4, x4, x16         # x4 = 6+3 = 9 (正), 或不为 9
     addi  x4, x4, -8          # x4 = 1 (正), 或不为 1 (转发路径出错)
     # 验证结果: 任意转发/load-use 路径出错 => x4 != 1 => testbench 不打印 PASS
-    sw    x4, 0x100(x10)      # dmem[DMEM_BASE+0x100] = 1 (正), PASS
+    sw    x4, TEST_STATUS_OFFSET(x10)      # dmem[DMEM_BASE+0x100] = 1 (正), PASS
 
     # ---- 收尾 ----
     nop

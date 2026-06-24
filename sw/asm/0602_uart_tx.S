@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0602_uart_tx.S - UART0 TX MMIO smoke test
 #
@@ -11,12 +13,6 @@
 #   - 写 TXDATA 后程序最终写 DMEM_BASE+0x100 = 1。
 #===============================================================================
 
-.equ DMEM_BASE_HI,       0x40
-.equ UART0_BASE_HI,      0x82
-.equ TEST_STATUS_OFF,    0x100
-.equ UART_TXDATA_OFF,    0x000
-.equ UART_STATUS_OFF,    0x004
-.equ UART_CTRL_OFF,      0x008
 
 .section .text.init
 .globl _start
@@ -26,19 +22,21 @@ _start:
 
 .section .text
 test_main:
-    lui   x20, DMEM_BASE_HI       # x20 = DMEM_BASE
-    lui   x21, UART0_BASE_HI      # x21 = UART0_BASE = 0x00082000
+    lui   x20, %hi(DMEM_BASE)
+    addi  x20, x20, %lo(DMEM_BASE)       # x20 = DMEM_BASE
+    lui   x21, %hi(UART0_BASE)
+    addi  x21, x21, %lo(UART0_BASE)      # x21 = UART0_BASE = 0x00082000
 
     # =========================================================================
     # UART 使能 — 写 UART_CTRL.enable = 1
     # =========================================================================
     addi  x5, x0, 1
-    sw    x5, UART_CTRL_OFF(x21)  # UART0_CTRL = 1 → 使能 TX
+    sw    x5, UART_CTRL_OFFSET(x21)  # UART0_CTRL = 1 → 使能 TX
 
     # =========================================================================
     # STATUS 轮询 — 检查 UART_STATUS.ready 是否为 1
     # =========================================================================
-    lw    x6, UART_STATUS_OFF(x21)   # 读 STATUS
+    lw    x6, UART_STATUS_OFFSET(x21)   # 读 STATUS
     andi  x6, x6, 1                  # 只保留 bit0 (ready)
     beq   x6, x0, fail               # ready=0 → 外设未就绪，FAIL
 
@@ -46,26 +44,26 @@ test_main:
     # TX 发送 — 连续发送 "UART\n" 字符串
     # =========================================================================
     addi  x5, x0, 'U'
-    sw    x5, UART_TXDATA_OFF(x21)   # TX 'U'
+    sw    x5, UART_TXDATA_OFFSET(x21)   # TX 'U'
     addi  x5, x0, 'A'
-    sw    x5, UART_TXDATA_OFF(x21)   # TX 'A'
+    sw    x5, UART_TXDATA_OFFSET(x21)   # TX 'A'
     addi  x5, x0, 'R'
-    sw    x5, UART_TXDATA_OFF(x21)   # TX 'R'
+    sw    x5, UART_TXDATA_OFFSET(x21)   # TX 'R'
     addi  x5, x0, 'T'
-    sw    x5, UART_TXDATA_OFF(x21)   # TX 'T'
+    sw    x5, UART_TXDATA_OFFSET(x21)   # TX 'T'
     addi  x5, x0, 10
-    sw    x5, UART_TXDATA_OFF(x21)   # TX '\n'
+    sw    x5, UART_TXDATA_OFFSET(x21)   # TX '\n'
 
     # =========================================================================
     # PASS/FAIL — 写 TEST_STATUS 结束仿真
     # =========================================================================
 pass:
     addi  x5, x0, 1
-    sw    x5, TEST_STATUS_OFF(x20)
+    sw    x5, TEST_STATUS_OFFSET(x20)
 done:
     jal   x0, done
 
 fail:
     addi  x5, x0, 2
-    sw    x5, TEST_STATUS_OFF(x20)
+    sw    x5, TEST_STATUS_OFFSET(x20)
     jal   x0, done

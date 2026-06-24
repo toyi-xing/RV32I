@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0601_soc_smoke.S - SoC wrapper 最小冒烟测试
 #
@@ -29,7 +31,8 @@ test_main:
     # =========================================================================
     # DMEM 访存 — 通过 SoC data_subsystem 写/读 DMEM，验证主线访存通路
     # =========================================================================
-    lui   x10, 0x40           # x10 = DMEM_BASE = 0x00040000
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)           # x10 = DMEM_BASE = 0x00040000
     sw    x3, 0x000(x10)
     lw    x5, 0x000(x10)         # 读回 DMEM[0]，验证 data_subsystem DMEM 通路
     bne   x5, x4, fail
@@ -39,13 +42,14 @@ test_main:
     # =========================================================================
 pass:
     addi  x11, x0, 1
-    sw    x11, 0x100(x10)
+    sw    x11, TEST_STATUS_OFFSET(x10)
 
 done:
     jal   x0, done
 
 fail:
-    lui   x10, 0x40
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)
     addi  x11, x0, 2
-    sw    x11, 0x100(x10)
+    sw    x11, TEST_STATUS_OFFSET(x10)
     jal   x0, fail

@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0301_pipeline5_nofwd_noredirect.S - RV32I five-stage pipeline smoke test without hazards
 #
@@ -29,7 +31,8 @@ test_main:
 
     sub   x3, x1, x2          # x3 = 1
 
-    lui   x10, 0x40           # x10 = DMEM_BASE = 0x00040000
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)           # x10 = DMEM_BASE = 0x00040000
     nop
     nop
     nop
@@ -46,7 +49,7 @@ test_main:
     nop
     nop
 
-    sw    x5, 0x100(x10)      # dmem[DMEM_BASE+0x100] = 1, notify testbench
+    sw    x5, TEST_STATUS_OFFSET(x10)      # dmem[DMEM_BASE+0x100] = 1, notify testbench
 
     # 不跳转收尾，避免触发当前尚未实现的 redirect flush。
     # 留出若干合法 nop，保证 testbench 在取到空 ROM 之前结束。

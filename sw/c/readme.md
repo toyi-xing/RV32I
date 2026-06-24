@@ -82,15 +82,23 @@ SoC 平台提供 `sw/include/platform.h`，封装了 `mmio_read32`/`mmio_write32
 
 ---
 
-## 1.7 timer interrupt 测试 `已通过`
+## 1.7 interrupt 测试 `已通过`
 
 | 文件 | 验证内容 |
 |------|----------|
 | `0751_timer_smoke.c` | 最小 timer interrupt — 配置 TIMER0、开中断、handler 关定时器清 pending、main 检测 flag 后 return 0 |
+| `0752_gpio_irq_basic.c` | GPIO0 外部中断基础行为 — IRQ_EN/IRQ_STATUS 关系、上升/下降/高/低电平四类触发、IRQ_PENDING R/W1C、handler 确认 mcause=MEIP |
+| `0753_uart_rx_irq.c` | UART0 RX 中断 — TB 注入 RX 字节、RXDATA/STATUS/IRQ_PENDING 同步更新、CTRL.rx_irq_enable 门控、读 RXDATA 清 pending、W1C 只清 pending 不消耗数据 |
+| `0754_external_timer_priority.c` | MEIP/MTIP 优先级 — 同时制造 GPIO external pending 和 timer pending，同时开 MEIE+MTIE，验证 first trap 选择 MEIP（MEIP > MTIP）；handler 清 external 后 timer 在第二次进入处理 |
+| `0757_gpio_periodic_irq.c` | TB 固定周期 GPIO 输入精确测量 — 用 TIMER0.MTIME 测量 bit30/bit31 边沿间隔，通过 UART TX 输出测量报告，验证快周期均值 ≈ 200、慢周期均值 ≈ 2000 |
 
 用 `platform.h` 封装的 CSR 访问函数（`csr_write_mie`、`csr_set_mstatus` 等），不再在测试 .c 内重复定义内联汇编。
 
-测试顺序：关全局中断 → 清 `mie` → 配置 `MTIMECMP=16`、`MTIME=0` → 写 `mie.MTIE` → 开启 timer → 开全局中断 → 等待 handler 置 flag。handler 写 `CTRL=0` 停 timer（`MTIP` 随 `CTRL.enable=0` 变为 0），完成 level pending 清除。
+- `0751` 测试顺序：关全局中断 → 清 `mie` → 配置 `MTIMECMP=16`、`MTIME=0` → 写 `mie.MTIE` → 开启 timer → 开全局中断 → 等待 handler 置 flag。handler 写 `CTRL=0` 停 timer（`MTIP` 随 `CTRL.enable=0` 变为 0），完成 level pending 清除。
+- `0752` 分 6 stage，每 stage 使用不同 GPIO bit。Stage1 轮询验证 IRQ_EN+IRQ_STATUS 关系；Stage2~5 分别验证上升沿、下降沿、高电平、低电平四类触发进入 MEIP handler；Stage6 验证 IRQ_PENDING R/W1C 与 IRQ_EN 的联动。handler 通过关 IRQ_EN 阻止电平重触发。
+- `0753` 分 3 stage。Stage1 验证 TB 注入后 RXDATA/STATUS/IRQ_PENDING 同步变化；Stage2 验证 rx_irq_enable=0 时 pending 可置位但不驱动中断，使能后中断触发；Stage3 验证 W1C 只清 pending 不消费 RXDATA，读 RXDATA 同时清 rx_valid 和 pending。
+- `0754` 先在 MIE=0 下同时置 GPIO pending 和 timer pending（MTIMECMP=1），验证入口 mip 同时有 MEIP 和 MTIP；开 MIE 后第一拍进 MEIP handler，清 GPIO 后 mip.MEIP=0、MTIP 仍为 1；第二拍进 MTIP handler 停 timer。
+- `0757` 利用 TB 固有周期翻转（bit30 每 200 拍翻转、bit31 每 2000 拍翻转）作为中断源，用 TIMER0.MTIME 精确测量边沿间隔。handler 记录每个 bit 的首末次 MTIME，main 计算平均间隔 avg = (last − first) / (count − 1) 并通过 UART TX 输出。中断响应延迟在相减中抵消，实际测量值完全匹配 TB 翻转周期（bit30 avg=200、bit31 avg=2000、ratio=10）。
 
 # 2 C 与汇编测试的分工
 
@@ -239,7 +247,7 @@ uint32_t uart_reg(uint32_t base, uint32_t offset);
 // UART_RXDATA_OFFSET = 0x00c, UART_IRQ_PENDING_OFFSET = 0x010
 
 // UART 便捷函数
-void uart_enable(uint32_t base);   // 写 UART_CTRL_ENABLE
+void uart_enable_tx(uint32_t base);   // 写 UART_CTRL_ENABLE
 void uart_putc(uint32_t base, char ch);  // 忙等 READY 后发字符
 ```
 
@@ -268,7 +276,7 @@ void uart_putc(uint32_t base, char ch);  // 忙等 READY 后发字符
 
 4. **UART 使能与状态检查**：
    ```c
-   uart_enable(UART0_BASE);                                     // 写 CTRL
+   uart_enable_tx(UART0_BASE);                                     // 写 CTRL
    value = mmio_read32(uart_reg(UART0_BASE, UART_STATUS_OFFSET));
    if ((value & UART_STATUS_READY) == 0u) return 4;             // 检查 READY
    ```

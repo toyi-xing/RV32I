@@ -54,7 +54,7 @@ int main(void)
     }
 
     // ---- UART 使能与状态检查 ----
-    uart_enable(UART0_BASE);                             // 写 CTRL.enable = 1
+    uart_enable_tx(UART0_BASE);                             // 写 CTRL.enable = 1
     value = mmio_read32(uart_reg(UART0_BASE, UART_STATUS_OFFSET));
     if ((value & UART_STATUS_READY) == 0u) {             // 使能后 READY 应为 1
         return 4;

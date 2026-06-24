@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0501_trap_entry_ecall.S - trap entry 最小 smoke test
 #
@@ -37,18 +39,20 @@ test_main:
 wrong_path:
     # ecall 被接受后，这条路径的所有指令都会被 trap kill。
     # 如果 trap 机制失效，这里会写 DMEM 并无限循环，最终 timeout 或写 FAIL。
-    lui   x10, 0x40               # x10 = DMEM_BASE（wrong path，不应提交）
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)               # x10 = DMEM_BASE（wrong path，不应提交）
     addi  x11, x0, 2              # x11 = 2 = FAIL value（wrong path，不应提交）
-    sw    x11, 0x100(x10)         # wrong path store：trap kill 正常时不应写入 memory
+    sw    x11, TEST_STATUS_OFFSET(x10)         # wrong path store：trap kill 正常时不应写入 memory
     jal   x0, wrong_path
 
 .section .text.trap
 trap_handler:
     # core 被 ecall 重定向到这里。当前 mcause=11（ECALL_M），mepc=ecall 指令 PC。
     # 本 handler 不执行 MRET，直接写 PASS 结束仿真。
-    lui   x10, 0x40               # x10 = DMEM_BASE
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)               # x10 = DMEM_BASE
     addi  x11, x0, 1              # x11 = 1 = PASS value
-    sw    x11, 0x100(x10)         # dmem[DMEM_BASE+0x100] = 1 → testbench 判 PASS
+    sw    x11, TEST_STATUS_OFFSET(x10)         # dmem[DMEM_BASE+0x100] = 1 → testbench 判 PASS
 
 done:
     jal   x0, done

@@ -120,7 +120,7 @@ int main(void)
     }
 
     /* ---- Stage6: UART 多字符串发送 ---- */
-    uart_enable(UART0_BASE);
+    uart_enable_tx(UART0_BASE);
     value = mmio_read32(uart_reg(UART0_BASE, UART_STATUS_OFFSET));
     if ((value & UART_STATUS_READY) == 0u) {
         return 6;

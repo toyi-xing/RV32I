@@ -120,7 +120,7 @@ module trap_ctrl (
         end
     end
     // irq_cause 赋值块
-    // irq 优先级 MTIP > MEIP，但硬件在中断做的事情都是跳到 handler，软件通过看 mcause 才知道是什么 trap
+    // irq 优先级 MEIP > MTIP，但硬件在中断做的事情都是跳到 handler，软件通过看 mcause 才知道是什么 trap
     always_comb begin : IRQ_CAUSE_MUX
         irq_cause = IRQ_CAUSE_M_TIMER;  // 默认值，irq_accept = 0 时无实意
         if (irq_meip_request) begin

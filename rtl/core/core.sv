@@ -4,10 +4,11 @@
 //
 // 综合PPA：
 //   - 该顶层使用 yosys 综合器 + 浙芯 55nm 开源工艺库综合结果：
-//   - 最终面积 27364.40，其中时序单元 16378.60 (59.85%)
-//   - Setup (max) Worst Slack = 17.919 ns  理论上可以跑到 ~481MHz
+//   - 最终面积 28036.12，其中时序单元 16880.36 (60.21%)
+//   - Setup (max) Worst Slack = 18.002 ns  理论上可以跑到 ~500MHz
 //   -  Hold (min) Worst Slack = 0.125 ns
-//   - Total Power = 0.262 W (约 262 mW)
+//   - Total Power = 0.708 W
+//   - 注：功耗数据不可靠，iEDA 功耗计算存在大量"slew is not exist"错误，且开关功耗(Switch Power)为 0，说明 toggle rate 约束未正确生效。
 //
 // 规范：
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。

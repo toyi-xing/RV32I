@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0001_smoke.S — RV32I 基础最小 smoke test
 #
@@ -25,9 +27,10 @@ _start:
 .section .text
 test_main:
     addi  x1, x0, 42         # x1 = 42
-    lui   x10, 0x40          # x10 = DMEM_BASE
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)          # x10 = DMEM_BASE
     addi  x11, x0, 1         # x11 = PASS value
-    sw    x11, 0x100(x10)    # dmem[DMEM_BASE+0x100] = 1
+    sw    x11, TEST_STATUS_OFFSET(x10)    # dmem[DMEM_BASE+0x100] = 1
 
 # 死循环，防止指令继续往下执行到未定义区域
 loop:

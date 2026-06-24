@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0502_exception_full.S - 当前最小 M-mode trap 异常总测试
 #
@@ -19,11 +21,11 @@
 #
 # 失败定位（DMEM_BASE+0x104 保存 error_code）：
 #   100+step：该 step 根本没有进入 trap（wrong-path store 没有被 trap kill）。
-#   200+step：resume 后 handler 未把 TRAP_SEEN_OFF 置位。
+#   200+step：resume 后 handler 未把 TEST_TRAP_SEEN_OFFSET 置位。
 #   300+step：resume 后 wrong-path 的标记值意外写入了 DMEM（trap kill 机制失效）。
-#   400+step：handler 读到的 mcause 不等于预先写入 EXPECT_CAUSE_OFF 的期望值。
-#   500+step：handler 读到的 mepc 不等于预先写入 EXPECT_MEPC_OFF 的期望值。
-#   600+step：handler 读到的 mtval 不等于预先写入 EXPECT_TVAL_OFF 的期望值。
+#   400+step：handler 读到的 mcause 不等于预先写入 TEST_EXPECT_CAUSE_OFFSET 的期望值。
+#   500+step：handler 读到的 mepc 不等于预先写入 TEST_EXPECT_MEPC_OFFSET 的期望值。
+#   600+step：handler 读到的 mtval 不等于预先写入 TEST_EXPECT_TVAL_OFFSET 的期望值。
 #   700+step：store misaligned 错误地产生了写副作用（DMEM_BASE word 被污染）。
 #   800+step：JALR misaligned 未 trap 而跳到了错误目标（step9_bad_target 被执行）。
 #   900：最终 score 不等于 TOTAL_STEPS。
@@ -32,26 +34,10 @@
 #   - 所有 step 全部通过，score == TOTAL_STEPS，写 DMEM_BASE+0x100 = 1。
 #===============================================================================
 
-.equ CAUSE_INST_ADDR_MISALIGNED,   0
-.equ CAUSE_ILLEGAL_INSTR,          2
-.equ CAUSE_BREAKPOINT,             3
-.equ CAUSE_LOAD_ADDR_MISALIGNED,   4
-.equ CAUSE_STORE_ADDR_MISALIGNED,  6
-.equ CAUSE_ECALL_M,                11
 
 .equ TOTAL_STEPS,                  9
 
 # DMEM 偏移量（基于 x20 = DMEM_BASE）
-.equ TEST_STATUS_OFF,              0x100   # TB 通过标志
-.equ ERROR_CODE_OFF,               0x104   # 失败原因编码
-.equ SCORE_OFF,                    0x108   # 当前通过 step 计数
-.equ EXPECT_CAUSE_OFF,             0x10c   # handler 检查：期望的 mcause
-.equ EXPECT_MEPC_OFF,              0x110   # handler 检查：期望的 mepc（fault 指令 PC）
-.equ EXPECT_TVAL_OFF,              0x114   # handler 检查：期望的 mtval
-.equ RESUME_PC_OFF,                0x118   # handler 检查后写入 mepc，mret 返回到此地址
-.equ TRAP_SEEN_OFF,                0x11c   # handler 置位，主流程轮询以确认 trap 已触发
-.equ WRONG_PATH_OFF,               0x120   # wrong-path store 标记：若非 0 说明 trap kill 失败
-.equ STEP_ID_OFF,                  0x124   # 当前 step 编号，用于 error_code 定位
 
 #-------------------------------------------------------------------------------
 # LOAD_LABEL reg, label — 汇编宏（编译期文本替换），不是函数调用。
@@ -71,23 +57,23 @@
 #       mcause/mepc/mtval 逐一比对。
 #
 # 参数说明：
-#   cause        — 期望的 mcause 值（汇编数字常量，如 CAUSE_ECALL_M=11）
+#   cause        — 期望的 mcause 值（汇编数字常量，如 EXCEPTION_CAUSE_ECALL_M=11）
 #   fault_label  — fault 指令所在的 label 名；LOAD_LABEL 取其绝对地址作为期望 mepc
 #   tval_reg     — 期望的 mtval 值所在的寄存器（如 x0 表示期望 mtval=0）
 #   resume_label — 主流程中 resume 地址的 label；handler 会把它写入 mepc 后 mret
 #   step_id      — step 编号（1~9），用于出错时计算 error_code 定位
 #
 # 写入的 DMEM 偏移（基于 x20=DMEM_BASE）：
-#   EXPECT_CAUSE_OFF(0x10c) ← cause
-#   EXPECT_MEPC_OFF(0x110)  ← fault_label 的绝对地址
-#   EXPECT_TVAL_OFF(0x114)  ← tval_reg 的值
-#   RESUME_PC_OFF(0x118)    ← resume_label 的绝对地址
-#   TRAP_SEEN_OFF(0x11c)    ← 0（由 handler 置 1）
-#   WRONG_PATH_OFF(0x120)   ← 0（wrong path 若执行会改写此值）
-#   STEP_ID_OFF(0x124)      ← step_id
+#   TEST_EXPECT_CAUSE_OFFSET(0x10c) ← cause
+#   TEST_EXPECT_MEPC_OFFSET(0x110)  ← fault_label 的绝对地址
+#   TEST_EXPECT_TVAL_OFFSET(0x114)  ← tval_reg 的值
+#   TEST_RESUME_PC_OFFSET(0x118)    ← resume_label 的绝对地址
+#   TEST_TRAP_SEEN_OFFSET(0x11c)    ← 0（由 handler 置 1）
+#   TEST_WRONG_PATH_OFFSET(0x120)   ← 0（wrong path 若执行会改写此值）
+#   TEST_STEP_ID_OFFSET(0x124)      ← step_id
 #
 # 具体流程示例（Step 1 展开后）：
-#   SET_EXPECT CAUSE_ECALL_M, step1_fault, x0, step1_resume, 1
+#   SET_EXPECT EXCEPTION_CAUSE_ECALL_M, step1_fault, x0, step1_resume, 1
 #     ↓ 展开为
 #   addi x5, x0, 11          # x5 = 11 (ECALL_M)
 #   sw   x5, 0x10c(x20)      # DMEM → EXPECT_CAUSE = 11
@@ -105,16 +91,16 @@
 #-------------------------------------------------------------------------------
 .macro SET_EXPECT cause, fault_label, tval_reg, resume_label, step_id
     addi  x5, x0, \cause
-    sw    x5, EXPECT_CAUSE_OFF(x20)
+    sw    x5, TEST_EXPECT_CAUSE_OFFSET(x20)
     LOAD_LABEL x5, \fault_label
-    sw    x5, EXPECT_MEPC_OFF(x20)
-    sw    \tval_reg, EXPECT_TVAL_OFF(x20)
+    sw    x5, TEST_EXPECT_MEPC_OFFSET(x20)
+    sw    \tval_reg, TEST_EXPECT_TVAL_OFFSET(x20)
     LOAD_LABEL x5, \resume_label
-    sw    x5, RESUME_PC_OFF(x20)
-    sw    x0, TRAP_SEEN_OFF(x20)
-    sw    x0, WRONG_PATH_OFF(x20)
+    sw    x5, TEST_RESUME_PC_OFFSET(x20)
+    sw    x0, TEST_TRAP_SEEN_OFFSET(x20)
+    sw    x0, TEST_WRONG_PATH_OFFSET(x20)
     addi  x5, x0, \step_id
-    sw    x5, STEP_ID_OFF(x20)
+    sw    x5, TEST_STEP_ID_OFFSET(x20)
 .endm
 
 #-------------------------------------------------------------------------------
@@ -122,10 +108,10 @@
 #
 # 位置：紧跟在 fault 指令之后。如果 trap 没有发生（即 fault 指令被 CPU 当成
 #       正常指令执行了），流水线会继续执行到 WRONG_PATH_STORE。
-#       它会写 WRONG_PATH_OFF=0x55 并跳转到 fail_no_trap。
+#       它会写 TEST_WRONG_PATH_OFFSET=0x55 并跳转到 fail_no_trap。
 #
 # 如果 trap 正常触发，trap_ctrl 会 kill 流水线中年轻指令，WRONG_PATH_STORE
-#       就不会被执行。check_step 验证 WRONG_PATH_OFF 仍为 0。
+#       就不会被执行。check_step 验证 TEST_WRONG_PATH_OFFSET 仍为 0。
 #
 # 所以 WRONG_PATH_STORE 是一个"哨兵"：
 # - 它被执行 → trap 机制有 bug（fault 指令未被 trap kill）
@@ -133,7 +119,7 @@
 #-------------------------------------------------------------------------------
 .macro WRONG_PATH_STORE
     addi  x5, x0, 0x55
-    sw    x5, WRONG_PATH_OFF(x20)  # 写标记：如果 trap kill 正常，此行永远不应提交
+    sw    x5, TEST_WRONG_PATH_OFFSET(x20)  # 写标记：如果 trap kill 正常，此行永远不应提交
     jal   x0, fail_no_trap         # 跳转到"未进入 trap"的失败处理
 .endm
 
@@ -145,17 +131,18 @@ _start:
 
 .section .text
 test_main:
-    lui   x20, 0x40              # x20 = DMEM_BASE，全局地址基址寄存器
+    lui   x20, %hi(DMEM_BASE)
+    addi  x20, x20, %lo(DMEM_BASE)              # x20 = DMEM_BASE，全局地址基址寄存器
 
     # 初始化 DMEM 检查区域
-    sw    x0, ERROR_CODE_OFF(x20)
-    sw    x0, SCORE_OFF(x20)
+    sw    x0, TEST_ERROR_CODE_OFFSET(x20)
+    sw    x0, TEST_SCORE_OFFSET(x20)
     sw    x0, 0(x20)             # 清 dmem[0]，供 step8 检测 store misaligned 副作用
 
     # -------------------------------------------------------------------------
     # Step 1: ECALL → mcause=11, mepc=ecall 指令 PC, mtval=0
     # -------------------------------------------------------------------------
-    SET_EXPECT CAUSE_ECALL_M, step1_fault, x0, step1_resume, 1
+    SET_EXPECT EXCEPTION_CAUSE_ECALL_M, step1_fault, x0, step1_resume, 1
 step1_fault:
     ecall
     WRONG_PATH_STORE
@@ -165,7 +152,7 @@ step1_resume:
     # -------------------------------------------------------------------------
     # Step 2: EBREAK → mcause=3, mepc=ebreak 指令 PC, mtval=0
     # -------------------------------------------------------------------------
-    SET_EXPECT CAUSE_BREAKPOINT, step2_fault, x0, step2_resume, 2
+    SET_EXPECT EXCEPTION_CAUSE_BREAKPOINT, step2_fault, x0, step2_resume, 2
 step2_fault:
     ebreak
     WRONG_PATH_STORE
@@ -175,7 +162,7 @@ step2_resume:
     # -------------------------------------------------------------------------
     # Step 3: 全 0 编码非法指令 → mcause=2, mepc=该指令 PC, mtval=该指令编码(0)
     # -------------------------------------------------------------------------
-    SET_EXPECT CAUSE_ILLEGAL_INSTR, step3_fault, x0, step3_resume, 3
+    SET_EXPECT EXCEPTION_CAUSE_ILLEGAL_INSTR, step3_fault, x0, step3_resume, 3
 step3_fault:
     .word 0x00000000             # 非法指令：全 0 编码，无对应指令
     WRONG_PATH_STORE
@@ -188,7 +175,7 @@ step3_resume:
     # -------------------------------------------------------------------------
     lui   x6, 0x02208
     addi  x6, x6, 0x1b3         # x6 = 0x022081b3（MUL 的 machine encoding）
-    SET_EXPECT CAUSE_ILLEGAL_INSTR, step4_fault, x6, step4_resume, 4
+    SET_EXPECT EXCEPTION_CAUSE_ILLEGAL_INSTR, step4_fault, x6, step4_resume, 4
 step4_fault:
     .word 0x022081b3             # 非法指令：MUL x3, x17, x2
     WRONG_PATH_STORE
@@ -201,7 +188,7 @@ step4_resume:
     # -------------------------------------------------------------------------
     lui   x6, 0xf1101
     addi  x6, x6, 0x073         # x6 = 0xf1101073（CSRRW x0, mvendorid, x0）
-    SET_EXPECT CAUSE_ILLEGAL_INSTR, step5_fault, x6, step5_resume, 5
+    SET_EXPECT EXCEPTION_CAUSE_ILLEGAL_INSTR, step5_fault, x6, step5_resume, 5
 step5_fault:
     .word 0xf1101073             # 非法指令：写入只读 CSR
     WRONG_PATH_STORE
@@ -214,7 +201,7 @@ step5_resume:
     # -------------------------------------------------------------------------
     lui   x6, 0x7c002
     addi  x6, x6, 0x073         # x6 = 0x7c002073（CSRRS x0, 0x7c0, x0）
-    SET_EXPECT CAUSE_ILLEGAL_INSTR, step6_fault, x6, step6_resume, 6
+    SET_EXPECT EXCEPTION_CAUSE_ILLEGAL_INSTR, step6_fault, x6, step6_resume, 6
 step6_fault:
     .word 0x7c002073             # 非法指令：访问不存在的 CSR 地址
     WRONG_PATH_STORE
@@ -226,7 +213,7 @@ step6_resume:
     #         DMEM_BASE+1 不是 word 对齐地址。
     # -------------------------------------------------------------------------
     addi  x6, x20, 1             # x6 = DMEM_BASE + 1（非 word 对齐地址）
-    SET_EXPECT CAUSE_LOAD_ADDR_MISALIGNED, step7_fault, x6, step7_resume, 7
+    SET_EXPECT EXCEPTION_CAUSE_LOAD_ADDR_MISALIGNED, step7_fault, x6, step7_resume, 7
 step7_fault:
     lw    x7, 1(x20)             # load 地址不对齐，触发 exception
     WRONG_PATH_STORE
@@ -240,7 +227,7 @@ step7_resume:
     # -------------------------------------------------------------------------
     sw    x0, 0(x20)             # 先清 dmem[0]，便于后续检测 store 副作用
     addi  x6, x20, 2             # x6 = DMEM_BASE + 2（非 word 对齐地址）
-    SET_EXPECT CAUSE_STORE_ADDR_MISALIGNED, step8_fault, x6, step8_resume, 8
+    SET_EXPECT EXCEPTION_CAUSE_STORE_ADDR_MISALIGNED, step8_fault, x6, step8_resume, 8
     addi  x7, x0, 0x5a           # x7 = 0x5a，用于验证 faulting store 不应写 memory
 step8_fault:
     sw    x7, 2(x20)             # store 地址不对齐，触发 exception；正常时不会写 dmem
@@ -257,7 +244,7 @@ step8_resume:
     # -------------------------------------------------------------------------
     LOAD_LABEL x6, step9_bad_target
     addi  x6, x6, 2              # x6 = step9_bad_target + 2（非 4 字节对齐）
-    SET_EXPECT CAUSE_INST_ADDR_MISALIGNED, step9_fault, x6, step9_resume, 9
+    SET_EXPECT EXCEPTION_CAUSE_INST_ADDR_MISALIGNED, step9_fault, x6, step9_resume, 9
     addi  x7, x6, 0              # x7 = 同 x6，JR 消费 forwarding 后的 x7
 step9_fault:
     jalr  x0, 0(x7)              # 跳转到非对齐地址，触发 exception
@@ -266,13 +253,13 @@ step9_resume:
     jal   x1, check_step
 
     # 所有 step 完成，检查最终计分
-    lw    x5, SCORE_OFF(x20)
+    lw    x5, TEST_SCORE_OFFSET(x20)
     addi  x6, x0, TOTAL_STEPS
     bne   x5, x6, fail_score
 
 pass:
     addi  x5, x0, 1
-    sw    x5, TEST_STATUS_OFF(x20)
+    sw    x5, TEST_STATUS_OFFSET(x20)
 done:
     jal   x0, done
 
@@ -288,19 +275,19 @@ step9_bad_target:
 #   若所有检查通过，score++ 后通过 x1 返回主流程。
 #-------------------------------------------------------------------------------
 check_step:
-    lw    x5, TRAP_SEEN_OFF(x20)        # handler 应已置位此标记
+    lw    x5, TEST_TRAP_SEEN_OFFSET(x20)        # handler 应已置位此标记
     addi  x6, x0, 1
     bne   x5, x6, fail_trap_seen
 
-    lw    x5, WRONG_PATH_OFF(x20)       # wrong-path 标记应保持 0
+    lw    x5, TEST_WRONG_PATH_OFFSET(x20)       # wrong-path 标记应保持 0
     bne   x5, x0, fail_wrong_path
 
-    lw    x5, SCORE_OFF(x20)
+    lw    x5, TEST_SCORE_OFFSET(x20)
     addi  x5, x5, 1
-    sw    x5, SCORE_OFF(x20)
+    sw    x5, TEST_SCORE_OFFSET(x20)
     jalr  x0, 0(x1)                     # 正常返回主流程
 
-# 失败处理函数。每个函数读取 STEP_ID_OFF 后加上对应偏移作为 error_code。
+# 失败处理函数。每个函数读取 TEST_STEP_ID_OFFSET 后加上对应偏移作为 error_code。
 # error_code = STEP_ID + offset：
 #   100 = 未进入 trap（wrong-path 没有被 kill 而直接跳到了 fail_no_trap）
 #   200 = TRAP_SEEN 未置位
@@ -311,29 +298,31 @@ check_step:
 #   400/500/600 = handler 内 mcause/mepc/mtval 不匹配（见 trap_handler）
 
 fail_no_trap:
-    lui   x20, 0x40
-    lw    x5, STEP_ID_OFF(x20)
+    lui   x20, %hi(DMEM_BASE)
+    addi  x20, x20, %lo(DMEM_BASE)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 100
     jal   x0, fail_with_x5
 
 fail_trap_seen:
-    lw    x5, STEP_ID_OFF(x20)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 200
     jal   x0, fail_with_x5
 
 fail_wrong_path:
-    lw    x5, STEP_ID_OFF(x20)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 300
     jal   x0, fail_with_x5
 
 fail_store_side_effect:
-    lw    x5, STEP_ID_OFF(x20)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 700
     jal   x0, fail_with_x5
 
 fail_bad_jalr_target:
-    lui   x20, 0x40
-    lw    x5, STEP_ID_OFF(x20)
+    lui   x20, %hi(DMEM_BASE)
+    addi  x20, x20, %lo(DMEM_BASE)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 800
     jal   x0, fail_with_x5
 
@@ -342,10 +331,11 @@ fail_score:
     jal   x0, fail_with_x5
 
 fail_with_x5:
-    lui   x20, 0x40
-    sw    x5, ERROR_CODE_OFF(x20)
+    lui   x20, %hi(DMEM_BASE)
+    addi  x20, x20, %lo(DMEM_BASE)
+    sw    x5, TEST_ERROR_CODE_OFFSET(x20)
     addi  x6, x0, 2
-    sw    x6, TEST_STATUS_OFF(x20)
+    sw    x6, TEST_STATUS_OFFSET(x20)
 fail_loop:
     jal   x0, fail_loop
 
@@ -359,48 +349,49 @@ fail_loop:
 #
 # 处理流程：
 #   1. 读 mcause/mepc/mtval。
-#   2. 依次和 EXPECT_CAUSE_OFF/EXPECT_MEPC_OFF/EXPECT_TVAL_OFF 比较。
-#   3. 若全部匹配，置位 TRAP_SEEN_OFF，读 RESUME_PC_OFF 写入 mepc。
+#   2. 依次和 TEST_EXPECT_CAUSE_OFFSET/TEST_EXPECT_MEPC_OFFSET/TEST_EXPECT_TVAL_OFFSET 比较。
+#   3. 若全部匹配，置位 TEST_TRAP_SEEN_OFFSET，读 TEST_RESUME_PC_OFFSET 写入 mepc。
 #   4. mret 返回主流程。
 #   5. 若不匹配，跳转到对应 fail_* 函数。
 #===============================================================================
 .section .text.trap
 trap_handler:
-    lui   x20, 0x40              # x20 = DMEM_BASE
+    lui   x20, %hi(DMEM_BASE)
+    addi  x20, x20, %lo(DMEM_BASE)              # x20 = DMEM_BASE
 
     csrr  x5, mcause
     csrr  x6, mepc
     csrr  x7, mtval
 
-    lw    x8, EXPECT_CAUSE_OFF(x20)
+    lw    x8, TEST_EXPECT_CAUSE_OFFSET(x20)
     bne   x5, x8, fail_cause     # mcause != 期望值
 
-    lw    x8, EXPECT_MEPC_OFF(x20)
+    lw    x8, TEST_EXPECT_MEPC_OFFSET(x20)
     bne   x6, x8, fail_mepc      # mepc != 期望值
 
-    lw    x8, EXPECT_TVAL_OFF(x20)
+    lw    x8, TEST_EXPECT_TVAL_OFFSET(x20)
     bne   x7, x8, fail_mtval     # mtval != 期望值
 
     # 全部匹配：置位 TRAP_SEEN，修改 mepc 指向 resume 地址，mret 返回
     addi  x8, x0, 1
-    sw    x8, TRAP_SEEN_OFF(x20)
+    sw    x8, TEST_TRAP_SEEN_OFFSET(x20)
 
-    lw    x9, RESUME_PC_OFF(x20)
+    lw    x9, TEST_RESUME_PC_OFFSET(x20)
     csrw  mepc, x9
     mret
 
 # handler 内各检查点失败处理
 fail_cause:
-    lw    x5, STEP_ID_OFF(x20)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 400
     jal   x0, fail_with_x5
 
 fail_mepc:
-    lw    x5, STEP_ID_OFF(x20)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 500
     jal   x0, fail_with_x5
 
 fail_mtval:
-    lw    x5, STEP_ID_OFF(x20)
+    lw    x5, TEST_STEP_ID_OFFSET(x20)
     addi  x5, x5, 600
     jal   x0, fail_with_x5

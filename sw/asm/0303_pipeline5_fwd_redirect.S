@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0303_pipeline5_fwd_redirect.S - RV32I pipeline forwarding + redirect 测试
 #
@@ -22,7 +24,8 @@ _start:
 
 .section .text
 test_main:
-    lui   x10, 0x40              # x10 = DMEM_BASE
+    lui   x10, %hi(DMEM_BASE)
+    addi  x10, x10, %lo(DMEM_BASE)              # x10 = DMEM_BASE
     addi  x20, x0, 0             # 计分寄存器
     addi  x21, x0, 0             # wrong-path GPR 哨兵值
     addi  x22, x0, 99            # wrong-path store 污染值
@@ -125,12 +128,12 @@ jalr_target:
 
 pass:
     addi  x31, x0, 1
-    sw    x31, 0x100(x10)
+    sw    x31, TEST_STATUS_OFFSET(x10)
 
 done:
     jal   x0, done
 
 fail:
     addi  x31, x0, 2
-    sw    x31, 0x100(x10)
+    sw    x31, TEST_STATUS_OFFSET(x10)
     jal   x0, done

@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0101_branch.S — RV32I branch directed test skeleton
 #
@@ -146,15 +148,17 @@ bwd_body:
     jal   x0, fail             # 没后跳 → fail
 
 pass:
-    lui   x30, 0x40
+    lui   x30, %hi(DMEM_BASE)
+    addi  x30, x30, %lo(DMEM_BASE)
     addi  x31, x0, 1
-    sw    x31, 0x100(x30)
+    sw    x31, TEST_STATUS_OFFSET(x30)
 
 done:
     jal   x0, done
 
 fail:
-    lui   x30, 0x40
+    lui   x30, %hi(DMEM_BASE)
+    addi  x30, x30, %lo(DMEM_BASE)
     addi  x31, x0, 2
-    sw    x31, 0x100(x30)
+    sw    x31, TEST_STATUS_OFFSET(x30)
     jal   x0, done

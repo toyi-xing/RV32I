@@ -1,3 +1,5 @@
+#include "platform.h"
+
 #===============================================================================
 # 0104_load_store.S — RV32I load/store directed test skeleton
 #
@@ -28,7 +30,8 @@ _start:
 
 .section .text
 test_main:
-    lui   x29, 0x40
+    lui   x29, %hi(DMEM_BASE)
+    addi  x29, x29, %lo(DMEM_BASE)
 
     # SW / LW：字读写
     #
@@ -143,15 +146,17 @@ test_main:
     bne   x2, x3, fail
 
 pass:
-    lui   x30, 0x40
+    lui   x30, %hi(DMEM_BASE)
+    addi  x30, x30, %lo(DMEM_BASE)
     addi  x31, x0, 1
-    sw    x31, 0x100(x30)
+    sw    x31, TEST_STATUS_OFFSET(x30)
 
 done:
     jal   x0, done
 
 fail:
-    lui   x30, 0x40
+    lui   x30, %hi(DMEM_BASE)
+    addi  x30, x30, %lo(DMEM_BASE)
     addi  x31, x0, 2
-    sw    x31, 0x100(x30)
+    sw    x31, TEST_STATUS_OFFSET(x30)
     jal   x0, done

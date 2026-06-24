@@ -36,6 +36,7 @@ riscv64-unknown-elf-gcc \
     -nostdlib \
     -nostartfiles \
     -ffreestanding \
+    -I "${REPO_ROOT}/sw/include" \
     -Wl,-T,"${REPO_ROOT}/sw/linker/asm_test.ld" \
     -Wl,--no-relax \
     -o "${BUILD_DIR}/${TEST_NAME}.elf" \

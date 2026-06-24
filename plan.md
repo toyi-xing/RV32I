@@ -1502,7 +1502,7 @@ core-only 旧测试不主动触发 interrupt，预期仍全部通过。
 
 计划调整：当前项目已经以 SoC 平台作为主要仿真入口，后续准备删除 `tb/sv/tb_core_pipeline5.sv` 及 core-only 仿真脚本，因此不再继续维护 core-only tb 的最小适配。删除动作和相关文件调整纳入 12.0。
 
-## 12. SoC testbench 验证准备
+## 12. SoC testbench 验证准备 `已完成`
 
 本章只写验证必备支持，不写完整测试方案。
 
@@ -1542,30 +1542,102 @@ trap_is_interrupt
 trap_cause_code
 ```
 
-### 12.2 UART RX 注入任务 `执行中`
+### 12.2 TB command mailbox 规划 `已完成`
 
-增加 task：
+本阶段 directed test 仍坚持“程序自检”口径：测试程序自己配置外设、打开 CSR interrupt enable、请求外部激励、在 handler 中检查并清 pending，最后通过 PASS/FAIL 约定结束仿真。
 
-```systemverilog
-task automatic inject_uart0_rx(input [7:0] data);
+为了让测试程序能按自己的进度请求 GPIO/UART 外部输入，`tb_rv32i_soc.sv` 增加一组只属于该 testbench 的 TB command mailbox。该 mailbox 不是 SoC 硬件 MMIO，也不是外设 ABI；它只是 testbench 监听特定 DMEM store 后产生外部激励的仿真协议。
+
+第一版 mailbox 使用 C linker 已保留的 DMEM 低地址空洞：
+
+```text
+TB_CMD_BASE              = DMEM_BASE + 0x180
+TB_GPIO0_SET_MASK_ADDR   = TB_CMD_BASE + 0x00
+TB_GPIO0_CLR_MASK_ADDR   = TB_CMD_BASE + 0x04
+TB_GPIO0_PULSE_CMD_ADDR  = TB_CMD_BASE + 0x08
+TB_UART0_RX_ADDR         = TB_CMD_BASE + 0x0c
 ```
 
-行为：
+testbench 监听：
 
-- 某个时钟边界拉高 `uart0_rx_valid` 一拍。
-- 同拍提供 `uart0_rx_data`。
-- 下一拍拉低 `uart0_rx_valid`。
+```text
+rst_n && data_we && dmem_access && data_addr == TB_*_ADDR
+```
 
-### 12.3 GPIO 输入驱动
+命中后由 TB task 驱动 SoC 外部输入。第一版实现不做命令队列；GPIO pulse 和 UART RX task 执行期间会占用 mailbox 处理流程，因此软件 directed test 不连续写入 mailbox 命令，命令之间应留出足够间隔。
 
-保留并扩展现有 `gpio0_in` 驱动能力：
+GPIO 命令语义：
 
-- 能在指定时刻改变某个 bit。
-- 能测试上升沿、下降沿、高电平、低电平 pending。
+```text
+写 TB_GPIO0_SET_MASK_ADDR   : gpio0_in[29:0] <= gpio0_in[29:0] |  wdata[29:0]
+写 TB_GPIO0_CLR_MASK_ADDR   : gpio0_in[29:0] <= gpio0_in[29:0] & ~wdata[29:0]
+写 TB_GPIO0_PULSE_CMD_ADDR  : 按 wdata packed command 在指定 GPIO0 bit 上产生 pulse
+```
 
-不需要在本阶段写完整用例，但 tb 必须具备驱动这些输入的能力。
+`SET/CLR` 的 `wdata` 使用 32-bit mask，但当前 TB 只接受 bit[29:0]；bit[31:30] 是固定周期输入，由 TB 自己驱动，软件 helper 会自动清掉这两位，避免和周期源冲突。
 
-### 12.4 trap trace
+`PULSE_CMD` 的 `wdata` 不解释为 mask，而是 32-bit packed command：
+
+```text
+ 31   24 23               16  15     9        8       7        5 4              0
++-------+-------------------+----------+-------------+-----------+---------------+
+|       | pulse_cycles[7:0] |          | pulse_level |           | gpio_idx[4:0] |
++-------+-------------------+----------+-------------+-----------+---------------+
+```
+
+- `gpio_idx[4:0]`：选择要驱动 pulse 的 GPIO0 输入 bit，范围 0~31。
+- `pulse_cycles[7:0]`：pulse 持续的 `clk` cycle 数。软件应写非 0 值；第一版 directed test 不依赖 0 的行为。
+- `pulse_level`：pulse 期间强制驱动的电平，`1` 表示高脉冲，`0` 表示低脉冲。
+
+实际 TB pulse task 会先把目标 bit 驱动到 `!pulse_level` 一个时钟边界，再驱动到 `pulse_level` 持续 `pulse_cycles` 个时钟边界，再回到 `!pulse_level` 一个时钟边界，最后恢复发起 pulse 前的原始电平。软件侧约束不对 bit[31:30] 发起 pulse。第一版 `PULSE_CMD` 只要求支持单个 GPIO bit 的一个未排队 pulse，不要求支持多个 pulse 并发或排队；directed test 若需要连续 pulse，应在软件中留出足够间隔。
+
+UART 命令语义：
+
+```text
+写 TB_UART0_RX_ADDR : wdata[7:0] 作为 RX byte，TB 产生 uart0_rx_valid 一拍
+```
+
+第一版不实现 UART RX 队列。测试程序若连续注入多个 byte，应等待前一个 byte 被 handler 消费后再写下一次命令。
+
+该 mailbox 的软件声明放在：
+
+```text
+sw/include/tb_rv32i_soc_test.h
+```
+
+文件定位：
+
+- 只适用于 `tb/sv/tb_rv32i_soc.sv`。
+- 不属于 `rtl/periph/readme.md` 的通用外设寄存器 ABI。
+- 换成其他 testbench 或后续 UVM 平台时，可以替换成另一套 testbench 协议头文件。
+- C 测试可以使用其中的 `static inline` helper；汇编测试至少可以复用其中的地址和 bit/mask 常量。
+
+### 12.3 GPIO 输入驱动 `已完成`
+
+`tb_rv32i_soc.sv` 中 `gpio0_in` 由 TB 直接驱动：
+
+- `gpio0_in[29:0]`：由 TB command mailbox 的 SET/CLR/PULSE_CMD 命令控制。
+- `gpio0_in[30]`：固定周期输入，供 directed test 测试持续外部变化。
+- `gpio0_in[31]`：固定周期输入，供 directed test 测试更慢的持续外部变化。
+
+周期性输入第一版约定：
+
+```text
+gpio0_in[30] = fast periodic input，每 200 cycle 翻转一次
+gpio0_in[31] = slow periodic input，每 2000 cycle 翻转一次
+```
+
+`200/2000` 表示翻转间隔，不是完整方波周期。软件 directed test 不通过 SET/CLR/PULSE_CMD 控制 bit 30/31，避免与周期源冲突。
+
+GPIO directed test 可以通过 mailbox 请求：
+
+- 指定 bit 置 1，用于高电平或上升沿触发。
+- 指定 bit 清 0，用于低电平或下降沿触发。
+- 指定 GPIO bit、pulse 宽度和 pulse 电平，用于短事件触发。
+
+GPIO 输入进入 `mmio_gpio` 后仍按外设实现经过两级同步。测试程序不应依赖 GPIO pending 精确到命令 store 后第几拍出现，只检查最终 pending/handler 行为。
+
+### 12.4 trap trace `已完成`
 
 trap 打印区分：
 
@@ -1613,24 +1685,157 @@ sw/include/platform.h
 
 `MIE_MSIE/MIP_MSIP` 可以作为注释保留，不作为本阶段测试依赖。
 
-### 12.6 脚本准备
+当前 `platform.h` 已调整为 C/ASM 共享头文件：
 
-后续 directed test 需要 SoC 平台脚本支持：
+- 公共地址、offset、bit mask 使用 `#define`，保持 C 和 `.S` 汇编预处理都可用。
+- `#include <stdint.h>`、`static inline` 函数等 C-only 内容使用 `#ifndef __ASSEMBLER__` 保护。
+- C 测试继续通过 `platform.h` 使用常量和 helper。
+- 汇编测试通过 `#include "platform.h"` 复用常量，不再在每个 `.S` 文件重复 `.equ` 公共地址图、外设 offset、CSR bit mask、PASS/FAIL 地址等常量。
+- 各汇编测试仍可保留测试私有常量；公共平台常量应统一来自 `platform.h`。
 
-- 继续使用 SoC 仿真入口。
-- 增加 interrupt 测试编号分组。
-- timeout 可能需要比普通 MMIO smoke 更长。
+### 12.6 `tb_rv32i_soc_test.h` 规划 `已完成`
 
-具体测试程序和 run_all 策略等 RTL 稳定后再写。
+新增：
 
-## 13. 文档和注释同步
+```text
+sw/include/tb_rv32i_soc_test.h
+```
 
-RTL 完成后同步检查：
+该文件专门描述 `tb/sv/tb_rv32i_soc.sv` 的仿真 mailbox 约定，让 C/ASM directed test 能通过普通 DMEM store 请求 TB 产生外部激励。
 
-- `docs/08xx/0833 machine interrupt与timer规划.md` 是否与最终实现一致。
-- `rtl/core/csr_file.sv` 头注释是否写明 `mie/mip/mcause[31]`。
-- `rtl/core/trap_ctrl.sv` 头注释是否区分 exception、interrupt、MRET。
-- `rtl/periph/mmio_gpio.sv` 头注释是否写明 `R/W1C IRQ_PENDING`。
-- `rtl/periph/mmio_uart.sv` 头注释是否写明仿真 RX 和 UART interrupt。
-- `rtl/periph/mmio_timer32.sv` 头注释是否写明 32-bit 教学 timer。
-- SoC/testbench 注释是否说明 `MEIP = GPIO irq | UART irq`、`MTIP = TIMER0`。
+已实现内容：
+
+```c
+#define TB_CMD_BASE               (DMEM_BASE + RV32I_U32_C(0x00000180))
+#define TB_GPIO0_SET_MASK_ADDR    (TB_CMD_BASE + RV32I_U32_C(0x00))
+#define TB_GPIO0_CLR_MASK_ADDR    (TB_CMD_BASE + RV32I_U32_C(0x04))
+#define TB_GPIO0_PULSE_CMD_ADDR   (TB_CMD_BASE + RV32I_U32_C(0x08))
+#define TB_UART0_RX_ADDR          (TB_CMD_BASE + RV32I_U32_C(0x0c))
+
+#define TB_GPIO0_FAST_PERIODIC_BIT    RV32I_U32_C(30)
+#define TB_GPIO0_SLOW_PERIODIC_BIT    RV32I_U32_C(31)
+#define TB_GPIO0_FAST_PERIODIC_MASK   (RV32I_U32_C(1) << TB_GPIO0_FAST_PERIODIC_BIT)
+#define TB_GPIO0_SLOW_PERIODIC_MASK   (RV32I_U32_C(1) << TB_GPIO0_SLOW_PERIODIC_BIT)
+#define TB_GPIO0_FAST_TOGGLE_CYCLES   RV32I_U32_C(200)
+#define TB_GPIO0_SLOW_TOGGLE_CYCLES   RV32I_U32_C(2000)
+```
+
+头文件应 `#include "platform.h"`，复用 `DMEM_BASE` 和 C 侧 `mmio_write32` helper。
+
+C-only helper 使用 `#ifndef __ASSEMBLER__` 保护：
+
+```c
+static inline void tb_gpio0_set_mask(uint32_t mask);
+static inline void tb_gpio0_clear_mask(uint32_t mask);
+static inline void tb_gpio0_pulse(uint32_t gpio_idx, uint8_t pulse_cycles, bool pulse_level);
+static inline void tb_uart0_rx(uint8_t data);
+```
+
+汇编测试只依赖 `#define` 常量，不强制提供汇编宏。若后续多个汇编 interrupt 测试重复出现同类 store 序列，再补预处理宏；第一版保持简单。
+
+### 12.7 汇编公共 include 与测试改造 `已完成`
+
+修改 `sim/soc_asm/05_build_mem.sh`：
+
+```text
+-I "${REPO_ROOT}/sw/include"
+```
+
+使 `.S` 测试可以直接：
+
+```asm
+#include "platform.h"
+#include "tb_rv32i_soc_test.h"   // 仅使用 tb_rv32i_soc.sv mailbox 的测试需要
+```
+
+本步完成后，改造当前已有所有使用 `.equ` 定义公共常量的汇编程序：
+
+- SoC/DMEM/TEST_STATUS 地址常量改用 `platform.h`。
+- GPIO/UART/TIMER32 base/offset/bit mask 改用 `platform.h`。
+- 需要 TB 激励的汇编测试使用 `tb_rv32i_soc_test.h` 的 mailbox 地址。
+- 不把 `tb_rv32i_soc_test.h` 引入普通硬件无关汇编测试，避免测试和 TB 协议无关时产生不必要依赖。
+
+汇编侧是否提供“函数式 helper”不强制。对于 mailbox 请求，汇编测试可以直接构造 `rs2` 后 `sw` 到对应地址；若后续重复较多，再在 `tb_rv32i_soc_test.h` 中增加预处理宏。
+
+### 12.8 `sw/include` 文档 `已完成`
+
+新增：
+
+```text
+sw/include/readme.md
+```
+
+说明本目录头文件的分层和适用范围：
+
+- `platform.h`：当前 SoC 平台的软件可见地址图、外设 offset/bit mask、CSR bit mask，以及 C 侧基础 helper；C/ASM 共享常量。
+- `tb_rv32i_soc_test.h`：`tb_rv32i_soc.sv` 专用仿真 mailbox 协议；只给 directed test 使用，不属于真实 SoC 或通用外设 ABI。
+- `rtl/periph/readme.md` 仍是外设 module 的通用寄存器 ABI 手册；拿到具体 SoC 地址图后，软件维护 `platform.h` 时应以该手册解释各实例寄存器语义。
+
+## 13. interrupt directed test 程序规划 `已完成`
+
+本组测试继续使用程序自检口径：测试程序负责配置外设和 CSR，必要时通过 `tb_rv32i_soc_test.h` 请求 TB 产生 GPIO/UART 外部激励；handler 检查 `mcause/mepc/mip`、外设 pending/status 和恢复路径，最后由 `main()` 返回值通过 `crt0.S` 写 PASS/FAIL。
+
+### 13.0 `0751_timer_smoke` `已完成`
+
+无需 tb 驱动信号，只需 SoC 内部 timer 产生 MTIP 即可，兼容为修改的 SoC 测试平台 tb 也能产生中断。
+
+### 13.1 `0752_gpio_irq_basic.c` `已完成`
+
+覆盖 GPIO0 外部中断基础行为：
+
+- `IRQ_EN` 与 `IRQ_STATUS = IRQ_PENDING & IRQ_EN`。
+- 上升沿、下降沿、高电平、低电平四类触发条件。
+- `IRQ_PENDING` R/W1C 清除行为。
+- GPIO 输入两级同步后的最终 pending/handler 行为。
+- GPIO interrupt 进入 core 后表现为 machine external interrupt（`mcause` interrupt bit = 1，cause code = 11）。
+
+### 13.2 `0753_uart_rx_irq.c` `已完成`
+
+覆盖 UART0 RX 与 UART external interrupt：
+
+- TB 注入 `uart0_rx_valid/rx_data` 后，`RXDATA` 保存 byte。
+- `STATUS.rx_valid`、`STATUS.irq_pending`、`IRQ_PENDING[0]` 置位。
+- `CTRL.rx_irq_enable=0` 时 pending 可以置位，但不应推动 `uart0_irq_o/MEIP`。
+- `CTRL.rx_irq_enable=1` 后 pending 推动 machine external interrupt。
+- 读 `RXDATA` 清 `rx_valid` 和 `IRQ_PENDING[0]`。
+- 写 `IRQ_PENDING[0]=1` 只清 pending，不消费 `RXDATA`。
+
+### 13.3 `0754_external_timer_priority.c` `已完成`
+
+覆盖 MEIP/MTIP 汇总和中断优先级：
+
+- 同时制造 external pending（GPIO 或 UART）和 timer pending。
+- 同时打开 `MIE_MEIE | MIE_MTIE` 与 `mstatus.MIE`。
+- 验证 first trap 选择 machine external interrupt。
+- handler 清 external pending 后，仍存在的 timer pending 应触发 machine timer interrupt。
+- 验证 `mip.MEIP/MIP.MTIP` 与外设 pending 状态一致。
+
+### 13.4 `0705_interrupt_commit_precise.S` `已完成`
+
+覆盖 CSR 写同拍 interrupt 的精确提交语义，建议汇编实现：
+
+- pending 已经存在时，通过 CSR 指令打开 `mie.MEIE` 或 `mstatus.MIE`。
+- 当前 CSR 指令必须先完成提交，再接受 interrupt。
+- interrupt 的 `mepc` 应指向 CSR 指令之后的返回 PC。
+- 若 CSR 写更新 `mtvec` 后同拍接受 interrupt，redirect 应使用新 `mtvec`。
+- interrupt 不应错误 kill 已提交的 older 指令写回。
+
+### 13.5 `0706_mret_interrupt_reentry.S` `已完成`
+
+覆盖 MRET 同拍 interrupt 语义，建议汇编实现：
+
+- handler 第一次进入时保留 external pending，不清中断源。
+- 执行 `mret` 时若 `MPIE` 允许中断，应在 MRET 返回边界立即再次接受 interrupt。
+- 第二次 handler 清 pending 后再 `mret`，应正常回到主流程。
+- 验证 MRET+interrupt 时 `mepc/mcause/mstatus.MIE/MPIE` 符合“先 MRET，再 interrupt entry”的语义。
+
+### 13.6 `0757_gpio_periodic_irq.c` `已完成`
+
+覆盖 TB 固定周期 GPIO 输入：
+
+- 使用 `gpio0_in[30]` fast periodic input 验证周期边沿可被 GPIO 捕获。
+- 使用 `gpio0_in[31]` slow periodic input 验证较慢外部变化不会影响 mailbox 控制位。
+- 软件不通过 SET/CLR/PULSE_CMD 控制 bit[31:30]。
+- 只检查最终事件计数和 pending/handler 行为，不依赖精确到某一条指令的触发拍。
+
+## 14. 文档和注释同步 `已完成`

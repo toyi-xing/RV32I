@@ -93,6 +93,26 @@ module tb_rv32i_soc;
     logic                          mtip;
 
     // -------------------------------------------------------------------------
+    // TB command mailbox 地址定义
+    // -------------------------------------------------------------------------
+    // crt0.S 写此地址通知仿真结束，testbench 检测后打印 PASS/FAIL。
+    localparam logic [core_pkg::XLEN-1:0] TEST_STATUS_ADDR = core_pkg::DMEM_BASE + 32'h0000_0100;
+    localparam logic [core_pkg::XLEN-1:0] TEST_PASS_VALUE  = 32'h0000_0001;
+
+    // 软件 store 到以下地址时，testbench 驱动对应的外部激励。
+    localparam logic [core_pkg::XLEN-1:0] TB_CMD_BASE              = core_pkg::DMEM_BASE + 32'h180;
+    localparam logic [core_pkg::XLEN-1:0] TB_GPIO0_SET_MASK_ADDR   = TB_CMD_BASE + 32'h00;
+    localparam logic [core_pkg::XLEN-1:0] TB_GPIO0_CLR_MASK_ADDR   = TB_CMD_BASE + 32'h04;
+    localparam logic [core_pkg::XLEN-1:0] TB_GPIO0_PULSE_CMD_ADDR  = TB_CMD_BASE + 32'h08;
+    localparam logic [core_pkg::XLEN-1:0] TB_UART0_RX_ADDR         = TB_CMD_BASE + 32'h0c;
+
+    // gpio0[31]、gpio0[30] 接时钟信号
+    localparam int   TB_GPIO0_FAST_PERIODIC_BIT  = 30;
+    localparam int   TB_GPIO0_SLOW_PERIODIC_BIT  = 31;
+    localparam int   TB_GPIO0_FAST_TOGGLE_CYCLES = 200;
+    localparam int   TB_GPIO0_SLOW_TOGGLE_CYCLES = 2000;
+
+    // -------------------------------------------------------------------------
     // rv32i_soc 实例化
     // -------------------------------------------------------------------------
     rv32i_soc u_soc (
@@ -105,8 +125,8 @@ module tb_rv32i_soc;
 
         .uart0_tx_valid_o      (uart0_tx_valid),
         .uart0_tx_data_o       (uart0_tx_data),
-        .uart0_rx_valid_i      ('0),
-        .uart0_rx_data_i       ('0),
+        .uart0_rx_valid_i      (uart0_rx_valid),
+        .uart0_rx_data_i       (uart0_rx_data),
 
         .data_re_o             (data_re),
         .data_we_o             (data_we),
@@ -143,10 +163,74 @@ module tb_rv32i_soc;
     );
 
     // -------------------------------------------------------------------------
+    // TB 命令执行：监听 DMEM store，驱动外部激励
+    // -------------------------------------------------------------------------
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin    // soc rst 期间输出无意义
+            gpio0_in[29:0] <= '0;
+            uart0_rx_valid <= 1'b0;
+            uart0_rx_data  <= '0;
+        end
+        else if (data_we && dmem_access) begin
+            unique case (data_addr)
+                TB_GPIO0_SET_MASK_ADDR:  gpio0_set(data_wdata);
+                TB_GPIO0_CLR_MASK_ADDR:  gpio0_clear(data_wdata);
+                TB_GPIO0_PULSE_CMD_ADDR: gpio0_pulse(data_wdata);
+                TB_UART0_RX_ADDR:        uart0_rx(data_wdata);
+                default: ;
+            endcase
+        end
+    end
+
+    // gpio0[31]、gpio0[30] 接时钟信号
+    initial begin
+        gpio0_in[TB_GPIO0_FAST_PERIODIC_BIT] = 1'b0;
+        gpio0_in[TB_GPIO0_SLOW_PERIODIC_BIT] = 1'b0;
+        // 并行开启两个独立线程
+        fork
+            // 线程1：快速翻转
+            forever begin
+                repeat(TB_GPIO0_FAST_TOGGLE_CYCLES) @(posedge clk);
+                gpio0_in[TB_GPIO0_FAST_PERIODIC_BIT] = ~gpio0_in[TB_GPIO0_FAST_PERIODIC_BIT];
+            end
+            // 线程2：慢速翻转
+            forever begin
+                repeat(TB_GPIO0_SLOW_TOGGLE_CYCLES) @(posedge clk);
+                gpio0_in[TB_GPIO0_SLOW_PERIODIC_BIT] = ~gpio0_in[TB_GPIO0_SLOW_PERIODIC_BIT];
+            end
+        join_none;
+    end
+    
+    // tb 驱动任务
+    task automatic gpio0_set(input [31:0] mask);
+        gpio0_in[29:0] <= gpio0_in[29:0] |  mask[29:0];
+    endtask
+    task automatic gpio0_clear(input [31:0] mask);
+        gpio0_in[29:0] <= gpio0_in[29:0] & ~mask[29:0];
+    endtask
+    task automatic gpio0_pulse(input [31:0] mask);
+        logic [4:0] gpio0_idx     = mask[4:0];
+        logic       pulse_level   = mask[8];
+        logic [7:0] pulse_cycles  = mask[23:16];
+        logic       level_initial = gpio0_in[gpio0_idx];
+        gpio0_in[gpio0_idx] <= !pulse_level;
+        @(posedge clk);
+        gpio0_in[gpio0_idx] <=  pulse_level;
+        repeat(int'(pulse_cycles)) @(posedge clk);
+        gpio0_in[gpio0_idx] <= !pulse_level;
+        @(posedge clk);
+        gpio0_in[gpio0_idx] <= level_initial;
+    endtask
+    task automatic uart0_rx(input [31:0] mask);
+        uart0_rx_data  <= mask[7:0];
+        uart0_rx_valid <= 1'b1;
+        @(posedge clk);
+        uart0_rx_valid <= 1'b0;
+    endtask
+
+    // -------------------------------------------------------------------------
     // GPIO0 与变动打印
     // -------------------------------------------------------------------------
-    assign gpio0_in = 32'hA5A5_5A5A;
-
     wire  [31:0] gpio0_driven   = gpio0_out & gpio0_oe;
     logic [31:0] gpio0_driven_last;
     always_ff @(posedge clk) begin
@@ -155,7 +239,6 @@ module tb_rv32i_soc;
             $display("--------------[%0d][GPIO_CHANGE_EVENT] gpio0_driven:0x%08h (gpio0_driven_last:0x%08h)--------------", cycle_cnt, gpio0_driven, gpio0_driven_last);
         end
     end
-
 
     // -------------------------------------------------------------------------
     // UART0 TX 字符打印
@@ -179,9 +262,6 @@ module tb_rv32i_soc;
             cycle_cnt <= cycle_cnt + 1'b1;
         end
     end
-
-    localparam logic [core_pkg::XLEN-1:0] TEST_STATUS_ADDR = core_pkg::DMEM_BASE + 32'h0000_0100;
-    localparam logic [core_pkg::XLEN-1:0] TEST_PASS_VALUE  = 32'h0000_0001;
 
     // -------------------------------------------------------------------------
     // DMEM/stack 使用统计
