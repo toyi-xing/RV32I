@@ -13,7 +13,7 @@
 //   - load 读路径为组合读，返回 addr_i 对应 word 的 32 bit 数据。
 //   - store 写路径为同步写，we_i 有效时按 be_i 写入 wdata_i 的对应 byte lane。
 //   - 仿真开始时如果 plusarg 提供 +dmem=<path>，则使用 $readmemh 初始化 RAM 内容。
-//   - testbench 可通过层级路径观察 mem 数组内容，例如 u_dmem.mem[0]。
+//   - testbench 可通过层级路径观察 mem 数组内容，例如 u_simple_ram.mem[0]。
 //------------------------------------------------------------------------------
 
 `default_nettype none

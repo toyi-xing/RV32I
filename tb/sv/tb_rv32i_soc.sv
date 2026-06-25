@@ -4,11 +4,11 @@
 //
 // 规范：
 //   - 使用简单时钟/复位驱动，不加 UVM 等复杂框架。
-//   - simple_rom/simple_ram 在 SoC 内部，通过 +imem=<hex>/+dmem=<hex> 初始化。
+//   - simple_rom/simple_ram 在 testbench 内部实例化，通过 +imem=<hex>/+dmem=<hex> 初始化。
 //   - SoC 层级路径：tb_rv32i_soc.u_soc.u_core 访问核内信号。
 //
 // 功能：
-//   - 产生 clk/rst 驱动 rv32i_soc。
+//   - 产生 clk/rst 驱动 rv32i_soc，并连接固定响应 IMEM/DMEM 仿真模型。
 //   - 驱动 gpio0_in 为固定值，供 MMIO GPIO 读取。
 //   - 当前 UART0 RX 事件固定拉低；后续 interrupt directed test 会改为 task 注入。
 //   - 在每次提交时打印当前指令的 PC、原始指令、指令类型、rd 写使能和写回数据。
@@ -58,6 +58,15 @@ module tb_rv32i_soc;
     logic [7:0]                    uart0_tx_data;
     logic                          uart0_rx_valid;
     logic [7:0]                    uart0_rx_data;
+
+    logic [core_pkg::XLEN-1:0]     imem_addr;
+    logic [core_pkg::ILEN-1:0]     imem_rdata;
+
+    logic                          dmem_we;
+    logic [3:0]                    dmem_be;
+    logic [core_pkg::XLEN-1:0]     dmem_addr;
+    logic [core_pkg::XLEN-1:0]     dmem_wdata;
+    logic [core_pkg::XLEN-1:0]     dmem_rdata;
 
     logic                          data_re;
     logic                          data_we;
@@ -119,6 +128,15 @@ module tb_rv32i_soc;
         .clk_i                 (clk),
         .rst_n_i               (rst_n),
 
+        .imem_addr_o           (imem_addr),
+        .imem_rdata_i          (imem_rdata),
+
+        .dmem_we_o             (dmem_we),
+        .dmem_be_o             (dmem_be),
+        .dmem_addr_o           (dmem_addr),
+        .dmem_wdata_o          (dmem_wdata),
+        .dmem_rdata_i          (dmem_rdata),
+
         .gpio0_in_i            (gpio0_in),
         .gpio0_out_o           (gpio0_out),
         .gpio0_oe_o            (gpio0_oe),
@@ -162,6 +180,22 @@ module tb_rv32i_soc;
         .mtip_o                (mtip)
     );
 
+    simple_rom u_simple_rom (
+        .addr_i     (imem_addr),
+        .rdata_o    (imem_rdata)
+    );
+
+    simple_ram #(
+        .ADDR_WIDTH (core_pkg::DMEM_ADDR_WIDTH)
+    ) u_simple_ram (
+        .clk_i   (clk),
+        .we_i    (dmem_we),
+        .be_i    (dmem_be),
+        .addr_i  (dmem_addr),
+        .wdata_i (dmem_wdata),
+        .rdata_o (dmem_rdata)
+    );
+
     // -------------------------------------------------------------------------
     // TB 命令执行：监听 DMEM store，驱动外部激励
     // -------------------------------------------------------------------------
@@ -171,7 +205,7 @@ module tb_rv32i_soc;
             uart0_rx_valid <= 1'b0;
             uart0_rx_data  <= '0;
         end
-        else if (data_we && dmem_access) begin
+        else if (dmem_we) begin
             unique case (data_addr)
                 TB_GPIO0_SET_MASK_ADDR:  gpio0_set(data_wdata);
                 TB_GPIO0_CLR_MASK_ADDR:  gpio0_clear(data_wdata);
@@ -385,7 +419,7 @@ module tb_rv32i_soc;
             test_done         <= 1'b0;
             test_passed       <= 1'b0;
             test_status_value <= '0;
-        end else if (data_we && dmem_access && data_addr == TEST_STATUS_ADDR) begin
+        end else if (dmem_we && data_addr == TEST_STATUS_ADDR) begin
             test_done         <= 1'b1;
             test_passed       <= (data_wdata == TEST_PASS_VALUE);
             test_status_value <= data_wdata;

@@ -5,12 +5,12 @@
 // 规范：
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
 //   - 本模块只做固定响应平台集成，不实现额外总线协议或 ready/valid backpressure。
-//   - CPU core、IMEM、DMEM/MMIO 数据子系统在本层连接，具体地址译码由 data_subsystem 完成。
+//   - CPU core、外置 IMEM、外置 DMEM/MMIO 数据子系统在本层连接，具体地址译码由 data_subsystem 完成。
 //
 // 功能：
 //   - 实例化 core 作为 CPU core。
-//   - 实例化 simple_rom 作为 IMEM。
-//   - 实例化 data_subsystem 作为 DMEM/MMIO 数据侧，包含 GPIO0、UART0、TIMER0。
+//   - 透出固定响应 IMEM 端口，由 testbench 或上层 wrapper 连接 simple_rom/ROM model。
+//   - 实例化 data_subsystem 作为数据侧译码层，连接外置 DMEM，并包含 GPIO0、UART0、TIMER0。
 //   - 将 data_subsystem.core_access_fault_o 接回 core.lsu_access_fault_i。
 //   - 汇总 GPIO0/UART0 中断为 MEIP，将 TIMER0 中断作为 MTIP 接入 core。
 //   - 透传 commit/trap、GPIO、UART、interrupt 和 data access 观察信号给 testbench。
@@ -21,6 +21,15 @@
 module rv32i_soc (
     input  logic                          clk_i,
     input  logic                          rst_n_i,
+
+    output logic [core_pkg::XLEN-1:0]     imem_addr_o,           // 取指 byte address，连接外置固定响应 IMEM。
+    input  logic [core_pkg::ILEN-1:0]     imem_rdata_i,          // 外置 IMEM 返回的 instruction。
+
+    output logic                          dmem_we_o,             // 外置 DMEM store 写使能。
+    output logic [3:0]                    dmem_be_o,             // 外置 DMEM byte enable。
+    output logic [core_pkg::XLEN-1:0]     dmem_addr_o,           // 外置 DMEM byte address。
+    output logic [core_pkg::XLEN-1:0]     dmem_wdata_o,          // 外置 DMEM store 写数据。
+    input  logic [core_pkg::XLEN-1:0]     dmem_rdata_i,          // 外置 DMEM load 原始 word 数据。
 
     input  logic [31:0]                   gpio0_in_i,            // GPIO0 输入引脚采样值。
     output logic [31:0]                   gpio0_out_o,           // GPIO0 输出寄存器值。
@@ -69,10 +78,6 @@ module rv32i_soc (
     output logic                          mtip_o                 // MTIP = timer0_irq_o。
 );
 
-    // core <-> IMEM
-    wire [core_pkg::ILEN-1:0]     core_imem_rdata;
-    wire [core_pkg::XLEN-1:0]     core_imem_addr;
-
     // interrupt 汇总
     wire   meip   = gpio0_irq_o | uart0_irq_o;
     wire   mtip   = timer0_irq_o;
@@ -83,8 +88,8 @@ module rv32i_soc (
         .clk_i                  (clk_i),
         .rst_n_i                (rst_n_i),
 
-        .imem_rdata_i           (core_imem_rdata),
-        .imem_addr_o            (core_imem_addr),
+        .imem_rdata_i           (imem_rdata_i),
+        .imem_addr_o            (imem_addr_o),
 
         .lsu_re_o               (data_re_o),
         .lsu_we_o               (data_we_o),
@@ -114,11 +119,6 @@ module rv32i_soc (
         .trap_redirect_pc_o     (trap_redirect_pc_o)
     );
 
-    simple_rom u_simple_rom (
-        .addr_i     (core_imem_addr),
-        .rdata_o    (core_imem_rdata)
-    );
-
     data_subsystem u_data_subsystem (
         .clk_i                 (clk_i),
         .rst_n_i               (rst_n_i),
@@ -130,6 +130,12 @@ module rv32i_soc (
         .core_wdata_i          (data_wdata_o),
         .core_rdata_o          (data_rdata_o),
         .core_access_fault_o   (data_access_fault_o),
+
+        .dmem_we_o             (dmem_we_o),
+        .dmem_be_o             (dmem_be_o),
+        .dmem_addr_o           (dmem_addr_o),
+        .dmem_wdata_o          (dmem_wdata_o),
+        .dmem_rdata_i          (dmem_rdata_i),
 
         .gpio0_in_i            (gpio0_in_i),
         .gpio0_out_o           (gpio0_out_o),

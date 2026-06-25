@@ -12,7 +12,8 @@
 // 功能：
 //   - 接收 core 的 lsu_* request（re/we/be/addr/wdata）。
 //   - 判断地址命中 DMEM、UART0、GPIO0、TIMER0，还是未映射。
-//   - 实例化 simple_ram、mmio_uart、mmio_gpio、mmio_timer32。
+//   - 通过外置固定响应 DMEM 端口访问上层连接的 simple_ram/DMEM model。
+//   - 实例化 mmio_uart、mmio_gpio、mmio_timer32。
 //   - 对 store，只把写使能送到命中的设备。
 //   - 对 load，返回命中设备的 32-bit rdata。
 //   - 对未映射 load/store，返回 core_access_fault_o = 1，读数据返回 0。
@@ -32,6 +33,12 @@ module data_subsystem (
     input  logic [core_pkg::XLEN-1:0] core_wdata_i,
     output logic [core_pkg::XLEN-1:0] core_rdata_o,
     output logic                      core_access_fault_o,
+
+    output logic                      dmem_we_o,
+    output logic [3:0]                dmem_be_o,
+    output logic [core_pkg::XLEN-1:0] dmem_addr_o,
+    output logic [core_pkg::XLEN-1:0] dmem_wdata_o,
+    input  logic [core_pkg::XLEN-1:0] dmem_rdata_i,
 
     input  logic [31:0]               gpio0_in_i,
     output logic [31:0]               gpio0_out_o,
@@ -74,20 +81,11 @@ module data_subsystem (
     // 子模块实例化
     //==============================================================
 
-    // 只要落入 ram，不存在 access_fault
-    wire dmem_we = core_we_i & dmem_valid;
-    wire [core_pkg::XLEN-1:0] dmem_addr = dmem_hit ? core_addr_i : DMEM_BASE;     // 无意义索引统一指向 ram[0]
-    wire [core_pkg::XLEN-1:0] dmem_rdata;
-    simple_ram #(
-        .ADDR_WIDTH (core_pkg::DMEM_ADDR_WIDTH)
-    ) u_simple_ram (
-        .clk_i   (clk_i),
-        .we_i    (dmem_we),      // ram 无 valid 输入，读无条件，写需要额外逻辑
-        .be_i    (core_be_i),
-        .addr_i  (dmem_addr),
-        .wdata_i (core_wdata_i),
-        .rdata_o (dmem_rdata)
-    );
+    // 外置 simple_ram 固定响应端口。未命中 DMEM 时地址指向 DMEM_BASE，避免 RAM model 看到无意义索引。
+    assign dmem_we_o    = core_we_i & dmem_valid;
+    assign dmem_be_o    = core_be_i;
+    assign dmem_addr_o  = dmem_hit ? core_addr_i : DMEM_BASE;
+    assign dmem_wdata_o = core_wdata_i;
 
     wire [core_pkg::XLEN-1:0] gpio0_rdata;
     wire gpio0_access_fault;
@@ -162,7 +160,7 @@ module data_subsystem (
     always_comb begin
         core_rdata_o = '0;
         if (dmem_valid) begin
-            core_rdata_o = dmem_rdata;
+            core_rdata_o = dmem_rdata_i;
         end
         else if (gpio0_valid) begin
             core_rdata_o = gpio0_rdata;

@@ -1,1841 +1,1296 @@
-# v4.1 machine interrupt 与 timer 执行计划
+# v5.0 data-side 可变延迟 memory/MMIO、简化内部总线与 backpressure 执行计划
 
 当前工程已经完成：
 
 - RV32I 五级流水线主路径。
-- 最小 M-mode CSR/trap。
-- `ECALL/EBREAK/MRET` 和 Zicsr。
-- 256 KiB IMEM/DMEM 地址图。
-- 最小 SoC wrapper、data subsystem、GPIO0、UART0 TX、data access fault。
+- forwarding、load-use stall、CSR-use stall 和 branch/JAL/JALR redirect。
+- 最小 M-mode CSR/trap、`ECALL/EBREAK/MRET` 和 Zicsr。
+- SoC 地址图、DMEM/MMIO 译码、GPIO0、UART0、TIMER0。
+- machine timer interrupt 与 machine external interrupt。
+- SoC 级汇编/C directed tests 和 TB mailbox 外部激励协议。
 
-本计划根据 `docs/08xx/0833 machine interrupt与timer规划.md` 编写，目标是在当前 SoC 上加入 machine interrupt 与 32-bit TIMER0，并让 GPIO/UART 作为 machine external interrupt 的来源。
+本计划根据 `docs/08xx/0830 RV32I教学核后续完善路线：从v2.0到最小完整裸机核心.md` 和 `docs/08xx/0834 可变延迟memory与MMIO、简化内部总线与backpressure规划.md` 编写，目标是把当前 LSU/data subsystem 的固定一拍响应，升级为单 outstanding 的 request/response 简化 data bus，并让 MEM wait 对流水线形成 backpressure。
+
+本计划是具体执行清单，会覆盖旧的 0833 执行计划。0833 已完成内容以 README、0833 文档和当前 RTL 为准。
 
 ## 0. 实现边界
 
 本阶段实现：
 
-- `mie/mip` CSR 的 machine timer/external interrupt 位。
-- `mcause[31]` interrupt bit。
-- `MTIP`：由 32-bit TIMER0 的 `MTIME >= MTIMECMP` 产生。
-- `MEIP`：由 `gpio_irq_o | uart_irq_o` 汇总产生。
-- GPIO0 按 bit 配置中断使能和触发类型，pending 使用 `R/W1C`。
-- UART0 增加仿真 RX，RX event 置 pending 并产生 UART interrupt。
-- core 在 MEM/commit 边界接受 interrupt。
-- interrupt entry 写 `mepc/mcause/mtval/mstatus`，redirect 到 `mtvec`。
-- `MRET` 继续使用现有返回路径。
-- interrupt 返回 PC 使用“当前提交指令的实际下一条 PC”，不能简单固定为 `mem_pc + 4`。
+- 只改 data side/LSU，不改 IMEM 取指侧固定响应模型。
+- core LSU 侧改为单 outstanding 简化 data bus：
+
+```text
+request:
+  valid, ready, write, addr, wdata, be
+
+response:
+  valid, rdata, error
+```
+
+- 第一版不引入 `resp_ready`，CPU 在等待 response 时默认总是可接收 response。
+- MEM 阶段成为 data transaction owner：
+  - load/store 到 MEM 后发起 request。
+  - request 未被接受或 response 未返回时保持当前 MEM 指令。
+  - response OK 后 load/store 才能进入普通完成路径。
+  - response error 转换为 load/store access fault。
+- MEM wait 期间对 EX/ID/IF/PC 施加 backpressure，年轻指令不能越过 older memory instruction。
+- misaligned 和前级已有 exception 仍在 request 前发现，不发 data request。
+- unknown address / unknown MMIO offset 从固定 `access_fault` 迁移为 response `error`。
+- MMIO write/read 副作用与一次成功 transaction 绑定，不能因为 valid 保持、ready 等待或 response 延迟重复发生。
+- 0 wait-state 下保持现有 directed regression 行为不退化。
+- data request/response、busy/wait、dmem/mmio hit 等必要观察信号透出到 SoC/testbench。
+- 提供固定 wait-state 注入入口，供本阶段 smoke 和后续验证收口使用。
 
 本阶段不实现：
 
-- `MSIP` software interrupt。`mip.MSIP` 读 0，`mie.MSIE` 写入按 WARL 忽略。
-- PLIC/CLINT 完整模型。
-- vectored `mtvec`。
-- nested interrupt 完整策略。
-- `WFI`。
-- ready/valid、wait-state、MEM stall。
-- 标准总线。
+- AXI-Lite 或 AXI4。
+- IMEM ready/valid、取指 outstanding、取指取消。
+- cache、write buffer/store buffer、store queue。
+- 多 outstanding、transaction ID、乱序 response。
+- bus 仲裁、多 master、DMA。
+- accelerator 本体。
+- UVM/SVA 完整验证平台和完整 wait-state directed 测试矩阵。
+- 外设寄存器 ABI 改动。
+- 真实 UART 串口、多拍串口收发器或异步 FIFO。
 
-中断与 trap/MRET 优先级：
-
-```text
-同步 exception > MRET+interrupt > CSR写+interrupt > MRET > interrupt > 普通指令提交
-```
-
-`MRET+interrupt` 表示当前 MEM 指令为 MRET，且同一提交边界已经满足 interrupt 接受条件。此时先按 MRET 的目标地址作为 interrupt return PC，再直接进入 interrupt handler。
-
-`CSR写+interrupt` 表示当前 MEM 指令为合法 CSR 写，且该 CSR 写提交后的状态满足 interrupt 接受条件。此时语义等价于“先提交 CSR 写，再接受 interrupt”，不能吞掉 CSR 写。
-
-`MEIP > MTIP` 是本阶段固定 interrupt cause 选择；后续若加入 PLIC 或更完整平台，可以再调整。它只决定同拍多个 interrupt pending 时写入 `mcause` 的 interrupt code，不改变 redirect/kill 行为。
-
-## 1. 公共常量和类型 `已完成`
-
-### 1.1 修改 `rtl/common/core_pkg.sv` `已完成`
-
-新增 CSR 地址：
-
-```systemverilog
-CSR_ADDR_MIE = 12'h304;     // RW
-CSR_ADDR_MIP = 12'h344;     // RO，硬件自动更新
-```
-
-新增 interrupt bit 位置：
-
-```systemverilog
-// MIP_MSIP_BIT = 3;   // 本阶段不实现
-MIP_MTIP_BIT = 7;
-MIP_MEIP_BIT = 11;
-
-// MIE_MSIE_BIT = 3;   // 本阶段不实现
-MIE_MTIE_BIT = 7;
-MIE_MEIE_BIT = 11;
-```
-
-新增 `mcause` interrupt bit：
-
-```systemverilog
-MCAUSE_INTERRUPT_BIT = XLEN - 1;
-```
-
-当前 `excp_cause_e` 是 5-bit exception code。本阶段不要把 interrupt bit 塞进这个 enum；新增 `irq_cause_e` 表示 interrupt code，后续再由单独 trap kind 信号区分 exception/interrupt。
-
-```systemverilog
-typedef enum logic [4:0] {
-    // IRQ_CAUSE_M_SOFTWARE = 5'd3,  // 本阶段不实现 MSIP
-    IRQ_CAUSE_M_TIMER    = 5'd7,
-    IRQ_CAUSE_M_EXTERNAL = 5'd11
-} irq_cause_e;
-```
-
-### 1.2 修改 `rtl/common/soc_pkg.sv` `已完成`
-
-补 TIMER32 公用 offset；TIMER0 本阶段使用一个 32-bit timer 实例：
-
-```systemverilog
-TIMER32_MTIME_OFFSET    = 12'h000;
-TIMER32_MTIMECMP_OFFSET = 12'h004;
-TIMER32_CTRL_OFFSET     = 12'h008;
-TIMER32_STATUS_OFFSET   = 12'h00c;
-```
-
-补 TIMER bit：
-
-```systemverilog
-TIMER32_CTRL_EN_BIT     = 0;
-TIMER32_STATUS_MTIP_BIT = 0;
-```
-
-补 GPIO interrupt offset：
-
-```systemverilog
-GPIO_IRQ_EN_OFFSET      = 12'h00c;
-GPIO_IRQ_RISE_EN_OFFSET = 12'h010;
-GPIO_IRQ_FALL_EN_OFFSET = 12'h014;
-GPIO_IRQ_HIGH_EN_OFFSET = 12'h018;
-GPIO_IRQ_LOW_EN_OFFSET  = 12'h01c;
-GPIO_IRQ_PENDING_OFFSET = 12'h020;
-GPIO_IRQ_STATUS_OFFSET  = 12'h024;
-```
-
-补 UART RX/interrupt offset。当前已有：
-
-```systemverilog
-UART_TXDATA_OFFSET = 12'h000;
-UART_STATUS_OFFSET = 12'h004;
-UART_CTRL_OFFSET   = 12'h008;
-```
-
-本阶段扩展：
-
-```systemverilog
-UART_RXDATA_OFFSET     = 12'h00c;
-UART_IRQ_PENDING_OFFSET = 12'h010;
-```
-
-UART bit 规划：
+控制优先级口径：
 
 ```text
-STATUS[0] = tx_ready
-STATUS[1] = rx_valid
-STATUS[2] = irq_pending，即 IRQ_PENDING[0] 的只读镜像
-
-CTRL[0] = tx_enable
-CTRL[1] = rx_irq_enable
-
-IRQ_PENDING[0] = rx_irq_pending，R/W1C
+reset
+> MEM completion 上的同步 exception / delayed access fault
+> MEM completion 上的 MRET+interrupt / CSR写+interrupt / interrupt
+> MEM completion 上的 MRET
+> MEM response OK 后允许的 younger EX redirect
+> MEM wait backpressure
+> 普通 EX redirect
+> load-use/CSR-use stall
+> normal advance
 ```
 
-本阶段保留独立 `IRQ_PENDING`，便于软件 W1C；`STATUS[2]` 只作为轮询视图，不参与清除语义。读 `IRQ_PENDING` 本身只观察 pending，不清除；读 `RXDATA` 会作为 RXDATA 的读副作用清 `rx_irq_pending`。
+关键约束：
 
-## 2. 流水线 next PC 信息 `已完成`
+- delayed access fault 是当前 MEM older 指令的同步异常结果，优先于 interrupt 和 younger redirect。
+- MEM wait 期间 younger EX redirect 不能改变 PC。
+- response OK 且无 trap/interrupt 时，younger EX redirect 才能按普通控制流生效。
+- interrupt pending 可以在 memory wait 期间进入 `mip`，但只能在当前 MEM 指令 completion 边界接受。
+- `FENCE` 在当前单 hart、单 outstanding、无 cache、无 write buffer 条件下继续保持 NOP。
 
-### 2.1 修改 `rtl/common/pipeline_pkg.sv` `已完成`
+## 1. 前置整理：ROM/RAM 仿真模型外置 `已完成`
 
-interrupt 需要返回到第一条未提交指令，因此 MEM 边界必须知道当前提交指令的实际下一条 PC。
+### 1.1 目标和边界 `已完成`
 
-当前实现不在 `id_ex_reg_t` 新增 `next_pc`，因为 ID/EX 已经有 `pc_plus4`，顺序下一条 PC 可以直接复用。只在 `ex_mem_reg_t` 中新增：
+0834 正式改 data-side req/resp 前，先把 `simple_rom`、`simple_ram` 从 SoC RTL 内部移到 testbench 实例化。
+
+目标：
+
+- `rv32i_soc` 更像可综合 SoC shell，不直接实例化带 `$readmemh` 的仿真 memory model。
+- `simple_rom/simple_ram` 仍保留现有 plusarg 加载方式，测试程序和 memory image 生成流程不变。
+- data_subsystem 仍负责 DMEM/MMIO 地址译码，DMEM 本体由外部端口连接。
+- 不在本整理中引入 data bus req/resp、wait-state、AXI-Lite 或外设 ABI 改动。
+
+### 1.2 `rv32i_soc.sv` 外置 IMEM/DMEM 端口 `已完成`
+
+`rv32i_soc` 不再内部实例化 `simple_rom`，而是透出 IMEM 固定响应接口：
 
 ```systemverilog
-logic [core_pkg::XLEN-1:0] next_pc;
+output logic [core_pkg::XLEN-1:0] imem_addr_o;
+input  logic [core_pkg::ILEN-1:0] imem_rdata_i;
 ```
 
-`mem_wb_reg_t` 也不需要新增该字段，因为 interrupt 在 MEM/commit 边界接受，不等到 WB。
-
-### 2.2 修改 `rtl/core/ex_stage.sv` `已完成`
-
-新增输入：
+`rv32i_soc` 同时透出 data_subsystem 到外部 DMEM model 的固定响应接口：
 
 ```systemverilog
-input logic [core_pkg::XLEN-1:0] pc_plus4_i
+output logic                      dmem_we_o;
+output logic [3:0]                dmem_be_o;
+output logic [core_pkg::XLEN-1:0] dmem_addr_o;
+output logic [core_pkg::XLEN-1:0] dmem_wdata_o;
+input  logic [core_pkg::XLEN-1:0] dmem_rdata_i;
 ```
 
-新增输出：
+原有 testbench 观察口 `data_*`、`dmem_access_o/mmio_access_o` 暂时保持当前语义，后续 0834 data bus 改造时再统一调整。
+
+### 1.3 `data_subsystem.sv` 外置 DMEM 端口 `已完成`
+
+`data_subsystem` 不再内部实例化 `simple_ram`，而是输出 DMEM model 访问端口：
 
 ```systemverilog
-output logic [core_pkg::XLEN-1:0] next_pc_o
+output logic                      dmem_we_o;
+output logic [3:0]                dmem_be_o;
+output logic [core_pkg::XLEN-1:0] dmem_addr_o;
+output logic [core_pkg::XLEN-1:0] dmem_wdata_o;
+input  logic [core_pkg::XLEN-1:0] dmem_rdata_i;
 ```
 
-生成规则：
+第一版保持现有固定响应 RAM 语义：
+
+- DMEM write 同步写。
+- DMEM read 组合返回。
+- 地址仍传给 `simple_ram`，由 `simple_ram` 按 `DMEM_BASE` 转换到内部 word index。
+- 未命中 DMEM 时，`dmem_addr_o` 可指向 `DMEM_BASE` 这类无副作用安全地址，避免外部 RAM model 看到无意义索引。
+
+### 1.4 `tb_rv32i_soc.sv` 实例化 memory model `已完成`
+
+testbench 新增两个实例：
 
 ```text
-普通非控制指令      -> pc_i + 4
-not-taken branch    -> pc_i + 4
-taken branch        -> branch target
-JAL                 -> jump target
-JALR                -> jalr target
+simple_rom u_simple_rom
+simple_ram u_simple_ram
+```
+
+连接到 `rv32i_soc` 新增的 IMEM/DMEM 端口。`+imem=<path>` 和 `+dmem=<path>` 仍由 `simple_rom/simple_ram` 内部处理，不需要改仿真命令或软件构建流程。
+
+TB mailbox 监听仍然可以沿用当前 `data_we && dmem_access && data_addr` 口径；整理后可以把监听条件中的写意图直接改为外置 RAM 写口 `dmem_we`，减少重复逻辑。后续 0834 req/resp 改造时，再迁移到 accepted write request 或 successful write response。
+
+### 1.5 文档同步 `已完成`
+
+本整理完成后至少同步：
+
+- `rv32i_soc.sv`、`data_subsystem.sv` 头注释，不再写 SoC/data_subsystem 内部实例化 simple ROM/RAM。
+- `tb/sv/tb_rv32i_soc.sv` 头注释，说明 testbench 负责实例化 IMEM/DMEM 仿真模型。
+- `README.md` 顶部 ASCII 图，把 `simple_rom/simple_ram` 从 SoC 内部移到 TB/仿真环境侧。
+
+其他文档若只是泛称当前平台有 IMEM/DMEM，不强制在本整理中大改。
+
+## 2. 公共类型和接口命名
+
+### 2.1 新增或扩展 data bus 公共类型
+
+建议在 `rtl/common/core_pkg.sv` 中补充简化 data bus 相关结构或在必要时只使用离散端口。
+
+若使用结构体，建议定义：
+
+```systemverilog
+typedef struct packed {
+    logic                      valid;
+    logic                      write;
+    logic [XLEN-1:0]           addr;
+    logic [XLEN-1:0]           wdata;
+    logic [3:0]                be;
+} data_req_t;
+
+typedef struct packed {
+    logic                      valid;
+    logic [XLEN-1:0]           rdata;
+    logic                      error;
+} data_resp_t;
+```
+
+执行时可根据现有代码风格选择结构体或离散信号。若选择离散信号，命名口径保持：
+
+```text
+lsu_req_valid_o
+lsu_req_ready_i
+lsu_req_write_o
+lsu_req_addr_o
+lsu_req_wdata_o
+lsu_req_be_o
+lsu_resp_valid_i
+lsu_resp_rdata_i
+lsu_resp_error_i
+```
+
+计划默认后续条目使用离散信号描述，便于逐步替换当前 `lsu_re/lsu_we/lsu_rdata/lsu_access_fault`。
+
+### 2.2 明确 read/write 指令类型保留位置
+
+response error 需要区分 load access fault 和 store access fault，因此 MEM 阶段必须在等待事务期间保留：
+
+```text
+当前指令 valid
+mem_re / mem_we
+mem_size / mem_unsigned
+faulting addr
+pc / instr / next_pc
+已有 exception 信息
+CSR/MRET 控制信息
+```
+
+当前这些字段已经在 `ex_mem_reg_t` 中保存，第一版不额外新增 transaction tag。
+
+### 2.3 保留 byte enable 语义
+
+`be` 继续沿用当前 `mem_stage` 生成的 byte lane 含义：
+
+| 指令 | 对齐要求 | be |
+|---|---|---|
+| `LB/LBU/SB` | 无额外低位要求 | 单 bit |
+| `LH/LHU/SH` | `addr[0] == 0` | 连续 2 bit |
+| `LW/SW` | `addr[1:0] == 0` | `4'b1111` |
+
+本阶段不额外加入 `size` 到 data bus。load 扩展仍由 core/MEM 根据 `mem_size/mem_unsigned/addr[1:0]` 完成。
+
+## 3. `mem_stage` 改造为事务发起与完成判定
+
+### 3.1 修改 `rtl/core/mem_stage.sv` 模块定位
+
+当前 `mem_stage` 是纯组合逻辑，头注释写明固定响应。0834 后需要改成支持时序状态的 MEM transaction controller。
+
+模块职责调整为：
+
+- 组合检测 misaligned。
+- 对有效且无前级 exception 的 load/store 发起 data request。
+- 在 request accepted 后记录 outstanding 状态。
+- 在 response 返回前保持 busy/wait。
+- response OK 时生成最终 load_data 或 store 完成。
+- response error 时生成 load/store access fault。
+- 非访存、misaligned、前级 exception 仍可在当前 MEM 边界直接完成或进入 trap。
+
+### 3.2 新增时钟/复位端口
+
+`mem_stage` 需要保存 outstanding 状态，因此端口新增：
+
+```systemverilog
+input logic clk_i;
+input logic rst_n_i;
+```
+
+头注释同步更新，不再写“纯组合逻辑”。
+
+### 3.3 替换 LSU 固定响应端口
+
+移除或不再使用当前固定响应端口：
+
+```systemverilog
+input  logic [XLEN-1:0] lsu_rdata_i;
+input  logic            lsu_access_fault_i;
+output logic            lsu_re_o;
+output logic            lsu_we_o;
+```
+
+改为 request/response：
+
+```systemverilog
+output logic            lsu_req_valid_o;
+input  logic            lsu_req_ready_i;
+output logic            lsu_req_write_o;
+output logic [3:0]      lsu_req_be_o;
+output logic [XLEN-1:0] lsu_req_addr_o;
+output logic [XLEN-1:0] lsu_req_wdata_o;
+
+input  logic            lsu_resp_valid_i;
+input  logic [XLEN-1:0] lsu_resp_rdata_i;
+input  logic            lsu_resp_error_i;
+```
+
+`lsu_req_write_o=1` 表示 store/MMIO write，`0` 表示 load/MMIO read。
+
+### 3.4 新增 MEM wait/complete 输出
+
+新增输出给 core 控制网络：
+
+```systemverilog
+output logic mem_wait_o;      // 当前 MEM 指令因为 data transaction 未完成而必须 hold。
+output logic mem_complete_o;  // 当前 MEM 边界本拍可完成；主要用于调试/观察，可选。
+```
+
+推荐语义：
+
+```text
+mem_wait_o = 有效 load/store 且尚未到达 completion 边界
+mem_complete_o = 非访存直接完成，或访存 response 返回，或 request 前 exception 直接完成
+```
+
+若后续发现 `mem_complete_o` 在 core 中不需要，可只保留 `mem_wait_o`，但建议至少保留一个观察口方便 TB/wave debug。
+
+### 3.5 misaligned 和前级 exception 不发 request
+
+保持现有优先级：
+
+```text
+前级 exception
+> load/store misaligned
+> data request / response error
+```
+
+当 `exception_valid_i=1` 或 `mem_misaligned_o=1` 时：
+
+- `lsu_req_valid_o=0`
+- 不建立 outstanding
+- 不等待 response
+- 当前 MEM 指令可在本边界进入 trap
+
+### 3.6 request payload 生成
+
+当前 `mem_stage` 已有 `lsu_be_o/lsu_addr_o/lsu_wdata_o` 生成逻辑，0834 保持基本算法。
+
+请求条件建议定义为：
+
+```text
+mem_access = valid_i && !exception_valid_i && !mem_misaligned_o && (mem_re_i || mem_we_i)
+```
+
+request payload：
+
+```text
+write = mem_we_i
+addr  = alu_result_i
+wdata = store_data_i << {alu_result_i[1:0], 3'b000}
+be    = 当前 byte enable 生成结果
+```
+
+在 `lsu_req_valid_o=1 && lsu_req_ready_i=0` 时，payload 必须保持稳定。因为 EX/MEM 会被 `mem_wait_o` hold，payload 通常自然稳定；仍建议在代码注释中明确这一点。
+
+### 3.7 outstanding 状态机
+
+第一版可使用一个简单状态：
+
+```text
+req_outstanding_q
+```
+
+语义：
+
+- `0`：当前 MEM 指令尚未有 accepted request。
+- `1`：已有 request accepted，等待 response。
+
+状态更新：
+
+```text
+reset -> 0
+request accepted -> 1
+response valid -> 0
+当前 MEM 指令被 request 前 exception/trap 处理 -> 0
+```
+
+因为第一版只允许 single outstanding，`req_outstanding_q=1` 时不允许再次拉起新的 accepted request。
+
+### 3.8 request valid/ready 与 wait 关系
+
+推荐语义：
+
+```text
+lsu_req_valid_o = mem_access && !req_outstanding_q
+request_accepted = lsu_req_valid_o && lsu_req_ready_i
+transaction_complete = lsu_resp_valid_i && (req_outstanding_q || request_accepted)
+```
+
+`mem_wait_o` 应覆盖 request 等待接受和 accepted 后等待 response 两段，本质上可以写成：
+
+```text
+mem_wait_o = mem_access && !transaction_complete
+```
+
+若 data subsystem 支持 0 wait-state，可以出现 request accepted 和 response valid 同拍。该情况需要在实现中明确是否允许：
+
+- 建议第一版允许 `ready=1` 且同拍 `resp_valid=1`，便于 0 wait-state 回归。
+- 若实现上先简化为“accepted 后至少下一拍 response”，则 0 wait-state 行为会多一拍，需明确并更新验证期望；当前不推荐，因为会不必要地改变现有回归时序。
+- 若支持同拍 response，状态更新应在 `request_accepted && lsu_resp_valid_i` 时保持 `req_outstanding_q=0`，不要先置 outstanding 再多等一拍。
+
+### 3.9 load data 生成改为 response 驱动
+
+`load_raw` 的输入从 `lsu_rdata_i` 改为完成 response 的 `lsu_resp_rdata_i`。
+
+只有 `transaction_complete && !lsu_resp_error_i && mem_re_i` 时，load_data 对后续 WB 有意义。
+
+response 未到时：
+
+- `valid_o` 不应让该 load 进入 MEM/WB。
+- `load_data_o` 可给默认值，但不应被使用。
+
+### 3.10 delayed access fault 生成
+
+response error 转换为：
+
+```text
+load  -> EXCEPTION_CAUSE_LOAD_ACCESS_FAULT
+store -> EXCEPTION_CAUSE_STORE_ACCESS_FAULT
+tval  -> alu_result_i
+```
+
+`exception_valid_o` 需要覆盖：
+
+```text
+前级 exception
+| mem_misaligned
+| (transaction_complete && lsu_resp_error_i)
 ```
 
 注意：
 
-- 当前实现用已有 `pc_plus4_i` 表示 `pc_i + 4`，避免在 EX 里重复加法。
-- `next_pc_o` 是“当前指令提交后，下一条架构 PC”。
-- 它不替代现有 `redirect_pc_o`。
-- `redirect_pc_o` 仍用于 EX 阶段控制流重定向。
-- `next_pc_o` 只给后续 interrupt 写 `mepc` 使用。
+- response error 只在 completion 边界产生。
+- request wait 或 outstanding wait 期间不要提前产生 access fault。
+- error response 不允许写 rd。
 
-### 2.3 修改 `rtl/core/core.sv` 的流水线组包 `已完成`
+### 3.11 `valid_o` 口径
 
-`ex_stage` 实例新增连接：
+`valid_o` 送入 MEM/WB，应表示“当前 MEM 指令本拍可以进入下一阶段的普通 WB 生命周期”。
 
-```systemverilog
-.pc_plus4_i (id_ex_data_q.pc_plus4),
-.next_pc_o  (ex_next_pc)
-```
-
-EX/MEM 组包：
-
-```systemverilog
-ex_mem_data_d.next_pc = ex_next_pc;
-```
-
-其中 `ex_next_pc` 来自 `ex_stage.next_pc_o`。ID/EX 不新增 `next_pc` 字段。
-
-## 3. CSR 文件扩展 `已完成`
-
-### 3.1 修改 `rtl/core/csr_file.sv` 端口 `已完成`
-
-新增 raw pending 输入：
-
-```systemverilog
-input logic mtip_i;
-input logic meip_i;
-```
-
-`MSIP` 本阶段不做，不加 `msip_i`。后续需要时再补。
-
-新增 trap kind 输入：
-
-```systemverilog
-input logic trap_is_interrupt_i;
-input logic [4:0] trap_cause_code_i;
-```
-
-现有：
-
-```systemverilog
-input core_pkg::excp_cause_e trap_cause_i
-```
-
-需要调整为低 5 bit code 形式。可选方案：
-
-- 方案 A：保留 `trap_cause_i` 给 exception，另加 `trap_irq_cause_i`。
-- 方案 B：统一改为 `logic [4:0] trap_cause_code_i`，再用 `trap_is_interrupt_i` 区分。
-
-本阶段选择方案 B，`csr_file` 写 `mcause` 时更直接。
-
-新增输出给 `trap_ctrl` 和顶层连线：
-
-```systemverilog
-output logic [core_pkg::XLEN-1:0] mstatus_o;
-output logic [core_pkg::XLEN-1:0] mstatus_commit_o;
-output logic [core_pkg::XLEN-1:0] mie_o;
-output logic [core_pkg::XLEN-1:0] mie_commit_o;
-output logic [core_pkg::XLEN-1:0] mtvec_o;
-output logic [core_pkg::XLEN-1:0] mtvec_commit_o;
-output logic [core_pkg::XLEN-1:0] mepc_o;
-output logic [core_pkg::XLEN-1:0] mip_o;
-```
-
-当前实现同时输出 CSR 当前值和普通 CSR 写后的 commit view：
-
-- `mie_o/mtvec_o` 是当前寄存器值，普通 interrupt、MRET+interrupt 和 exception redirect 使用它们，语义直观。
-- `mie_commit_o/mtvec_commit_o` 是普通 CSR 写提交后的值，专门用于 `CSR写+interrupt` 这种同拍复合提交。
-- 在没有合法普通 CSR 写时，commit view 仍等于当前 CSR 值，但计划中不强制所有路径都复用 commit view。
-
-### 3.2 新增 CSR storage `已完成`
-
-新增：
-
-```systemverilog
-reg [core_pkg::XLEN-1:0] mie;
-```
-
-`mip` 可以不作为纯 storage 保存全部 bit，因为 `MTIP/MEIP` 来自硬件 raw pending。
-
-当前做法：
-
-```systemverilog
-logic [XLEN-1:0] mip;
-```
-
-其中：
-
-```systemverilog
-always_comb begin
-    mip               = '0;
-    mip[MIP_MTIP_BIT] = mtip_i;
-    mip[MIP_MEIP_BIT] = meip_i;
-end
-```
-
-### 3.3 CSR read decode 与 CSR 输出 `已完成`
-
-`CSR_READ` 增加：
-
-```systemverilog
-CSR_ADDR_MIE: csr_rdata_o = mie;
-CSR_ADDR_MIP: csr_rdata_o = mip;
-```
-
-并驱动对外 CSR 视图：
-
-```systemverilog
-mstatus_o = mstatus;
-mie_o     = mie;
-mtvec_o   = mtvec;
-mepc_o    = mepc;
-mip_o     = mip;
-```
-
-`mie_commit_o/mtvec_commit_o` 在后续 `CSR_STATUS_OUT` 中生成，用来描述普通 CSR 写提交后的视图。
-
-### 3.4 CSR write illegal 检测 `已完成`
-
-`CSR_ILLEGAL_W` 中：
-
-- `mstatus/mtvec/mscratch/mepc/mcause/mtval/mie` 可写。
-- `mip` 本阶段不建议软件直接写，写 `mip` 作为非法 CSR 写，或按 WARL 忽略。
-
-推荐第一版：
+建议：
 
 ```text
-写 mie 合法
-写 mip 非法
-读 mip 合法
+valid_o = valid_i && !mem_wait_o
 ```
 
-这样更清楚地区分 enable CSR 和 hardware pending CSR。
+但 trap/MRET 的 `kill_mem_wb` 仍由 `trap_ctrl` 最终决定是否阻止写入 MEM/WB。
 
-### 3.5 CSR WARL 处理 `已完成`
+对于 response error，`valid_o` 可以为 1，让 trap_ctrl 在同拍看见 exception 并用 `kill_mem_wb` 阻止普通 WB；也可以由 core 用 trap kill 清掉。关键是不要让 error load 写 rd。
 
-`CSR_WARL_CAL` 中增加 `CSR_ADDR_MIE`：
+### 3.12 观察信号更新
 
-```text
-mie[MTIE] 可写
-mie[MEIE] 可写
-mie[MSIE] 本阶段写忽略，读 0
-其它 bit 写忽略，读 0
-```
+当前 `mem_access_fault_o/load_access_fault_o/store_access_fault_o` 是固定响应观察口。0834 后语义改为：
 
-写法上可以先令 `csr_warl = '0`，只拷贝 `MTIE/MEIE`。
+- `mem_access_fault_o`：completion 边界 response error。
+- `load_access_fault_o`：load response error。
+- `store_access_fault_o`：store response error。
 
-`mstatus` WARL 保持当前 `MIE/MPIE/MPP` 逻辑。
+若保留这些端口，注释必须同步为 delayed response error，不再写“地址未定义或权限不对同拍返回”。
 
-普通 CSR 写端口需要同步增加 `mie` 写回：
+## 4. core 顶层接线与流水线 backpressure
 
-```systemverilog
-CSR_ADDR_MIE: mie <= csr_warl;
-```
+### 4.1 修改 `rtl/core/core.sv` LSU 顶层端口
 
-### 3.6 CSR reset  `已完成`
-
-复位值：
-
-```text
-mie = 0
-mip = raw pending 组合值，不需要复位 storage
-```
-
-`mstatus.MIE = 0`，因此即使 timer/GPIO/UART 复位后 pending 意外为 1，也不会在软件开启前进入 interrupt。
-
-### 3.7 普通 trap entry 写 CSR `已完成`
-
-仅 exception 或仅 interrupt 的 trap entry 时：
+替换当前 LSU 固定响应接口：
 
 ```systemverilog
-mepc   <= trap_pc_i;
-mcause <= {trap_is_interrupt_i, (XLEN-1)'(trap_cause_code_i)};
-mtval  <= trap_is_interrupt_i ? '0 : trap_tval_i;
-MPIE   <= MIE;
-MIE    <= 1'b0;
-MPP    <= M;
+output logic            lsu_re_o;
+output logic            lsu_we_o;
+output logic [3:0]      lsu_be_o;
+output logic [XLEN-1:0] lsu_addr_o;
+output logic [XLEN-1:0] lsu_wdata_o;
+input  logic [XLEN-1:0] lsu_rdata_i;
+input  logic            lsu_access_fault_i;
 ```
 
-注意：
-
-- exception 的 `trap_pc_i` 是 faulting PC。
-- interrupt 的 `trap_pc_i` 是 interrupt return PC。
-- 因此 `csr_file` 注释里不要再把 `trap_pc_i` 固定描述为 fault 指令 PC。
-- `mcause` 低 `XLEN-1` 位保存 cause code。当前 `trap_cause_code_i` 只有 5 bit，写入时零扩展；后续如果 cause code 宽度扩展，这里的拼接结构不用变。
-
-### 3.8 复合提交时的 CSR 写语义 `已完成`
-
-第 4 章会允许 MRET 或普通 CSR 写与 interrupt 在同一提交边界同时成立。此时 `csr_file` 不能继续只按：
-
-```text
-trap entry > mret > normal csr write
-```
-
-这种互斥事件口径写，因为：
-
-- `trap_valid_i` 和 `mret_valid_i` 会在 `MRET+interrupt` 时合法地同时为 1。
-- `trap_valid_i` 和普通 CSR 写请求会在 `CSR写+interrupt` 时合法地同时为 1。
-
-当前 `CSR_WRITE` 分支按实际实现拆成：
-
-```text
-exception trap > MRET+interrupt > CSR写+interrupt > interrupt trap > MRET > normal CSR write
-```
-
-其中：
-
-```text
-exception trap    = trap_valid_i && !trap_is_interrupt_i
-MRET+interrupt    = trap_valid_i &&  trap_is_interrupt_i && mret_valid_i
-CSR写+interrupt   = trap_valid_i &&  trap_is_interrupt_i && !mret_valid_i && csr_valid_i && csr_write_en_i
-interrupt trap    = trap_valid_i &&  trap_is_interrupt_i && !mret_valid_i && !csr_write_en_i
-MRET              = !trap_valid_i && mret_valid_i
-normal CSR write  = csr_valid_i && csr_write_en_i
-```
-
-具体改动：
-
-- 修改 `rtl/core/csr_file.sv` 中 `CSR_WRITE` 的注释，说明这里是 CSR 状态更新分支，不是 trap 源仲裁。
-- 将当前 `if (trap_valid_i) ... else if (mret_valid_i) ...` 拆成上面的硬件写分支。
-- `exception trap` 和 `interrupt trap` 都写：
+改为：
 
 ```systemverilog
-mepc   <= trap_pc_i;
-mcause <= {trap_is_interrupt_i, (XLEN-1)'(trap_cause_code_i)};
-mtval  <= trap_is_interrupt_i ? '0 : trap_tval_i;
+output logic            lsu_req_valid_o;
+input  logic            lsu_req_ready_i;
+output logic            lsu_req_write_o;
+output logic [3:0]      lsu_req_be_o;
+output logic [XLEN-1:0] lsu_req_addr_o;
+output logic [XLEN-1:0] lsu_req_wdata_o;
+input  logic            lsu_resp_valid_i;
+input  logic [XLEN-1:0] lsu_resp_rdata_i;
+input  logic            lsu_resp_error_i;
 ```
 
-- `exception trap` 和 `interrupt trap` 的 `mstatus` 按普通 trap entry：
+注释同步说明：IMEM 仍固定响应，LSU data side 为 simple request/response。
 
-```text
-MIE  <= 0
-MPIE <= old MIE
-MPP  <= M
-```
+### 4.2 接入 `mem_stage` 的 clk/rst 和新接口
 
-- `MRET+interrupt` 的 `mcause/mtval/mstatus` 按 interrupt trap entry 语义处理。`mepc` 保持当前值，因为当前 `mepc` 本来就是 MRET 要返回的位置，也就是这次 interrupt 结束后应该回去的位置。
-
-`mstatus` 最终效果等价于“先 MRET 再 interrupt entry”：
-
-```text
-MIE  <= 0
-MPIE <= old MPIE
-MPP  <= M
-```
-
-也就是 `MPIE` 保持原值，不使用 `old MIE`。
-
-- `CSR写+interrupt` 的语义是“普通 CSR 写先提交，然后 interrupt trap entry 再提交”。当前实现先按 `csr_addr_i` 对合法普通 CSR 写做一次状态更新，再用同一 `always_ff` 后续赋值覆盖 interrupt entry 必须接管的字段。当前最小 CSR 集下合并规则为：
-
-```text
-mepc/mcause/mtval  : 最终由 interrupt trap entry 写入；若普通 CSR 写目标也是这些 CSR，则普通写被后续 trap entry 覆盖。
-mstatus            : trap entry 最终 MIE=0、MPP=M，MPIE 使用 CSR 写提交后的 MIE。
-mie/mtvec/mscratch : 若普通 CSR 写目标是这些 CSR，写入值需要保留。
-只读 CSR / 非法 CSR  : 不会进入本分支，已经由 exception trap 处理。
-```
-
-因此如果当前 CSR 指令写 `mstatus` 清掉 `MIE`，同拍就不应接受 interrupt；如果写 `mstatus` 打开 `MIE` 且 pending/enable 已满足，可以同拍接受 interrupt。这个判断由第 3.9 的“CSR 提交视图”提供给 `trap_ctrl`。
-
-- `MRET` 单独成立时保持原有语义：
-
-```text
-MIE  <= old MPIE
-MPIE <= 1
-MPP  <= M
-```
-
-### 3.9 CSR 提交视图输出 `已完成`
-
-为了让 `trap_ctrl` 支持 `CSR 写+interrupt`，它不能只看当前 CSR 寄存器旧值，而要看“当前合法 CSR 写提交后”的 CSR 视图。
-
-`csr_file` 新增组合输出：
+`u_mem_stage` 实例新增：
 
 ```systemverilog
-output logic [core_pkg::XLEN-1:0] mstatus_commit_o;
-output logic [core_pkg::XLEN-1:0] mie_commit_o;
-output logic [core_pkg::XLEN-1:0] mtvec_commit_o;
+.clk_i  (clk_i),
+.rst_n_i(rst_n_i),
 ```
 
-含义：
+并连接新 request/response 信号。
 
-```text
-mstatus_commit_o = 当前 mstatus 在普通合法 CSR 写提交后的值；若本拍没有合法 mstatus 写，则等于 mstatus。
-mie_commit_o     = 当前 mie     在普通合法 CSR 写提交后的值；若本拍没有合法 mie 写，则等于 mie。
-mtvec_commit_o   = 当前 mtvec   在普通合法 CSR 写提交后的值；若本拍没有合法 mtvec 写，则等于 mtvec。
-```
+### 4.3 新增 `mem_wait` 控制信号
 
-这些输出只反映普通 CSR 指令写的提交效果，不包含 trap entry 或 MRET 的硬件写效果，避免与 `trap_ctrl -> csr_file` 的 `trap_valid_i/mret_valid_i` 形成组合环。
-
-当前实现：
-
-- 在 `CSR_WARL_CAL` 后增加组合块 `CSR_STATUS_OUT`。
-- 默认：
+core 内部新增：
 
 ```systemverilog
-mstatus_commit_o = mstatus;
-mie_commit_o     = mie;
-mtvec_commit_o   = mtvec;
+wire mem_wait;
+wire mem_complete; // 可选
 ```
 
-- 同时输出当前 `mstatus_o/mie_o/mtvec_o/mepc_o/mip_o`。
-- 当 `csr_valid_i && csr_write_en_i && !csr_illegal_o` 且地址命中 `mstatus/mie/mtvec` 时，用 `csr_warl` 覆盖对应提交视图。
-- commit view 不包含 MRET 后的硬件写效果。`MRET+interrupt` 是否可接受由 `trap_ctrl` 看旧 `mstatus_o[MSTATUS_MPIE_BIT]` 判断；如果把 MRET 后的结果也放入 commit view，反而容易和 `trap_ctrl -> csr_file` 的硬件写控制形成组合环。
-- `trap_ctrl` 用当前 CSR 值处理普通 interrupt、MRET+interrupt 和 exception redirect；用 commit view 处理 `CSR写+interrupt` 的中断使能判断和 redirect。
+`mem_wait` 来自 `mem_stage.mem_wait_o`。
 
-一条 MEM 指令要么是普通 Zicsr 指令，要么是 MRET，不存在“CSR写 + MRET+interrupt”这种同一条指令同时成立的情况。
+### 4.4 PC/IF/ID/EX/MEM backpressure 接线
 
-纯 CSR 读指令不修改 CSR 状态，可以按普通指令处理；如果同拍接受 interrupt，仍然不 kill MEM/WB 输入，保证 CSR 读出的 rd 写回可以正常完成。
+memory wait 时需要保持：
 
-## 4. trap_ctrl 扩展 `已完成`
+```text
+PC
+IF/ID
+ID/EX
+EX/MEM
+```
 
-### 4.1 修改 `rtl/core/trap_ctrl.sv` 端口 `已完成`
+建议在 core 中形成：
 
-新增/调整输入：
+```text
+stall_pipeline = mem_wait
+```
+
+并参与：
+
+```text
+pc_reg.stall_pc_i       = stall_if | stall_pipeline
+pipe_reg_if_id.stall_i  = stall_id | stall_pipeline
+pipe_reg_id_ex.stall_i  = stall_pipeline
+pipe_reg_ex_mem.stall_i = stall_pipeline
+```
+
+`pipe_reg_mem_wb` 通常不因 MEM wait stall，因为 MEM wait 期间 `mem_valid/valid_o` 不应产生新的 MEM/WB 输入；WB 中已有 older 指令可以自然提交。若实现中 MEM/WB 需要 hold 以避免 valid 抖动，必须确认不会重复 commit。
+
+### 4.5 load-use/CSR-use 与 memory wait 的关系
+
+`hazard_unit` 仍负责：
+
+```text
+ID 阶段 consumer vs ID/EX late-result producer
+```
+
+memory wait 负责：
+
+```text
+producer 已到 MEM 且 response 未完成时，冻结整条前端/EX 路径
+```
+
+实现时不要用固定数量 bubble 处理可变延迟 load-use；load-use 只需要阻止 consumer 过早进入 EX，后续等待由 `mem_wait` 接管。
+
+### 4.6 EX redirect 与 memory wait 的屏蔽
+
+当前：
 
 ```systemverilog
-input logic [core_pkg::XLEN-1:0] mem_interrupt_return_pc_i;
-input logic [core_pkg::XLEN-1:0] csr_mstatus_i;
-input logic [core_pkg::XLEN-1:0] csr_mie_i;
-input logic [core_pkg::XLEN-1:0] csr_mtvec_i;
-input logic [core_pkg::XLEN-1:0] csr_mip_i;
-input logic                      mem_csr_write_en_i;
+redirect_valid = trap_redirect_valid | ex_redirect_valid;
 ```
 
-`csr_mepc_i` 继续保留，用于普通 MRET redirect 和 MRET+interrupt 的 interrupt return PC。
+0834 后需要防止 memory wait 期间 younger EX redirect 越过 older MEM 指令。
 
-新增 CSR 提交视图输入，用来支持 `CSR写+interrupt`：
+建议形成：
+
+```text
+ex_redirect_allowed = ex_redirect_valid && !mem_wait && !trap_redirect_valid
+redirect_valid      = trap_redirect_valid | ex_redirect_allowed
+```
+
+同时传给 `hazard_unit.redirect_valid_i` 的也应是被允许的 EX redirect，而不是原始 `ex_redirect_valid`。
+
+注意 response OK 同拍：
+
+- 如果 `mem_wait` 在 response valid 当拍降为 0，则 younger EX redirect 可以在该拍生效。
+- 如果同拍 trap/interrupt 被接受，trap redirect 优先，younger redirect 被 kill。
+
+### 4.7 trap_ctrl 只在 MEM completion 边界工作
+
+`trap_ctrl.mem_valid_i` 当前接 `ex_mem_valid`。0834 后如果 memory wait 期间 `ex_mem_valid=1`，但 response 未完成，不能接受 interrupt，也不能让 MRET/CSR 同拍 interrupt提前发生。
+
+需要新增或使用一个 completion-gated valid：
+
+```text
+mem_commit_valid = ex_mem_valid && !mem_wait
+```
+
+`trap_ctrl.mem_valid_i` 应接 `mem_commit_valid` 或等效信号。
+
+这样：
+
+- 非访存指令 `mem_wait=0`，trap_ctrl 行为不变。
+- misaligned/前级 exception `mem_wait=0`，trap_ctrl 立即处理。
+- load/store 等 response 时 `mem_wait=1`，trap_ctrl 不接受 interrupt/MRET/trap。
+- response error/OK 当拍 `mem_wait=0`，trap_ctrl 在 completion 边界处理。
+
+### 4.8 CSR 写提交语义保持
+
+`mem_csr_valid` 当前为：
 
 ```systemverilog
-input logic [core_pkg::XLEN-1:0] csr_mstatus_commit_i;
-input logic [core_pkg::XLEN-1:0] csr_mie_commit_i;
-input logic [core_pkg::XLEN-1:0] csr_mtvec_commit_i;
+ex_mem_valid & ex_mem_data_q.csr & ~mem_exception_valid
 ```
 
-`trap_ctrl` 同时接当前值和 commit view：
+0834 后建议改为 completion-gated：
 
-- 当前 `csr_mie_i/csr_mtvec_i` 用于普通 interrupt、MRET+interrupt 和 exception trap entry。
-- `csr_mie_commit_i/csr_mtvec_commit_i` 只用于 `CSR写+interrupt`，保证同拍写 `mie/mtvec` 后按新值判断和跳转。
-- 普通 MRET redirect 仍使用 `csr_mepc_i`。
+```text
+mem_csr_valid = mem_commit_valid && ex_mem_data_q.csr && !mem_exception_valid
+```
 
-新增输出：
+CSR 写不应在 MEM 前面有 outstanding memory wait 时提前提交。
+
+### 4.9 MEM/WB valid 口径
+
+`pipe_reg_mem_wb.valid_i` 当前接 `mem_valid`。0834 后 `mem_valid` 应已经由 `mem_stage` 在 completion 边界给出。
+
+需要检查：
+
+- memory wait 期间 MEM/WB 不接收当前 load/store。
+- response OK 后 load/store 进入 MEM/WB。
+- response error / exception / MRET 由 `kill_mem_wb` 阻止普通 WB。
+- interrupt 不 kill 当前已完成旧指令写回，保持 0833 口径。
+
+### 4.10 forwarding 的 EX/MEM load 可前递口径
+
+当前 forwarding_unit 会避免从 EX/MEM 前递 load/CSR 晚结果，转而依赖 MEM/WB。
+
+0834 下 load 在 response OK 后才进入 MEM/WB，因此原口径基本保持。
+
+需要检查：
+
+- memory wait 期间 ID/EX 被 hold，consumer 不会继续执行。
+- response OK 后下一拍进入 MEM/WB，consumer 解除 hold 后可从 MEM/WB forwarding 或 GPR bypass 得到 load 值。
+- 不要新增从 EX/MEM 对 load response 的组合前递，除非有明确必要。
+
+## 5. `hazard_unit` 控制语义同步
+
+### 5.1 保持 late-result-use 检测主体
+
+`rtl/core/hazard_unit.sv` 当前检测：
+
+- load-use stall。
+- CSR-use stall。
+- EX redirect flush。
+
+这部分主体不需要重写。
+
+### 5.2 输入 redirect 改为 allowed redirect
+
+`redirect_valid_i` 应由 core 传入“已经被 memory wait/trap 优先级允许”的 EX redirect。
+
+这样 hazard_unit 仍只关心普通 control hazard，不需要知道 memory outstanding 细节。
+
+### 5.3 注释同步新增 memory wait 分工
+
+头注释和控制优先级注释需要改为：
+
+```text
+trap/MRET/interrupt 与 memory wait 的全局优先级在 core/trap_ctrl 周边完成；
+hazard_unit 只处理局部 late-result-use 和被允许的 EX redirect。
+```
+
+不要让注释继续暗示全局优先级只有：
+
+```text
+trap/MRET redirect > EX redirect > load-use stall
+```
+
+## 6. `pipe_reg` 注释和 stall 优先级确认
+
+### 6.1 确认现有优先级是否适配 memory wait
+
+当前优先级：
+
+```text
+IF/ID:  reset > kill > flush > stall > normal
+ID/EX:  reset > kill > flush > stall > bubble > normal
+EX/MEM: reset > kill > stall > normal
+MEM/WB: reset > kill > stall > normal
+```
+
+该优先级对 0834 基本可用。
+
+重点确认：
+
+- kill 优先于 stall：trap/interrupt/MRET 接受时，年轻指令不能因 stall 被保留。
+- flush 优先于 stall：被允许的 EX redirect 需要清掉错误路径。
+- stall 优先于 bubble：memory wait 时不要插入 bubble 丢失当前年轻指令状态。
+
+### 6.2 更新注释
+
+`rtl/core/pipe_reg.sv` 中当前多处写“供后续扩展使用”。0834 实现后需要改成实际用途：
+
+- `ID/EX.stall_i` 用于 memory wait backpressure。
+- `EX/MEM.stall_i` 用于保持 outstanding transaction 对应的 MEM 指令。
+- `MEM/WB.stall_i` 若仍不用，应注明当前 MEM wait 不需要 stall MEM/WB，避免误解。
+
+## 7. data_subsystem 改为 simple data bus responder
+
+### 7.1 修改 `rtl/soc/data_subsystem.sv` 端口
+
+替换当前固定响应 core 接口：
 
 ```systemverilog
-output logic                      trap_is_interrupt_o;
-output logic [4:0]                trap_cause_code_o;
-output logic                      kill_mem_wb_o;
+input  logic                      core_re_i;
+input  logic                      core_we_i;
+input  logic [3:0]                core_be_i;
+input  logic [XLEN-1:0]           core_addr_i;
+input  logic [XLEN-1:0]           core_wdata_i;
+output logic [XLEN-1:0]           core_rdata_o;
+output logic                      core_access_fault_o;
 ```
 
-现有 `trap_cause_o` 若仍是 `excp_cause_e`，需要改为低 5 bit code 或配合 `trap_is_interrupt_o` 重命名。
-
-建议输出语义：
-
-```systemverilog
-trap_valid_o          // exception 或 interrupt 被接受
-trap_is_interrupt_o   // 1 表示 interrupt，0 表示 exception
-trap_pc_o             // 写 mepc 的值：exception=fault PC，interrupt=return PC
-trap_cause_code_o     // mcause 低 5 bit
-trap_tval_o           // interrupt 时为 0
-```
-
-### 4.2 生成 interrupt request/accept `已完成`
-
-组合逻辑：
-
-```text
-global_en = csr_mstatus_i[MSTATUS_MIE_BIT]
-mtip_en   = csr_mie_i[MIE_MTIE_BIT]
-meip_en   = csr_mie_i[MIE_MEIE_BIT]
-mtip_pend = csr_mip_i[MIP_MTIP_BIT]
-meip_pend = csr_mip_i[MIP_MEIP_BIT]
-```
-
-普通指令提交后的 interrupt request：
-
-```text
-irq_only_meip_request = global_en & meip_en & meip_pend
-irq_only_mtip_request = global_en & mtip_en & mtip_pend
-```
-
-CSR 写同拍 interrupt 单独使用 commit view：
-
-```text
-csr_global_en     = csr_mstatus_commit_i[MSTATUS_MIE_BIT]
-csr_mtip_en       = csr_mie_commit_i[MIE_MTIE_BIT]
-csr_meip_en       = csr_mie_commit_i[MIE_MEIE_BIT]
-csr_meip_request = csr_global_en & csr_meip_en & meip_pend
-csr_mtip_request = csr_global_en & csr_mtip_en & mtip_pend
-```
-
-MRET 同拍 interrupt 需要单独判断，因为 MRET 后的 `MIE` 来自旧 `MPIE`，不是旧 `MIE`：
-
-```text
-mret_global_en = csr_mstatus_i[MSTATUS_MPIE_BIT]
-mret_meip_request = mret_global_en & meip_en & meip_pend
-mret_mtip_request = mret_global_en & mtip_en & mtip_pend
-```
-
-这里的 `meip_en/mtip_en` 来自当前 `csr_mie_i`。MRET 指令不是 CSR 写，因此无需看 `mie_commit_i`。
-
-优先级：
-
-```text
-MEIP > MTIP
-```
-
-当前实现口径：
-
-- `request` 表示 interrupt pending/enable 条件满足。
-- `accept` 表示在有效 MEM/commit 边界、且没有同步 exception 时真正接受 interrupt。
-- `MRET+interrupt` 和 `CSR写+interrupt` 的 request 先用对应提交类型限定，避免没有 MRET/CSR 写时误判该路径成立。
+改为：
 
 ```systemverilog
-wire exception_trap = mem_valid_i &  exception_valid;
-wire mret_accept    = mem_valid_i & !exception_valid &  mem_mret_i;
-wire csr_we_accept  = mem_valid_i & !exception_valid &  mem_csr_valid_i &  mem_csr_write_en_i;
-
-wire irq_only_meip_request = !mret_accept & !csr_we_accept & irq_global_en & irq_meip_en & irq_meip_pending;
-wire irq_only_mtip_request = !mret_accept & !csr_we_accept & irq_global_en & irq_mtip_en & irq_mtip_pending;
-wire irq_only_request      = irq_only_meip_request | irq_only_mtip_request;
-
-wire csr_irq_global_en    = csr_mstatus_commit_i[MSTATUS_MIE_BIT];
-wire csr_irq_meip_en      = csr_mie_commit_i[MIE_MEIE_BIT];
-wire csr_irq_mtip_en      = csr_mie_commit_i[MIE_MTIE_BIT];
-wire csr_irq_meip_request = csr_we_accept & csr_irq_global_en & csr_irq_meip_en & irq_meip_pending;
-wire csr_irq_mtip_request = csr_we_accept & csr_irq_global_en & csr_irq_mtip_en & irq_mtip_pending;
-wire csr_irq_request      = csr_irq_meip_request | csr_irq_mtip_request;
-
-wire mret_irq_global_en   = csr_mstatus_i[MSTATUS_MPIE_BIT];
-wire mret_irq_meip_request = mret_accept & mret_irq_global_en & irq_meip_en & irq_meip_pending;
-wire mret_irq_mtip_request = mret_accept & mret_irq_global_en & irq_mtip_en & irq_mtip_pending;
-wire mret_irq_request      = mret_irq_meip_request | mret_irq_mtip_request;
-
-wire irq_request = irq_only_request | csr_irq_request | mret_irq_request;
-wire irq_accept  = mem_valid_i & !exception_valid & irq_request;
+input  logic                      core_req_valid_i;
+output logic                      core_req_ready_o;
+input  logic                      core_req_write_i;
+input  logic [3:0]                core_req_be_i;
+input  logic [XLEN-1:0]           core_req_addr_i;
+input  logic [XLEN-1:0]           core_req_wdata_i;
+output logic                      core_resp_valid_o;
+output logic [XLEN-1:0]           core_resp_rdata_o;
+output logic                      core_resp_error_o;
 ```
 
-- cause 最终只需要一套 `irq_cause`，因为同一拍最终只会接受一类 interrupt。
-- 生成 `irq_cause` 时使用汇总后的 `irq_meip_request/irq_mtip_request`，保持 `MEIP > MTIP`。
+观察口可保留并重命名或重新定义。
+
+### 7.2 第一版单 outstanding responder
+
+data_subsystem 需要保存 accepted request：
+
+```text
+req_pending_q
+req_write_q
+req_addr_q
+req_wdata_q
+req_be_q
+req_target_q
+```
+
+第一版只服务 CPU 一个 master，且 CPU 只发 single outstanding。
+
+建议：
+
+```text
+core_req_ready_o = !req_pending_q 或可接受 0 wait-state 的等效条件
+```
+
+accepted 后根据配置/默认延迟产生 response。
+
+### 7.3 支持 0 wait-state 行为
+
+为保持现有 regression 不退化，默认配置应支持 0 wait-state。
+
+可选实现：
+
+- 组合 ready=1，accepted 同拍组合生成 resp_valid/rdata/error。
+- 或内部延迟参数默认为 0，0 时走 bypass response，非 0 时走 pending counter。
+
+无论哪种实现，都要保证：
+
+- 同一 request 最多产生一个 response。
+- 同一 store/MMIO write 最多触发一次副作用。
+- unknown address/offset response error 不触发成功副作用。
+
+### 7.4 增加 wait-state 参数或输入控制
+
+为后续验证平台准备，data_subsystem 或其内部 responder 应支持插入延迟。
+
+本阶段的 wait-state 优先建模在 data_subsystem / responder 层，不要求把 `simple_ram`、GPIO、UART、TIMER32 本体都改成内部多拍设备。外设寄存器块第一版仍保持固定响应语义，由 data_subsystem 在 accepted request 和 response completion 之间插入等待。
+
+建议先提供参数：
 
 ```systemverilog
-wire irq_meip_request = mret_irq_meip_request | csr_irq_meip_request | irq_only_meip_request;
-wire irq_mtip_request = mret_irq_mtip_request | csr_irq_mtip_request | irq_only_mtip_request;
-
-irq_cause = IRQ_CAUSE_M_TIMER;
-if (irq_meip_request) begin
-    irq_cause = IRQ_CAUSE_M_EXTERNAL;
-end
-else if (irq_mtip_request) begin
-    irq_cause = IRQ_CAUSE_M_TIMER;
-end
+parameter int unsigned DMEM_RESP_DELAY_CYCLES  = 0;
+parameter int unsigned MMIO_RESP_DELAY_CYCLES  = 0;
 ```
 
-### 4.3 trap entry 优先级 `已完成`
-
-控制分支优先级：
+也可以细分：
 
 ```text
-pipeline_exception
-csr_illegal_exception
-MRET + interrupt
-CSR write + interrupt
-MRET
-interrupt
-none
+GPIO_RESP_DELAY_CYCLES
+UART_RESP_DELAY_CYCLES
+TIMER_RESP_DELAY_CYCLES
+UNKNOWN_RESP_DELAY_CYCLES
 ```
 
-解释：
+本阶段功能 RTL 可先实现统一 `DATA_RESP_DELAY_CYCLES`，但要考虑后续 testbench 能区分 DMEM/MMIO wait-state。随机或组合 wait-state 属于 0835 验证收口方向，本阶段只需要留出可控固定延迟入口。
 
-- `pipeline_exception` 与 `csr_illegal_exception` 都是同步 exception。
-- 同步 exception 优先于 MRET 和 interrupt；如果 MRET 指令本身异常，不能先完成 MRET。
-- 当前 MEM 指令是 MRET 且同拍满足任一 interrupt 接受条件时，直接支持 `MRET+interrupt` 复合语义：
-  - `mret_valid_o = 1`，表示 CSR 文件需要执行 MRET 相关的 `mstatus` 语义。
-  - `trap_valid_o = 1` 且 `trap_is_interrupt_o = 1`，表示同一拍接受 interrupt。
-  - interrupt 写入 `mepc` 的返回 PC 不是 `mem_interrupt_return_pc_i`，而是 `csr_mepc_i`，也就是 MRET 本来要跳回的位置。
-  - 最终 redirect 目标是当前 `csr_mtvec_i`，因为本拍最终进入 interrupt handler，而不是跳回 `mepc` 后继续执行。MRET 本身不会写 `mtvec`。
-- 当前 MEM 指令是合法 CSR 写且该 CSR 写提交后的状态满足任一 interrupt 接受条件时，直接支持 `CSR写+interrupt` 复合语义：
-  - 普通 CSR 写不能被吞掉，`csr_file` 需要同时完成普通 CSR 写和 interrupt trap entry 的合并更新。
-  - interrupt enable 判断使用 `csr_mstatus_commit_i/csr_mie_commit_i`，而不是旧 CSR 值。
-  - redirect 目标使用 `csr_mtvec_commit_i`，使同拍写 `mtvec` 后发生 interrupt 时跳到新入口。
-- 当前 MEM 指令是 MRET 但没有有效 interrupt 时，执行普通 MRET，redirect 到 `csr_mepc_i`。
-- interrupt 只在 `mem_valid_i=1` 的提交边界接受。
-- `MEIP > MTIP` 只体现在 `irq_cause` 选择上。二者同拍 pending 时，本次 trap 的 `mcause` 写 external interrupt；进入 handler、kill younger 指令、是否保留 MEM/WB 等控制动作不区分 MEIP/MTIP。
+### 7.5 地址译码基于 accepted request
 
-当前实现：
-
-- 保留已有：
-
-```systemverilog
-wire pipeline_exception    = mem_valid_i & mem_exception_valid_i;
-wire csr_illegal_exception = mem_valid_i & mem_csr_valid_i & mem_csr_illegal_i;
-```
-
-- 新增：
-
-```systemverilog
-wire exception_trap = mem_valid_i &  exception_valid;
-wire mret_accept    = mem_valid_i & !exception_valid &  mem_mret_i;
-wire csr_we_accept  = mem_valid_i & !exception_valid &  mem_csr_valid_i &  mem_csr_write_en_i;
-wire irq_accept     = mem_valid_i & !exception_valid & irq_request;
-```
-
-说明：
-
-- `mret_accept/csr_we_accept/irq_accept` 都被同步 exception 屏蔽。
-- `mret_accept` 与 `csr_we_accept` 用名字表示“当前 MEM 指令自身在本边界提交”，不是 interrupt trap entry。
-- `irq_request` 表示中断条件请求，`irq_accept` 才表示本拍真正接受 interrupt。
-- `MRET+interrupt` 使用 old `MPIE` 判断 MRET 后是否允许 interrupt；普通 interrupt 使用当前 `MIE`；`CSR写+interrupt` 使用 commit view 中的 `MIE`。
-- `mret_accept` 优先于 `csr_we_accept`；正常译码下一条指令不会同时是 MRET 和 CSR 写，这里也形成防御性优先级。
-
-### 4.4 exception 和 interrupt 输出差异 `已完成`
-
-同步 exception：
+当前 data_subsystem 基于 `core_addr_i` 同拍译码。0834 后应在 request accepted 时译码并锁存：
 
 ```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 0
-trap_pc_o           = mem_pc_i
-trap_cause_code_o   = exception cause code
-trap_tval_o         = exception tval
-redirect_pc_o       = csr_mtvec_i
-kill IF/ID, ID/EX, EX/MEM
-kill MEM/WB 输入
+dmem_hit
+gpio0_hit
+uart0_hit
+timer0_hit
+mapped_hit
 ```
 
-CSR illegal exception：
+response 返回时使用锁存后的 target，不要使用可能已变化的 core request payload。
 
-```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 0
-trap_pc_o           = mem_pc_i
-trap_cause_code_o   = ILLEGAL_INSTR
-trap_tval_o         = mem_instr_i
-redirect_pc_o       = csr_mtvec_i
-kill IF/ID, ID/EX, EX/MEM
-kill MEM/WB 输入
-```
+### 7.6 response error 来源
 
-interrupt：
+response error 覆盖：
 
-```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 1
-trap_pc_o           = mem_interrupt_return_pc_i
-trap_cause_code_o   = IRQ_CAUSE_M_EXTERNAL 或 IRQ_CAUSE_M_TIMER
-trap_tval_o         = 0
-redirect_pc_o       = csr_mtvec_i
-kill IF/ID, ID/EX, EX/MEM
-不 kill MEM/WB 输入
-```
+- 未映射地址窗口。
+- GPIO/UART/TIMER0 已映射窗口内 unknown offset。
 
-CSR 写同拍 interrupt：
+当前三个外设的 `access_fault_o` 仅检测 unknown offset。0834 后可先继续由外设输出 `access_fault_o`，data_subsystem 在 response 时把它转为 `core_resp_error_o`。
 
-```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 1
-trap_pc_o           = mem_interrupt_return_pc_i
-trap_cause_code_o   = IRQ_CAUSE_M_EXTERNAL 或 IRQ_CAUSE_M_TIMER
-trap_tval_o         = 0
-mret_valid_o        = 0
-redirect_valid_o    = 1
-redirect_pc_o       = csr_mtvec_commit_i
-kill IF/ID, ID/EX, EX/MEM
-不 kill MEM/WB 输入
-```
+### 7.7 DMEM read/write 时序
 
-这条路径要求 `csr_file` 同拍完成普通 CSR 写和 interrupt trap entry 的合并更新。
+当前 `simple_ram` 是写同步、读组合模型。
 
-MRET 同拍 interrupt：
+0834 第一版可以保持 `simple_ram` 内部实现不变，由 data_subsystem responder 包装为 request/response：
+
+- read request accepted 时采样或读取 DMEM rdata。
+- write request accepted/成功完成时写入 DMEM。
+
+若保留 `simple_ram.we_i` 在 accepted 当拍写入，则 write response 可以稍后返回，但必须保证：
+
+- accepted 只发生一次。
+- ready 等待期间不写。
+- response error 的 transaction 不写。
+
+DMEM 地址命中不产生 error。
+
+### 7.8 dmem/mmio 观察口重定义
+
+当前：
 
 ```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 1
-trap_pc_o           = csr_mepc_i
-trap_cause_code_o   = IRQ_CAUSE_M_EXTERNAL 或 IRQ_CAUSE_M_TIMER
-trap_tval_o         = 0
-mret_valid_o        = 1
-redirect_pc_o       = csr_mtvec_i
-kill IF/ID, ID/EX, EX/MEM
-kill MEM/WB 输入
+dmem_access_o/mmio_access_o = 本拍访问命中
 ```
 
-这条路径的含义是“当前 MRET 指令完成返回语义，但同一提交边界立刻接受 interrupt”。CSR 文件中需要专门处理 `trap_valid_i && trap_is_interrupt_i && mret_valid_i`，使最终 `mstatus` 等价于先 MRET 再 interrupt entry：
+0834 后建议拆成或重定义为：
 
 ```text
-MIE  <= 0
-MPIE <= old MPIE
-MPP  <= M
+dmem_access_o/mmio_access_o = request accepted 且命中对应区域
 ```
 
-MRET：
+如果 testbench 还需要 response 观察，可新增：
 
 ```text
-mret_valid_o        = 1
-redirect_pc_o       = csr_mepc_i
-kill IF/ID, ID/EX, EX/MEM
-kill MEM/WB 输入
+data_req_fire_o
+data_resp_valid_o
+data_resp_error_o
 ```
 
-MRET 是否 kill MEM/WB 输入沿用当前实现即可。MRET 本身没有普通 WB 行为，让它不进入 WB 更符合当前 trap_ctrl 语义。
+后续 TB mailbox 监听 DMEM store 时应优先使用 accepted request 或成功 write completion，具体见第 13 章。
 
-### 4.5 `TRAP_CTRL` 组合块改造 `已完成`
+## 8. 外设寄存器块的事务副作用整理
 
-原 `TRAP_ENTRY` 组合块只处理 exception，且后面的 `assign` 仍按 `trap_valid_o | mret_valid_o` 简单生成 redirect/kill。当前已改为一个统一的 `TRAP_CTRL` 组合块生成 trap/MRET/interrupt 输出，kill 输出则单独用组合 assign 表达。
+### 8.1 保持外设 ABI 不变
 
-当前实现：
+`rtl/periph/mmio_gpio.sv`、`rtl/periph/mmio_uart.sv`、`rtl/periph/mmio_timer32.sv` 的软件可见寄存器地址、位定义和读写属性不变。
 
-- 删除原只计算 exception 的 `always_comb begin : TRAP_ENTRY`。
-- 删除原先这些简单 assign：
+本阶段只调整外设访问时序口径。
 
-```systemverilog
-assign mret_valid_o     = mem_valid_i & mem_mret_i & ~trap_valid_o;
-assign redirect_valid_o = trap_valid_o | mret_valid_o;
-assign redirect_pc_o    = trap_valid_o ? csr_mtvec_i : mret_valid_o ? csr_mepc_i : '0;
-assign kill_if_id_o     = redirect_valid_o;
-assign kill_id_ex_o     = redirect_valid_o;
-assign kill_ex_mem_o    = redirect_valid_o;
-assign kill_mem_wb_o    = redirect_valid_o;
-```
+### 8.2 推荐第一版外设接口选择
 
-- 在新的组合块里集中生成输出。当前实现先给出无副作用默认值，并让 trap 相关只在 `trap_valid_o=1` 时有意义：
+有两种实现路线：
 
-```systemverilog
-trap_valid_o        = exception_trap | irq_accept;
-trap_pc_o           = exception_trap ? mem_pc_i : mem_interrupt_return_pc_i;
-trap_is_interrupt_o = exception_trap ? 1'b0 : 1'b1;
-trap_cause_code_o   = exception_trap ? 5'(exception_cause) : 5'(irq_cause);
-trap_tval_o         = '0;
-mret_valid_o        = 1'b0;
-redirect_valid_o    = 1'b0;
-redirect_pc_o       = csr_mtvec_i;
-```
+| 路线 | 说明 | 取舍 |
+|---|---|---|
+| A | 外设仍是固定响应 register block，data_subsystem 在 request accepted 时访问一次并锁存结果/副作用 | 改动小，适合第一版 |
+| B | 每个外设自身也改成 valid/ready/response | 边界更统一，但改动更大 |
 
-- 然后按 4.3 控制分支优先级写 `if/else if`：
+建议第一版采用路线 A：
 
 ```text
-exception_trap
-MRET + interrupt
-CSR写 + interrupt
-MRET
-interrupt
-none
+core simple bus 可变延迟
+data_subsystem 负责等待/response
+外设 register block 只在 accepted request 的一个脉冲上被访问一次
 ```
 
-- exception 分支中仍保留 `pipeline_exception > csr_illegal_exception` 的防御性选择：
+这样能先把 CPU backpressure 和 data bus 语义跑通，后续若需要慢外设内部状态机，再逐个外设升级。
+
+### 8.3 外设 `valid_i` 改为 accepted pulse
+
+若采用路线 A，data_subsystem 给外设的 `valid_i` 不再是 CPU request valid 保持信号，而是：
 
 ```text
-pipeline_exception    -> cause/tval 使用流水线携带的 exception 信息
-csr_illegal_exception -> cause=ILLEGAL_INSTR, tval=mem_instr_i
+periph_access_pulse = request accepted && target == this_periph
 ```
 
-- MRET+interrupt 分支中：
+这能保证：
+
+- ready=0 时不触发副作用。
+- request valid 保持多拍时不重复触发副作用。
+- response 延迟期间不重复触发副作用。
+
+外设头注释需要说明 `valid_i` 是一次 accepted MMIO transaction 的访问脉冲，而不是可保持的 bus valid。
+
+### 8.4 unknown offset 不产生副作用
+
+当前外设一般先写寄存器，再由 `offset_illegal` 输出 access_fault。0834 需要检查所有外设：
+
+- unknown offset 时 `access_fault_o=1`。
+- unknown offset 时不写 RW/RW1C/WO。
+- unknown offset read 不触发读副作用。
+- unknown offset write 不触发 TX event、W1C clear 等副作用。
+
+若现有代码已经通过 `rw_hit/wo_hit/rw1c_hit` 门控写副作用，需要确认读副作用是否也只在合法 offset 下触发。
+
+### 8.5 UART RXDATA 读副作用采样点
+
+0834 文档建议第一版采用：
 
 ```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 1
-trap_pc_o           = csr_mepc_i
-trap_cause_code_o   = irq_cause
-trap_tval_o         = 0
-mret_valid_o        = 1
-redirect_valid_o    = 1
-redirect_pc_o       = csr_mtvec_i
-kill IF/ID, ID/EX, EX/MEM, MEM/WB
+request accepted 时采样读数据；
+response OK 时软件认为 read 完成；
+读副作用最多触发一次。
 ```
 
-- CSR写+interrupt 分支中：
+若外设仍固定响应、data_subsystem 在 accepted 当拍访问外设，则 UART RXDATA 的读清会发生在 accepted 当拍，而 response 可能稍后返回。
+
+这种实现可以接受，但必须在文档/注释中明确为：
 
 ```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 1
-trap_pc_o           = mem_interrupt_return_pc_i
-trap_cause_code_o   = irq_cause
-trap_tval_o         = 0
-mret_valid_o        = 0
-redirect_valid_o    = 1
-redirect_pc_o       = csr_mtvec_commit_i
-kill IF/ID, ID/EX, EX/MEM
-不 kill MEM/WB
+外设寄存器访问在 request accepted 时发生；response 延迟只表示 CPU completion 延迟。
 ```
 
-- MRET 分支中：
+若希望严格做到 response OK 时才清 pending，则需要给外设增加 delayed commit 信号，第一版不建议。
+
+### 8.6 UART TX event
+
+写 UART TXDATA 应只在 accepted pulse 且 offset 合法时产生一个 `tx_valid_o` 脉冲。
+
+需要重点检查：
+
+- `tx_valid_o` 不因 response 延迟重复拉高。
+- `tx_valid_o` 不因 request valid 等 ready 重复拉高。
+- unknown offset 或 `be_i[0]=0` 不产生 TX event。
+
+### 8.7 GPIO W1C 和 pending set
+
+GPIO 的中断 pending 硬件 set 仍按同步输入每拍运行，不受 bus wait 影响。
+
+软件 W1C clear 只在 accepted pulse 且 offset 为 IRQ_PENDING 时执行一次。
+
+同拍 set/clear 优先级保持当前实现：硬件 set 优先。
+
+### 8.8 TIMER32 计数
+
+TIMER32 自增仍按 `clk_i` 运行，不因为 CPU bus wait 暂停。
+
+写 MTIME 的“本拍不自增”、写非 MTIME 时允许自增的语义保持。
+
+若采用 accepted pulse 访问外设，则“本拍”指 request accepted 那一拍，而不是 response 返回那一拍。
+
+## 9. SoC 顶层接口和观察口
+
+### 9.1 修改 `rtl/soc/rv32i_soc.sv` core/data_subsystem 连接
+
+SoC 顶层需要连接新的 simple data bus：
 
 ```text
-trap_valid_o     = 0
-mret_valid_o     = 1
-redirect_valid_o = 1
-redirect_pc_o    = csr_mepc_i
-kill IF/ID, ID/EX, EX/MEM, MEM/WB
+core.lsu_req_* <-> data_subsystem.core_req_*
+core.lsu_resp_* <-> data_subsystem.core_resp_*
 ```
 
-- 普通 interrupt 分支中：
+IMEM 仍保持固定响应接口，`simple_rom` 继续由 testbench 实例化并连接到 `rv32i_soc` 的 IMEM 端口。
+
+### 9.2 更新 data 观察输出
+
+当前 SoC 输出：
 
 ```text
-trap_valid_o        = 1
-trap_is_interrupt_o = 1
-trap_pc_o           = mem_interrupt_return_pc_i
-trap_cause_code_o   = irq_cause
-trap_tval_o         = 0
-mret_valid_o        = 0
-redirect_valid_o    = 1
-redirect_pc_o       = csr_mtvec_i
-kill IF/ID, ID/EX, EX/MEM
-不 kill MEM/WB
+data_re_o
+data_we_o
+data_be_o
+data_addr_o
+data_wdata_o
+data_rdata_o
+data_access_fault_o
+dmem_access_o
+mmio_access_o
 ```
 
-### 4.6 `kill_mem_wb_o` 语义修正 `已完成`
-
-当前实现：
+0834 后建议调整为兼容 testbench 的观察口：
 
 ```text
-kill_if_id_o   = exception_trap | irq_accept | mret_accept
-kill_id_ex_o   = exception_trap | irq_accept | mret_accept
-kill_ex_mem_o  = exception_trap | irq_accept | mret_accept
-kill_mem_wb_o  = exception_trap | mret_accept
+data_req_valid_o
+data_req_ready_o
+data_req_write_o
+data_be_o
+data_addr_o
+data_wdata_o
+data_resp_valid_o
+data_rdata_o
+data_resp_error_o
+dmem_access_o
+mmio_access_o
 ```
 
-`kill_mem_wb_o` 不包含普通 interrupt trap。
+如果为了减少 testbench 改动保留旧名，则必须更新注释：
 
-原因：
+- `data_re_o/data_we_o` 不再代表“本拍完成访问”，而是 request valid 中的 read/write 意图。
+- `data_access_fault_o` 不再是同拍 access_fault，而是 response error。
 
-- exception：当前 MEM 指令是 faulting instruction，不能作为普通指令提交。
-- MRET：当前 MEM 指令是控制流返回指令，没有普通 WB 生命周期。
-- interrupt：当前 MEM 指令是旧指令，应允许正常完成；interrupt 在它之后被接受。
-- CSR写+interrupt：当前 MEM 指令是正常提交的 CSR 指令，不应 kill MEM/WB 输入，否则会吞掉 rd 写回；CSR 状态合并写由 `csr_file` 内部处理。
+建议使用新名，避免语义误导。
 
-注意：`MRET+interrupt` 同拍时 `mret_accept=1`，因此仍然 kill MEM/WB 输入。这里 kill 的是 MRET 指令本身，不是被 interrupt 打断的普通旧指令。
+### 9.3 中断连接保持不变
 
-## 5. core 顶层接线 `已完成`
-
-### 5.1 修改 `rtl/core/core.sv` 端口 `已完成`
-
-新增输入：
-
-```systemverilog
-input logic mtip_i;
-input logic meip_i;
-```
-
-不加 `msip_i`。
-
-新增观察输出：
-
-```systemverilog
-output logic                      trap_is_interrupt_o;
-output logic [4:0]                trap_cause_code_o;
-```
-
-现有 `trap_cause_o` 若继续保留 `excp_cause_e` 类型，会不适合表示 interrupt。建议改成：
-
-```systemverilog
-output logic [4:0] trap_cause_code_o
-```
-
-或者保留旧名但改类型。为了减少歧义，推荐使用新名。
-
-### 5.2 core 内部 CSR/trap 信号 `已完成`
-
-新增 wire：
-
-```systemverilog
-wire [core_pkg::XLEN-1:0] csr_mip;
-wire [core_pkg::XLEN-1:0] csr_mstatus;
-wire [core_pkg::XLEN-1:0] csr_mie;
-wire [core_pkg::XLEN-1:0] csr_mtvec;
-wire [core_pkg::XLEN-1:0] csr_mstatus_commit;
-wire [core_pkg::XLEN-1:0] csr_mie_commit;
-wire [core_pkg::XLEN-1:0] csr_mtvec_commit;
-wire [core_pkg::XLEN-1:0] csr_mepc;
-wire                      trap_is_interrupt;
-wire [4:0]                trap_cause_code;
-wire [core_pkg::XLEN-1:0] ex_next_pc;
-```
-
-`csr_mie/csr_mtvec` 是当前 CSR 值，`csr_mie_commit/csr_mtvec_commit` 是普通 CSR 写提交后的视图。两类信号都保留，便于 `trap_ctrl` 按不同路径选择。
-
-### 5.3 ex_stage 实例连接 `已完成`
-
-连接新增端口：
-
-```systemverilog
-.next_pc_o (ex_next_pc)
-```
-
-EX/MEM 组包：
-
-```systemverilog
-assign ex_mem_data_d.next_pc = ex_next_pc;
-```
-
-### 5.4 csr_file 实例连接 `已完成`
-
-新增连接：
-
-```systemverilog
-.mtip_i              (mtip_i),
-.meip_i              (meip_i),
-.trap_is_interrupt_i (trap_is_interrupt),
-.trap_cause_code_i   (trap_cause_code),
-.mstatus_o           (csr_mstatus),
-.mie_o               (csr_mie),
-.mtvec_o             (csr_mtvec),
-.mstatus_commit_o    (csr_mstatus_commit),
-.mie_commit_o        (csr_mie_commit),
-.mtvec_commit_o      (csr_mtvec_commit),
-.mepc_o              (csr_mepc),
-.mip_o               (csr_mip)
-```
-
-如果 `csr_file` 端口从 `trap_cause_i` 改为 `trap_cause_code_i`，同步替换原连接。`trap_cause_code_i` 的输入类型是低 5 bit code，不能继续直接接 `excp_cause_e` 类型的旧 `trap_cause` 信号。
-
-### 5.5 trap_ctrl 实例连接 `已完成`
-
-新增连接：
-
-```systemverilog
-.mem_interrupt_return_pc_i (ex_mem_data_q.next_pc),
-.mem_csr_write_en_i        (ex_mem_data_q.csr_write_en),
-.csr_mstatus_i             (csr_mstatus),
-.csr_mie_i                 (csr_mie),
-.csr_mtvec_i               (csr_mtvec),
-.csr_mip_i                 (csr_mip),
-.csr_mstatus_commit_i      (csr_mstatus_commit),
-.csr_mie_commit_i          (csr_mie_commit),
-.csr_mtvec_commit_i        (csr_mtvec_commit),
-.trap_is_interrupt_o       (trap_is_interrupt),
-.trap_cause_code_o         (trap_cause_code)
-```
-
-原 `trap_cause_o` 连接同步改名或改类型。
-
-### 5.6 commit/trap 观察输出 `已完成`
-
-导出：
-
-```systemverilog
-assign trap_is_interrupt_o = trap_is_interrupt;
-assign trap_cause_code_o   = trap_cause_code;
-```
-
-`trap_pc_o` 注释改成：
+GPIO/UART/TIMER0 中断汇总：
 
 ```text
-写入 mepc 的 PC；exception 时为 fault PC，interrupt 时为 return PC。
+MEIP = gpio0_irq_o | uart0_irq_o
+MTIP = timer0_irq_o
 ```
 
-## 6. TIMER0 外设 `已完成`
+保持不变。
 
-### 6.1 新建 `rtl/periph/mmio_timer32.sv`
+memory wait 期间中断 pending 可继续进入 CSR `mip`，core 只在 MEM completion 边界接受。
 
-端口建议：
+### 9.4 头注释同步
 
-```systemverilog
-module mmio_timer32 #(
-    parameter logic [core_pkg::XLEN-1:0] BASE_ADDR = soc_pkg::TIMER0_BASE
-) (
-    input  logic                      clk_i,
-    input  logic                      rst_n_i,
+`rv32i_soc.sv` 头注释需要从“固定响应平台集成”改为：
 
-    input  logic                      valid_i,
-    input  logic                      we_i,
-    input  logic [3:0]                be_i,
-    input  logic [core_pkg::XLEN-1:0] addr_i,
-    input  logic [core_pkg::XLEN-1:0] wdata_i,
-    output logic [core_pkg::XLEN-1:0] rdata_o,
-    output logic                      access_fault_o,
+- IMEM 固定响应。
+- data side 使用 simple request/response。
+- data_subsystem 支持可配置 wait-state/backpressure。
+- 外设寄存器 ABI 不变。
 
-    output logic                      timer32_irq_o
-);
-```
+## 10. trap/interrupt 精确语义检查点
 
-### 6.2 TIMER32 寄存器 `已完成`
+### 10.1 delayed access fault
 
-寄存器：
-
-| offset | 名称 | 属性 | 作用 |
-|---:|---|---|---|
-| `0x00` | `MTIME` | RW | 当前 32-bit 计数值 |
-| `0x04` | `MTIMECMP` | RW | 32-bit 比较值 |
-| `0x08` | `CTRL` | RW | bit0 enable |
-| `0x0C` | `STATUS` | RO | bit0 raw `MTIP` |
-
-### 6.3 TIMER32 行为 `已完成`
-
-复位：
+在 `mem_stage`、`core`、`trap_ctrl` 组合后，需要确认：
 
 ```text
-MTIME = 0
-MTIMECMP = 0
-CTRL.enable = 0
+response error load:
+  mcause = load access fault
+  mepc   = faulting load PC
+  mtval  = faulting address
+  rd 不写
+
+response error store:
+  mcause = store access fault
+  mepc   = faulting store PC
+  mtval  = faulting address
+  store 不产生成功副作用
 ```
 
-计数：
+### 10.2 interrupt 等待 completion
+
+memory wait 期间：
+
+- `mip` 可以反映 pending。
+- `trap_ctrl` 不应接受 interrupt。
+- `trap_valid_o` 不应因为 pending interrupt 拉高。
+
+response OK 当拍：
+
+- 若 interrupt enable/pending 满足，按 0833 规则接受 interrupt。
+- 当前 load/store 已完成后再进入 interrupt。
+- interrupt 不 kill 当前旧指令普通 WB。
+
+response error 当拍：
+
+- access fault exception 优先。
+- interrupt 保持 pending，不能同拍抢先进入 handler。
+
+### 10.3 MRET/CSR 写同拍 interrupt
+
+0833 语义保持：
 
 ```text
-if CTRL.enable:
-    MTIME <= MTIME + 1
+CSR 写+interrupt：先提交 CSR 写，用 commit view 判断并跳到可能更新后的 mtvec。
+MRET+interrupt：先恢复 mstatus，interrupt mepc 使用 MRET 原本要返回的 mepc。
 ```
 
-比较：
+0834 只新增一个约束：
 
 ```text
-timer32_irq_o = CTRL.enable && (MTIME >= MTIMECMP)
-STATUS[0] = timer32_irq_o
+若它们前面有 older memory wait，则这些 younger 指令不能越过 older memory 指令。
 ```
 
-写 `MTIME/MTIMECMP/CTRL` 按 byte enable 更新。当前实现中，写 `MTIME` 时本拍不执行 `MTIME` 自增；写 `MTIMECMP/CTRL` 不阻止计数器自增，是否自增取决于时钟沿前的 `CTRL.enable`。
+### 10.4 younger redirect
 
-写 `STATUS` 忽略。
+需要在波形中能看到：
 
-未知 offset 输出 `access_fault_o`。
+- MEM wait 时 EX 阶段 younger branch 结果可存在，但不会更新 PC。
+- response OK 且无 trap/interrupt 时，younger redirect 才能生效。
+- response error 或 interrupt accepted 时，younger redirect 被 kill。
 
-### 6.4 timer 与软件 pending `无需操作`
+## 11. simple_ram 和 memory 模型处理
 
-`MTIP` 是 level pending。handler 必须：
+### 11.1 `simple_ram.sv` 行为可先保持不变
 
-- 写 `MTIMECMP` 到未来；或
-- 关闭 `CTRL.enable`。
+当前 `simple_ram` 是仿真 RAM 模型：
 
-否则 `MRET` 后会立刻再次进入 timer interrupt。
+- 写同步。
+- 读组合。
+- 地址按 `DMEM_BASE` 映射到内部 word index。
 
-## 7. GPIO0 中断扩展 `已完成`
+0834 第一版可以不改 `simple_ram`，仍由 testbench 实例化；data_subsystem/responder 通过外置 DMEM 端口包装 response 时序。
 
-### 7.1 修改 `rtl/periph/mmio_gpio.sv` 端口 `已完成`
+### 11.2 可选增加 wrapper
 
-新增输出：
-
-```systemverilog
-output logic gpio_irq_o
-```
-
-### 7.2 扩展 GPIO 寄存器 `已完成`
-
-在现有 `OUT/IN/OE` 后新增：
-
-| offset | 名称 | 属性 | 行为 |
-|---:|---|---|---|
-| `0x0C` | `IRQ_EN` | RW | 每 bit 中断总使能 |
-| `0x10` | `IRQ_RISE_EN` | RW | 每 bit 上升沿触发使能 |
-| `0x14` | `IRQ_FALL_EN` | RW | 每 bit 下降沿触发使能 |
-| `0x18` | `IRQ_HIGH_EN` | RW | 每 bit 高电平触发使能 |
-| `0x1C` | `IRQ_LOW_EN` | RW | 每 bit 低电平触发使能 |
-| `0x20` | `IRQ_PENDING` | R/W1C | 读 pending；写 1 清对应 bit；写 0 保持 |
-| `0x24` | `IRQ_STATUS` | RO | `IRQ_PENDING & IRQ_EN` |
-
-当前实现按寄存器属性分组：
+若直接在 data_subsystem 中处理延迟使逻辑过重，可新增：
 
 ```text
-RW   : OUT/OE/IRQ_EN/IRQ_RISE_EN/IRQ_FALL_EN/IRQ_HIGH_EN/IRQ_LOW_EN
-RO   : IN/IRQ_STATUS
-RW1C : IRQ_PENDING
+rtl/mem/simple_data_ram_slave.sv
 ```
 
-读 mux 需要覆盖全部已定义 offset：
+职责：
+
+- 接 simple data bus 子集。
+- 连接外置 simple_ram 或后续可替换 memory model。
+- 支持 wait-state parameter。
+
+但第一版建议先不增加过多模块，除非 data_subsystem 明显变得难以维护。
+
+### 11.3 DMEM write 副作用时机
+
+如果 DMEM store 在 request accepted 当拍写入，但 response 延迟返回，软件可见提交在 response OK。
+
+这对单 master、单 outstanding、无异常 DMEM 命中场景可接受。
+
+但需要保证：
+
+- 未映射地址不会写。
+- MMIO unknown offset 不会写。
+- accepted 只发生一次。
+
+## 12. 注释和文档同步
+
+### 12.1 RTL 头注释必须同步的文件
+
+需要同步：
+
+- `rtl/core/core.sv`
+- `rtl/core/mem_stage.sv`
+- `rtl/core/hazard_unit.sv`
+- `rtl/core/pipe_reg.sv`
+- `rtl/soc/data_subsystem.sv`
+- `rtl/soc/rv32i_soc.sv`
+- `rtl/periph/mmio_gpio.sv`
+- `rtl/periph/mmio_uart.sv`
+- `rtl/periph/mmio_timer32.sv`
+
+重点删除或改写以下过时口径：
 
 ```text
-OUT/OE/IRQ_*_EN      -> 对应 RW 寄存器
-IN                   -> 同步后的 gpio_in_sync
-IRQ_PENDING          -> RW1C pending 寄存器
-IRQ_STATUS           -> IRQ_PENDING & IRQ_EN
-未知 offset           -> access_fault_o
+固定响应
+没有 ready/valid backpressure
+mem_stage 是纯组合逻辑
+access_fault 同拍返回
+valid_i 是保持的访问信号
 ```
 
-写语义：
+### 12.2 `rtl/periph/readme.md`
+
+外设寄存器 ABI 不变，因此手册主体不应大改。
+
+需要补充或检查：
+
+- 外设手册面向软件，不写 RTL 事务实现细节。
+- 说明在支持 wait-state 的平台上，寄存器读写可能不是固定周期。
+- 若采用 accepted 时触发外设访问，读副作用/写副作用的软件语义仍是“一次成功访问最多一次”，不要求软件关心 accepted/response 内部时序。
+- unknown offset 仍表现为 load/store access fault。
+
+### 12.3 README 当前特性
+
+0834 完成后更新 README：
+
+- 当前特性新增 data-side variable-latency / simple data bus / MEM backpressure。
+- 系统架构图中 `data_subsystem: fixed DMEM/MMIO decoder` 改为 simple data bus responder。
+- 项目时间戳新增 v5.1 或 v6.0，具体版本号由提交前统一决定。
+
+### 12.4 0834 文档
+
+若实现与 `docs/08xx/0834 ...` 有差异，需要在完成后说明：
+
+- 差异点。
+- 为什么实现方案更适合当前代码。
+- 经确认后同步 0834 文档或在 README/plan 中记录最终口径。
+
+## 13. 验证平台前提性准备
+
+本阶段 RTL 写完后，具体功能验证方案另行规划。这里仅列验证平台必须先具备的基础能力，保证后续能继续沿用当前软件自检方式做 0 wait-state 回归和最小固定 wait-state smoke。
+
+阶段5 再把这些基础能力扩展为更完整的 wait-state directed test、SVA、monitor/scoreboard 和 UVM simple-bus/peripheral demo。本阶段不展开具体测试矩阵。
+
+### 13.1 SoC testbench 观察口适配
+
+`tb/sv/tb_rv32i_soc.sv` 需要适配新的 data bus 观察信号。
+
+至少能观察：
 
 ```text
-RW 写     : 按 byte enable 更新被写 byte，未选 byte 保持。
-RW1C 写   : clear_mask 由 byte enable 展开后的 wdata 产生；写 1 清对应 pending bit，写 0 保持。
-reset     : RW 和 RW1C 寄存器都清 0。
-```
-
-`IRQ_PENDING` 的硬件 set 与软件 W1C clear 合并在 7.4 处理；最终语义仍以 7.4 的 `(pending & ~clear_mask) | set_mask` 为准。
-
-### 7.3 GPIO 输入同步与采样 `已完成`
-
-新增寄存器：
-
-```systemverilog
-reg [GPIO_WIDTH-1:0] gpio_in_meta;
-reg [GPIO_WIDTH-1:0] gpio_in_sync;
-reg [GPIO_WIDTH-1:0] gpio_in_sync_q;
-```
-
-`gpio_in_i` 可能来自 core 时钟域外部，本阶段在 GPIO 内部做两级同步。每拍更新：
-
-```systemverilog
-gpio_in_meta   <= gpio_in_i;
-gpio_in_sync   <= gpio_in_meta;
-gpio_in_sync_q <= gpio_in_sync;
-```
-
-`GPIO_IN` 读值返回 `gpio_in_sync`。触发检测同样使用同步后的输入：
-
-```text
-rise_hit =  gpio_in_sync & ~gpio_in_sync_q
-fall_hit = ~gpio_in_sync &  gpio_in_sync_q
-high_hit =  gpio_in_sync
-low_hit  = ~gpio_in_sync
-```
-
-### 7.4 pending 更新 `已完成`
-
-组合：
-
-```text
-trigger_hit =
-    (IRQ_RISE_EN & rise_hit) |
-    (IRQ_FALL_EN & fall_hit) |
-    (IRQ_HIGH_EN & high_hit) |
-    (IRQ_LOW_EN  & low_hit)
-```
-
-时序：
-
-```text
-clear_mask = 写 IRQ_PENDING 时 wdata 中为 1 的 bit
-set_mask   = IRQ_EN & trigger_hit
-
-IRQ_PENDING <= (IRQ_PENDING & ~clear_mask) | set_mask
-```
-
-`set` 与 `clear` 同拍冲突时建议 `set` 优先。原因是如果外部 level 仍保持触发状态，软件清 pending 后应继续看到 pending。
-
-### 7.5 GPIO irq 输出 `已完成`
-
-```text
-IRQ_STATUS = IRQ_PENDING & IRQ_EN
-gpio_irq_o = |IRQ_STATUS
-```
-
-`gpio_irq_o` 是 level 信号，不是 pulse。
-
-## 8. UART0 RX 与中断扩展 `已完成`
-
-### 8.1 修改 `rtl/periph/mmio_uart.sv` 端口 `已完成`
-
-新增输入：
-
-```systemverilog
-input logic       rx_valid_i;
-input logic [7:0] rx_data_i;
-```
-
-新增输出：
-
-```systemverilog
-output logic uart_irq_o
-```
-
-`rx_valid_i` 来自 SoC/testbench，用于模拟外部收到一个字节，不是真实串口采样。
-
-本阶段约定 `rx_valid_i/rx_data_i` 已经在 `clk_i` 域：
-
-- `rx_valid_i` 是 `clk_i` 域内的单拍 event pulse。
-- `rx_data_i` 在 `rx_valid_i=1` 的该拍保持稳定。
-- `mmio_uart` 不在内部对 `rx_data_i` 做逐 bit 两级同步；多 bit 数据若来自异步域，必须由外层 UART RX 前端、握手同步或异步 FIFO 先转换到 `clk_i` 域。
-
-原因是 `rx_valid_i/rx_data_i` 是一组事件接口，不是 GPIO 那种独立引脚电平。直接对 data bus 各 bit 分别同步可能得到不一致的数据字节。
-
-### 8.2 扩展 UART 寄存器 `已完成`
-
-现有：
-
-| offset | 名称 | 属性 |
-|---:|---|---|
-| `0x00` | `TXDATA` | WO |
-| `0x04` | `STATUS` | RO |
-| `0x08` | `CTRL` | RW |
-
-扩展：
-
-| offset | 名称 | 属性 | 行为 |
-|---:|---|---|---|
-| `0x0C` | `RXDATA` | RO | 返回最近收到的 RX byte；读取清 `rx_valid/rx_irq_pending` |
-| `0x10` | `IRQ_PENDING` | R/W1C | bit0 为 RX pending；读本寄存器只观察；写 1 清 pending |
-
-`STATUS` bit：
-
-```text
-STATUS[0] = tx_ready，固定 1
-STATUS[1] = rx_valid
-STATUS[2] = irq_pending
-```
-
-`CTRL` bit：
-
-```text
-CTRL[0] = tx_enable
-CTRL[1] = rx_irq_enable
-```
-
-### 8.3 UART RX event `已完成`
-
-当：
-
-```text
-rx_valid_i
-```
-
-发生时：
-
-```text
-RXDATA <= rx_data_i
-rx_valid <= 1
-rx_irq_pending <= 1
-```
-
-如果旧 RXDATA 尚未被读走，又来新的 `rx_valid_i`：
-
-- 第一版可以覆盖旧值。
-- 可在注释里说明当前无 FIFO，软件应及时读取。
-
-### 8.4 UART pending 清除 `已完成`
-
-本阶段确定采用第一版清除语义：
-
-- 读 `RXDATA`：清 `rx_valid` 和 `rx_irq_pending`，并返回最近收到的 byte。
-- 读 `IRQ_PENDING`：只观察 `rx_irq_pending`，不清除。
-- 写 `IRQ_PENDING[0]=1`：只清 `rx_irq_pending`，不清 `RXDATA/rx_valid`。
-
-这样软件可以先关中断或清 pending，再决定是否读取数据。
-
-### 8.5 UART irq 输出 `已完成`
-
-```text
-uart_irq_o = CTRL.rx_irq_enable && rx_irq_pending
-```
-
-`uart_irq_o` 是 level 信号，不是 pulse。
-
-## 9. data_subsystem 集成 `已完成`
-
-### 9.1 修改 `rtl/soc/data_subsystem.sv` 端口 `已完成`
-
-新增 UART RX 输入：
-
-```systemverilog
-input logic       uart0_rx_valid_i;
-input logic [7:0] uart0_rx_data_i;
-```
-
-新增 interrupt 输出：
-
-```systemverilog
-output logic timer0_irq_o;
-output logic gpio0_irq_o;
-output logic uart0_irq_o;
-```
-
-### 9.2 地址命中 `已完成`
-
-新增：
-
-```systemverilog
-wire timer0_hit;
-wire timer0_valid;
-```
-
-命中范围：
-
-```text
-TIMER0_BASE <= core_addr_i < TIMER0_BASE + TIMER0_SIZE_BYTES
-```
-
-`mapped_hit` 增加 `timer0_hit`。
-
-`mmio_access_o` 增加 `timer0_valid`。
-
-### 9.3 实例化 `mmio_timer32` `已完成`
-
-在 `simple_ram/mmio_gpio/mmio_uart` 同级实例化：
-
-```systemverilog
-mmio_timer32 #(
-    .BASE_ADDR (soc_pkg::TIMER0_BASE)
-) u_mmio_timer32_0 (...);
-```
-
-连接：
-
-```text
-valid_i        = timer0_valid
-we_i           = core_we_i
-be_i           = core_be_i
-addr_i         = core_addr_i
-wdata_i        = core_wdata_i
-rdata_o        = timer0_rdata
-access_fault_o = timer0_access_fault
-timer32_irq_o  = timer0_irq_o
-```
-
-### 9.4 更新 read mux 和 access fault `已完成`
-
-`core_rdata_o` mux 增加：
-
-```text
-else if (timer0_valid) core_rdata_o = timer0_rdata;
-```
-
-`core_access_fault_o` 增加：
-
-```text
-| timer0_access_fault
-```
-
-### 9.5 GPIO/UART irq 连接 `已完成`
-
-`u_mmio_gpio0` 连接：
-
-```text
-.gpio_irq_o (gpio0_irq_o)
-```
-
-`u_mmio_uart0` 连接：
-
-```text
-.rx_valid_i (uart0_rx_valid_i)
-.rx_data_i  (uart0_rx_data_i)
-.uart_irq_o (uart0_irq_o)
-```
-
-## 10. SoC 顶层集成 `已完成`
-
-### 10.1 修改 `rtl/soc/rv32i_soc.sv` 端口 `已完成`
-
-新增 UART RX 输入：
-
-```systemverilog
-input logic       uart0_rx_valid_i;
-input logic [7:0] uart0_rx_data_i;
-```
-
-新增 interrupt 观察输出：
-
-```systemverilog
-output logic timer0_irq_o;
-output logic gpio0_irq_o;
-output logic uart0_irq_o;
-output logic meip_o;
-output logic mtip_o;
-```
-
-新增 trap 观察输出：
-
-```systemverilog
-output logic       trap_is_interrupt_o;
-output logic [4:0] trap_cause_code_o;
-```
-
-### 10.2 汇总 MEIP `已完成`
-
-内部：
-
-```systemverilog
-wire meip = gpio0_irq_o | uart0_irq_o;
-wire mtip = timer0_irq_o;
-assign meip_o = meip;
-assign mtip_o = mtip;
-```
-
-`core` 连接：
-
-```systemverilog
-.mtip_i (timer0_irq_o)
-.meip_i (meip)
-```
-
-### 10.3 data_subsystem 连接 `已完成`
-
-`u_data_subsystem` 连接新增端口：
-
-```systemverilog
-.uart0_rx_valid_i (uart0_rx_valid_i)
-.uart0_rx_data_i  (uart0_rx_data_i)
-.timer0_irq_o     (timer0_irq_o)
-.gpio0_irq_o      (gpio0_irq_o)
-.uart0_irq_o      (uart0_irq_o)
-```
-
-### 10.4 观察口注释 `已完成`
-
-更新文件头注释：
-
-- SoC 现在包含 TIMER0。
-- UART0 支持 TX event 和仿真 RX event。
-- GPIO0/UART0 interrupt 汇总为 `MEIP`。
-- TIMER0 interrupt 作为 `MTIP` 输入 core。
-- `trap_cause_code_o` 需要配合 `trap_is_interrupt_o` 解读。
-
-## 11. core-only testbench 最小适配 `不再执行`
-
-### 11.1 修改 `tb/sv/tb_core_pipeline5.sv`
-
-core 增加 interrupt 输入后，core-only tb 需要固定拉低：
-
-```systemverilog
-mtip_i = 1'b0
-meip_i = 1'b0
-```
-
-若 core trap 观察口改名或新增：
-
-```systemverilog
-trap_is_interrupt_o
-trap_cause_code_o
-```
-
-tb 要同步连线，并在 trace 中使用新 `trap_cause_code`。
-
-core-only 旧测试不主动触发 interrupt，预期仍全部通过。
-
-计划调整：当前项目已经以 SoC 平台作为主要仿真入口，后续准备删除 `tb/sv/tb_core_pipeline5.sv` 及 core-only 仿真脚本，因此不再继续维护 core-only tb 的最小适配。删除动作和相关文件调整纳入 12.0。
-
-## 12. SoC testbench 验证准备 `已完成`
-
-本章只写验证必备支持，不写完整测试方案。
-
-### 12.0 删除 core-only 仿真平台准备 `已完成`
-
-目标：删除 `tb/sv/tb_core_pipeline5.sv`，后续统一使用 SoC testbench 运行已有 ISA、流水线、trap、MMIO 和 interrupt 测试。
-
-需要同步调整：
-
-- 已删除 `tb/sv/tb_core_pipeline5.sv`。
-- 已删除 `sim/pipeline5_asm/`、`sim/pipeline5_c/` 下依赖 `tb_core_pipeline5` 的脚本入口。
-- 已将 README 中 core-only 仿真命令改为 SoC 仿真命令，避免继续推荐 `sim/pipeline5_*`。
-- 已将 `docs/simulation_flow_asm.md`、`docs/simulation_flow_c.md` 中的当前流程改成 SoC-only 口径。
-- 已更新 `sw/asm/readme.md`、`sw/c/readme.md` 中的运行平台说明，删除“MMIO 不可在 core-only 运行”的当前流程依赖。
-- 已将 `sw/linker/readme.md` 中 `tb_core_pipeline5.sv` 的 PASS/FAIL 地址、DMEM/stack 统计说明迁移到 `tb_rv32i_soc.sv`。
-- 历史 `docs/08xx` 规划文档中仍可能出现旧入口作为阶段历史说明，不作为当前执行入口。
-
-### 12.1 修改 `tb/sv/tb_rv32i_soc.sv` `已完成`
-
-新增驱动信号：
-
-```systemverilog
-logic       uart0_rx_valid;
-logic [7:0] uart0_rx_data;
-```
-
-连接到 `rv32i_soc`。
-
-新增观察信号：
-
-```systemverilog
-timer0_irq
-gpio0_irq
-uart0_irq
-meip
-trap_is_interrupt
+data_req_valid
+data_req_ready
+data_req_write
+data_addr
+data_wdata
+data_be
+data_resp_valid
+data_rdata
+data_resp_error
+dmem_access
+mmio_access
+commit_valid
+trap_valid
 trap_cause_code
+trap_tval
 ```
 
-### 12.2 TB command mailbox 规划 `已完成`
+### 13.2 TB mailbox 监听点迁移
 
-本阶段 directed test 仍坚持“程序自检”口径：测试程序自己配置外设、打开 CSR interrupt enable、请求外部激励、在 handler 中检查并清 pending，最后通过 PASS/FAIL 约定结束仿真。
-
-为了让测试程序能按自己的进度请求 GPIO/UART 外部输入，`tb_rv32i_soc.sv` 增加一组只属于该 testbench 的 TB command mailbox。该 mailbox 不是 SoC 硬件 MMIO，也不是外设 ABI；它只是 testbench 监听特定 DMEM store 后产生外部激励的仿真协议。
-
-第一版 mailbox 使用 C linker 已保留的 DMEM 低地址空洞：
+当前 TB mailbox 通过：
 
 ```text
-TB_CMD_BASE              = DMEM_BASE + 0x180
-TB_GPIO0_SET_MASK_ADDR   = TB_CMD_BASE + 0x00
-TB_GPIO0_CLR_MASK_ADDR   = TB_CMD_BASE + 0x04
-TB_GPIO0_PULSE_CMD_ADDR  = TB_CMD_BASE + 0x08
-TB_UART0_RX_ADDR         = TB_CMD_BASE + 0x0c
+data_we && dmem_access
 ```
 
-testbench 监听：
+监听测试程序写 DMEM 命令地址。
+
+0834 后要改为基于“被接受的 DMEM write request”或“成功完成的 DMEM write response”。
+
+推荐：
 
 ```text
-rst_n && data_we && dmem_access && data_addr == TB_*_ADDR
+data_req_valid && data_req_ready && data_req_write && dmem_access
 ```
 
-命中后由 TB task 驱动 SoC 外部输入。第一版实现不做命令队列；GPIO pulse 和 UART RX task 执行期间会占用 mailbox 处理流程，因此软件 directed test 不连续写入 mailbox 命令，命令之间应留出足够间隔。
+因为 TB mailbox 本身是 testbench 侧的外部激励命令，监听 request accepted 更直观，也不会受 response 延迟重复触发。
 
-GPIO 命令语义：
+若后续要验证 store access fault 不产生 TB 命令副作用，则需要改为 successful response completion，并保存 accepted request 地址/数据。当前 mailbox 地址位于 DMEM 已实现区域，不会 fault，因此第一版用 accepted request 即可。
+
+### 13.3 wait-state 注入入口
+
+testbench 需要能配置 wait-state。
+
+最低要求：
+
+- RTL 参数可在实例化时设置 DMEM/MMIO response delay。
+- 或 testbench 可通过 plusarg 控制 data_subsystem 的延迟参数。
+
+本阶段不要求完整随机延迟，只要求 RTL 具备后续 directed test 可控插入等待的入口。随机/组合 wait-state 应放到 0835 的验证环境中展开。
+
+### 13.4 trace 打印口径更新
+
+如果 testbench 打印 data access，需要区分：
 
 ```text
-写 TB_GPIO0_SET_MASK_ADDR   : gpio0_in[29:0] <= gpio0_in[29:0] |  wdata[29:0]
-写 TB_GPIO0_CLR_MASK_ADDR   : gpio0_in[29:0] <= gpio0_in[29:0] & ~wdata[29:0]
-写 TB_GPIO0_PULSE_CMD_ADDR  : 按 wdata packed command 在指定 GPIO0 bit 上产生 pulse
+REQ  accepted
+RESP ok/error
+COMMIT
+TRAP
 ```
 
-`SET/CLR` 的 `wdata` 使用 32-bit mask，但当前 TB 只接受 bit[29:0]；bit[31:30] 是固定周期输入，由 TB 自己驱动，软件 helper 会自动清掉这两位，避免和周期源冲突。
+不要再把 request 发出当成 load/store 指令提交。
 
-`PULSE_CMD` 的 `wdata` 不解释为 mask，而是 32-bit packed command：
+### 13.5 保留现有 PASS/FAIL 自检机制
 
-```text
- 31   24 23               16  15     9        8       7        5 4              0
-+-------+-------------------+----------+-------------+-----------+---------------+
-|       | pulse_cycles[7:0] |          | pulse_level |           | gpio_idx[4:0] |
-+-------+-------------------+----------+-------------+-----------+---------------+
-```
+现有 `TEST_STATUS_ADDR` PASS/FAIL 机制保持。
 
-- `gpio_idx[4:0]`：选择要驱动 pulse 的 GPIO0 输入 bit，范围 0~31。
-- `pulse_cycles[7:0]`：pulse 持续的 `clk` cycle 数。软件应写非 0 值；第一版 directed test 不依赖 0 的行为。
-- `pulse_level`：pulse 期间强制驱动的电平，`1` 表示高脉冲，`0` 表示低脉冲。
+memory wait 后，测试程序仍通过写 DMEM 状态字结束仿真。testbench 只需确保对该地址的监听不会因为 request valid 保持或 response 延迟重复触发。
 
-实际 TB pulse task 会先把目标 bit 驱动到 `!pulse_level` 一个时钟边界，再驱动到 `pulse_level` 持续 `pulse_cycles` 个时钟边界，再回到 `!pulse_level` 一个时钟边界，最后恢复发起 pulse 前的原始电平。软件侧约束不对 bit[31:30] 发起 pulse。第一版 `PULSE_CMD` 只要求支持单个 GPIO bit 的一个未排队 pulse，不要求支持多个 pulse 并发或排队；directed test 若需要连续 pulse，应在软件中留出足够间隔。
+## 14. 回归与验收顺序
 
-UART 命令语义：
+### 14.1 0 wait-state 等价回归
 
-```text
-写 TB_UART0_RX_ADDR : wdata[7:0] 作为 RX byte，TB 产生 uart0_rx_valid 一拍
-```
+RTL 完成后第一步只跑默认 0 wait-state。
 
-第一版不实现 UART RX 队列。测试程序若连续注入多个 byte，应等待前一个 byte 被 handler 消费后再写下一次命令。
+目标：
 
-该 mailbox 的软件声明放在：
+- 现有汇编/C directed tests 继续 PASS。
+- commit/trap 关键 trace 不出现明显乱序。
+- UART TX、GPIO IRQ、TIMER IRQ 不重复触发。
 
-```text
-sw/include/tb_rv32i_soc_test.h
-```
+### 14.2 最小 wait-state smoke
 
-文件定位：
+在具体功能验证方案展开前，至少需要能手工或用一个简单配置确认：
 
-- 只适用于 `tb/sv/tb_rv32i_soc.sv`。
-- 不属于 `rtl/periph/readme.md` 的通用外设寄存器 ABI。
-- 换成其他 testbench 或后续 UVM 平台时，可以替换成另一套 testbench 协议头文件。
-- C 测试可以使用其中的 `static inline` helper；汇编测试至少可以复用其中的地址和 bit/mask 常量。
+- DMEM load 能等待 response 后写回。
+- DMEM store 不重复写。
+- MMIO read/write 能等待 response 后完成。
+- delayed unknown address/offset error 能进入 access fault。
 
-### 12.3 GPIO 输入驱动 `已完成`
+这不是完整验证计划，只是证明 RTL 前提可用。
 
-`tb_rv32i_soc.sv` 中 `gpio0_in` 由 TB 直接驱动：
+### 14.3 后续验证方案另行规划
 
-- `gpio0_in[29:0]`：由 TB command mailbox 的 SET/CLR/PULSE_CMD 命令控制。
-- `gpio0_in[30]`：固定周期输入，供 directed test 测试持续外部变化。
-- `gpio0_in[31]`：固定周期输入，供 directed test 测试更慢的持续外部变化。
+0834 RTL 完成并通过基本 smoke 后，再单独规划验证收口。大体方向包括：
 
-周期性输入第一版约定：
+- 继续保留 C/asm directed self-check 作为端到端回归主线。
+- 补 wait-state directed test，覆盖慢 load/store、慢 MMIO、delayed fault、interrupt pending、younger redirect 和 MMIO 副作用不重复。
+- 补 simple data bus monitor/SVA，检查单 outstanding、payload stable、request/response 配对和 stall hold。
+- 用 UVM simple-bus/peripheral demo 学习 driver、monitor、sequence、scoreboard 和 coverage，不直接从整颗 CPU UVM 起步。
 
-```text
-gpio0_in[30] = fast periodic input，每 200 cycle 翻转一次
-gpio0_in[31] = slow periodic input，每 2000 cycle 翻转一次
-```
+SVA/UVM 和完整测试矩阵仍放到 0835，不在本计划展开。
 
-`200/2000` 表示翻转间隔，不是完整方波周期。软件 directed test 不通过 SET/CLR/PULSE_CMD 控制 bit 30/31，避免与周期源冲突。
+## 15. 完成标准
 
-GPIO directed test 可以通过 mailbox 请求：
+本阶段完成时应满足：
 
-- 指定 bit 置 1，用于高电平或上升沿触发。
-- 指定 bit 清 0，用于低电平或下降沿触发。
-- 指定 GPIO bit、pulse 宽度和 pulse 电平，用于短事件触发。
-
-GPIO 输入进入 `mmio_gpio` 后仍按外设实现经过两级同步。测试程序不应依赖 GPIO pending 精确到命令 store 后第几拍出现，只检查最终 pending/handler 行为。
-
-### 12.4 trap trace `已完成`
-
-trap 打印区分：
-
-```text
-trap_is_interrupt = 0 -> exception
-trap_is_interrupt = 1 -> interrupt
-```
-
-`mcause` 显示时应能组合为：
-
-```text
-{trap_is_interrupt, trap_cause_code}
-```
-
-或直接打印：
-
-```text
-interrupt code = 7/11
-exception code = ...
-```
-
-### 12.5 平台头文件准备 `已完成`
-
-新增或更新：
-
-```text
-sw/include/platform.h
-```
-
-内容至少包含：
-
-- `GPIO0_BASE`
-- `UART0_BASE`
-- `TIMER0_BASE`
-- TIMER0 offset 和 bit mask
-- GPIO IRQ offset 和 bit mask
-- UART RX/IRQ offset 和 bit mask
-- `MSTATUS_MIE`
-- `MIE_MTIE`
-- `MIE_MEIE`
-- `MIP_MTIP`
-- `MIP_MEIP`
-- `MCAUSE_INTERRUPT_BIT`
-- `MCAUSE_CODE_MASK`
-
-`MIE_MSIE/MIP_MSIP` 可以作为注释保留，不作为本阶段测试依赖。
-
-当前 `platform.h` 已调整为 C/ASM 共享头文件：
-
-- 公共地址、offset、bit mask 使用 `#define`，保持 C 和 `.S` 汇编预处理都可用。
-- `#include <stdint.h>`、`static inline` 函数等 C-only 内容使用 `#ifndef __ASSEMBLER__` 保护。
-- C 测试继续通过 `platform.h` 使用常量和 helper。
-- 汇编测试通过 `#include "platform.h"` 复用常量，不再在每个 `.S` 文件重复 `.equ` 公共地址图、外设 offset、CSR bit mask、PASS/FAIL 地址等常量。
-- 各汇编测试仍可保留测试私有常量；公共平台常量应统一来自 `platform.h`。
-
-### 12.6 `tb_rv32i_soc_test.h` 规划 `已完成`
-
-新增：
-
-```text
-sw/include/tb_rv32i_soc_test.h
-```
-
-该文件专门描述 `tb/sv/tb_rv32i_soc.sv` 的仿真 mailbox 约定，让 C/ASM directed test 能通过普通 DMEM store 请求 TB 产生外部激励。
-
-已实现内容：
-
-```c
-#define TB_CMD_BASE               (DMEM_BASE + RV32I_U32_C(0x00000180))
-#define TB_GPIO0_SET_MASK_ADDR    (TB_CMD_BASE + RV32I_U32_C(0x00))
-#define TB_GPIO0_CLR_MASK_ADDR    (TB_CMD_BASE + RV32I_U32_C(0x04))
-#define TB_GPIO0_PULSE_CMD_ADDR   (TB_CMD_BASE + RV32I_U32_C(0x08))
-#define TB_UART0_RX_ADDR          (TB_CMD_BASE + RV32I_U32_C(0x0c))
-
-#define TB_GPIO0_FAST_PERIODIC_BIT    RV32I_U32_C(30)
-#define TB_GPIO0_SLOW_PERIODIC_BIT    RV32I_U32_C(31)
-#define TB_GPIO0_FAST_PERIODIC_MASK   (RV32I_U32_C(1) << TB_GPIO0_FAST_PERIODIC_BIT)
-#define TB_GPIO0_SLOW_PERIODIC_MASK   (RV32I_U32_C(1) << TB_GPIO0_SLOW_PERIODIC_BIT)
-#define TB_GPIO0_FAST_TOGGLE_CYCLES   RV32I_U32_C(200)
-#define TB_GPIO0_SLOW_TOGGLE_CYCLES   RV32I_U32_C(2000)
-```
-
-头文件应 `#include "platform.h"`，复用 `DMEM_BASE` 和 C 侧 `mmio_write32` helper。
-
-C-only helper 使用 `#ifndef __ASSEMBLER__` 保护：
-
-```c
-static inline void tb_gpio0_set_mask(uint32_t mask);
-static inline void tb_gpio0_clear_mask(uint32_t mask);
-static inline void tb_gpio0_pulse(uint32_t gpio_idx, uint8_t pulse_cycles, bool pulse_level);
-static inline void tb_uart0_rx(uint8_t data);
-```
-
-汇编测试只依赖 `#define` 常量，不强制提供汇编宏。若后续多个汇编 interrupt 测试重复出现同类 store 序列，再补预处理宏；第一版保持简单。
-
-### 12.7 汇编公共 include 与测试改造 `已完成`
-
-修改 `sim/soc_asm/05_build_mem.sh`：
-
-```text
--I "${REPO_ROOT}/sw/include"
-```
-
-使 `.S` 测试可以直接：
-
-```asm
-#include "platform.h"
-#include "tb_rv32i_soc_test.h"   // 仅使用 tb_rv32i_soc.sv mailbox 的测试需要
-```
-
-本步完成后，改造当前已有所有使用 `.equ` 定义公共常量的汇编程序：
-
-- SoC/DMEM/TEST_STATUS 地址常量改用 `platform.h`。
-- GPIO/UART/TIMER32 base/offset/bit mask 改用 `platform.h`。
-- 需要 TB 激励的汇编测试使用 `tb_rv32i_soc_test.h` 的 mailbox 地址。
-- 不把 `tb_rv32i_soc_test.h` 引入普通硬件无关汇编测试，避免测试和 TB 协议无关时产生不必要依赖。
-
-汇编侧是否提供“函数式 helper”不强制。对于 mailbox 请求，汇编测试可以直接构造 `rs2` 后 `sw` 到对应地址；若后续重复较多，再在 `tb_rv32i_soc_test.h` 中增加预处理宏。
-
-### 12.8 `sw/include` 文档 `已完成`
-
-新增：
-
-```text
-sw/include/readme.md
-```
-
-说明本目录头文件的分层和适用范围：
-
-- `platform.h`：当前 SoC 平台的软件可见地址图、外设 offset/bit mask、CSR bit mask，以及 C 侧基础 helper；C/ASM 共享常量。
-- `tb_rv32i_soc_test.h`：`tb_rv32i_soc.sv` 专用仿真 mailbox 协议；只给 directed test 使用，不属于真实 SoC 或通用外设 ABI。
-- `rtl/periph/readme.md` 仍是外设 module 的通用寄存器 ABI 手册；拿到具体 SoC 地址图后，软件维护 `platform.h` 时应以该手册解释各实例寄存器语义。
-
-## 13. interrupt directed test 程序规划 `已完成`
-
-本组测试继续使用程序自检口径：测试程序负责配置外设和 CSR，必要时通过 `tb_rv32i_soc_test.h` 请求 TB 产生 GPIO/UART 外部激励；handler 检查 `mcause/mepc/mip`、外设 pending/status 和恢复路径，最后由 `main()` 返回值通过 `crt0.S` 写 PASS/FAIL。
-
-### 13.0 `0751_timer_smoke` `已完成`
-
-无需 tb 驱动信号，只需 SoC 内部 timer 产生 MTIP 即可，兼容为修改的 SoC 测试平台 tb 也能产生中断。
-
-### 13.1 `0752_gpio_irq_basic.c` `已完成`
-
-覆盖 GPIO0 外部中断基础行为：
-
-- `IRQ_EN` 与 `IRQ_STATUS = IRQ_PENDING & IRQ_EN`。
-- 上升沿、下降沿、高电平、低电平四类触发条件。
-- `IRQ_PENDING` R/W1C 清除行为。
-- GPIO 输入两级同步后的最终 pending/handler 行为。
-- GPIO interrupt 进入 core 后表现为 machine external interrupt（`mcause` interrupt bit = 1，cause code = 11）。
-
-### 13.2 `0753_uart_rx_irq.c` `已完成`
-
-覆盖 UART0 RX 与 UART external interrupt：
-
-- TB 注入 `uart0_rx_valid/rx_data` 后，`RXDATA` 保存 byte。
-- `STATUS.rx_valid`、`STATUS.irq_pending`、`IRQ_PENDING[0]` 置位。
-- `CTRL.rx_irq_enable=0` 时 pending 可以置位，但不应推动 `uart0_irq_o/MEIP`。
-- `CTRL.rx_irq_enable=1` 后 pending 推动 machine external interrupt。
-- 读 `RXDATA` 清 `rx_valid` 和 `IRQ_PENDING[0]`。
-- 写 `IRQ_PENDING[0]=1` 只清 pending，不消费 `RXDATA`。
-
-### 13.3 `0754_external_timer_priority.c` `已完成`
-
-覆盖 MEIP/MTIP 汇总和中断优先级：
-
-- 同时制造 external pending（GPIO 或 UART）和 timer pending。
-- 同时打开 `MIE_MEIE | MIE_MTIE` 与 `mstatus.MIE`。
-- 验证 first trap 选择 machine external interrupt。
-- handler 清 external pending 后，仍存在的 timer pending 应触发 machine timer interrupt。
-- 验证 `mip.MEIP/MIP.MTIP` 与外设 pending 状态一致。
-
-### 13.4 `0705_interrupt_commit_precise.S` `已完成`
-
-覆盖 CSR 写同拍 interrupt 的精确提交语义，建议汇编实现：
-
-- pending 已经存在时，通过 CSR 指令打开 `mie.MEIE` 或 `mstatus.MIE`。
-- 当前 CSR 指令必须先完成提交，再接受 interrupt。
-- interrupt 的 `mepc` 应指向 CSR 指令之后的返回 PC。
-- 若 CSR 写更新 `mtvec` 后同拍接受 interrupt，redirect 应使用新 `mtvec`。
-- interrupt 不应错误 kill 已提交的 older 指令写回。
-
-### 13.5 `0706_mret_interrupt_reentry.S` `已完成`
-
-覆盖 MRET 同拍 interrupt 语义，建议汇编实现：
-
-- handler 第一次进入时保留 external pending，不清中断源。
-- 执行 `mret` 时若 `MPIE` 允许中断，应在 MRET 返回边界立即再次接受 interrupt。
-- 第二次 handler 清 pending 后再 `mret`，应正常回到主流程。
-- 验证 MRET+interrupt 时 `mepc/mcause/mstatus.MIE/MPIE` 符合“先 MRET，再 interrupt entry”的语义。
-
-### 13.6 `0757_gpio_periodic_irq.c` `已完成`
-
-覆盖 TB 固定周期 GPIO 输入：
-
-- 使用 `gpio0_in[30]` fast periodic input 验证周期边沿可被 GPIO 捕获。
-- 使用 `gpio0_in[31]` slow periodic input 验证较慢外部变化不会影响 mailbox 控制位。
-- 软件不通过 SET/CLR/PULSE_CMD 控制 bit[31:30]。
-- 只检查最终事件计数和 pending/handler 行为，不依赖精确到某一条指令的触发拍。
-
-## 14. 文档和注释同步 `已完成`
+- core LSU data side 已从固定响应改为 simple request/response。
+- data_subsystem 能接受 request、插入 0/N 拍等待并返回 response。
+- MEM wait 能正确冻结 PC/IF/ID/EX/MEM，年轻指令不能越过 older memory instruction。
+- 0 wait-state 下现有 regression 不退化。
+- delayed response error 能产生精确 load/store access fault。
+- MMIO write/read 副作用不因 wait 或 valid 保持重复发生。
+- interrupt pending 在 memory wait 期间不被提前接受，只在 completion 边界按 0833 语义处理。
+- 注释不再保留“固定响应/无 backpressure”的过时描述。
+- testbench 已具备后续 wait-state directed tests 所需的 data bus 观察和延迟注入入口。

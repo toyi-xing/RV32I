@@ -170,14 +170,14 @@ imm12  = 12'h302
 
 本步建议加入 6 条 CSR 指令：
 
-| 指令 | 作用 | 写 CSR 条件 |
-|---|---|---|
-| `CSRRW` | CSR 与 GPR 交换式写入 | 总是写，除非 CSR 不可写或非法 |
-| `CSRRS` | 按 `rs1` 置位 CSR bit | `rs1 != x0` 时写 |
-| `CSRRC` | 按 `rs1` 清位 CSR bit | `rs1 != x0` 时写 |
-| `CSRRWI` | 用 `uimm` 写 CSR | 总是写，除非 CSR 不可写或非法 |
-| `CSRRSI` | 按 `uimm` 置位 CSR bit | `uimm != 0` 时写 |
-| `CSRRCI` | 按 `uimm` 清位 CSR bit | `uimm != 0` 时写 |
+| 指令 | 汇编格式 | 作用 | 写 CSR 条件 |
+|---|---|---|---|---|
+| `CSRRW` | `csrrw rd, csr, rs1` | 旧值写入 rd，再将 `rs1` 写入 CSR | 总是写，除非 CSR 不可写或非法 |
+| `CSRRS` | `csrrs rd, csr, rs1` | 旧值写入 rd，再按 `rs1` 置位 CSR | `rs1 != x0` 时写 |
+| `CSRRC` | `csrrc rd, csr, rs1` | 旧值写入 rd，再按 `rs1` 清位 CSR | `rs1 != x0` 时写 |
+| `CSRRWI` | `csrrwi rd, csr, uimm` | 旧值写入 rd，再将 `uimm` 写入 CSR | 总是写，除非 CSR 不可写或非法 |
+| `CSRRSI` | `csrrsi rd, csr, uimm` | 旧值写入 rd，再按 `uimm` 置位 CSR | `uimm != 0` 时写 |
+| `CSRRCI` | `csrrci rd, csr, uimm` | 旧值写入 rd，再按 `uimm` 清位 CSR | `uimm != 0` 时写 |
 
 写回规则：
 

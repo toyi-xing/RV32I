@@ -17,7 +17,7 @@
 - **machine timer interrupt**：TIMER0.MTIME ≥ MTIMECMP 触发 MTIP，level pending 输出到 mtip_o。
 - **machine external interrupt**：GPIO 按 bit 独立配置边沿/电平触发、UART RX 事件，汇总为 MEIP（中断优先级 MEIP > MTIP）。
 - **中断精确提交**：CSR 写同拍中断接受、MRET 同拍中断重入、mepc 记录当前提交边界的 interrupt return PC。
-- **设计可综合**：CPU 核及子模块采用可综合 rtl 编写；综合对象为 CPU 核顶层 `core.sv`，综合结果不作为项目重点。SoC 侧 MEM 单元为仿真内存模型，MMIO 外设模型为简化模型，未面向真实 IO 单元、真实串口协议或 PPA 做优化。
+- **设计可综合**：CPU 核及子模块采用可综合 rtl 编写；综合对象为 CPU 核顶层 `core.sv`，综合结果不作为项目重点。SoC 顶层透出固定响应 IMEM/DMEM 端口，仿真内存模型由 testbench 实例化；MMIO 外设模型为简化模型，未面向真实 IO 单元、真实串口协议或 PPA 做优化。
 
 ---
 
@@ -32,37 +32,38 @@
 ## 系统架构
 
 ```
-+----------------------------------------------------------------------------------+
-|                                    rv32i_soc                                     |
-|                                                                                  |
-|  +-----------------------+    instr     +-------------------------------------+  |
-|  | simple_rom / IMEM     | -----------> | core.sv                             |  |
-|  | 0x0000_0000  256 KiB  |              | RV32I 5-stage pipeline              |  |
-|  +-----------------------+              | IF / ID / EX / MEM / WB             |  |
-|                                         | fwd + stall + redirect              |  |
-|                                         | CSR + trap + precise interrupt      |  |
-|                                         +-------------------+-----------------+  |
-|                                                             | LSU load/store     |
-|                                                             v                    |
-|  +----------------------------------------------------------------------------+  |
-|  | data_subsystem: fixed DMEM/MMIO decoder                                    |  |
-|  |                                                                            |  |
-|  |  0x0004_0000  DMEM    simple_ram 256 KiB                                   |  |
-|  |  0x0008_0000  GPIO0   OUT / IN / OE / edge-level IRQ  ---+                 |  |
-|  |  0x0008_2000  UART0   single-cycle TX/RX + IRQ        ---+--> MEIP         |  |
-|  |  0x0008_1000  TIMER0  MTIME / MTIMECMP level IRQ     --------> MTIP        |  |
-|  +----------------------------------------------------------------------------+  |
-|                                                                                  |
-|  observable: commit / trap / data bus / GPIO / UART / IRQ                        |
-+-----------------------------------------+----------------------------------------+
-                                          ^
-                                          | TB mailbox
-                                          v
-+-----------------------------------------+----------------------------------------+
-| tb_rv32i_soc                                                                     |
-| memory images | PASS/FAIL monitor | commit/trap trace                            |
-| TB mailbox store commands -> GPIO input stimulus / UART RX event                 |
-+----------------------------------------------------------------------------------+
++-----------------------------------------------------------------------------------------------+
+| tb_rv32i_soc                                                                                  |
+|                                                                                               |
+|  +-----------------------+    instr     +------------------------------------------------+    |
+|  | simple_rom / IMEM     | -----------> |              rv32i_soc                         |    |
+|  | 0x0000_0000  256 KiB  |              |                                                |    |
+|  | +imem image           |              |  +--------------------------------+            |    |
+|  +-----------------------+              |  | core.sv                        |            |    |
+|                                         |  | RV32I 5-stage pipeline         |            |    |
+|  +-----------------------+    data      |  | IF / ID / EX / MEM / WB        | <----+     |    |
+|  | simple_ram / DMEM     | <----------> |  | fwd + stall + redirect         |      |     |    |
+|  | 0x0004_0000  256 KiB  |  TB mailbox  |  | CSR + trap + precise interrupt |      |     |    |
+|  | +dmem image           |              |  +----------------+---------------+      |     |    |
+|  +-----------------------+              |                   | LSU load/store       |     |    |
+|                                         |                   v                      |     |    |
+|                                         |  +-----------------------------------+   |     |    |
+|                                         |  | data_subsystem: fixed decoder     |   |     |    |
+|                                         |  |                                   |   |     |    |
+|                                         |  | 0x0004_0000 DMEM    external port |   |     |    |
+|                                         |  | 0x0008_0000 GPIO0      IN IRQ --+ |   |     |    |
+|                                         |  | 0x0008_2000 UART0      RX IRQ --+-> MEIP    |    |
+|                                         |  | 0x0008_1000 TIMER0  MTIME IRQ ----> MTIP    |    |
+|                                         |  +-----------------------------------+         |    |
+|                                         |                                                |    |
+|                                         | observable: commit / trap / data bus           |    |
+|                                         |             GPIO / UART / IRQ                  |    |
+|                                         +------------------------------------------------+    |
+|                                                                                               |
+|    memory images | PASS/FAIL monitor | commit/trap trace                                      |
+|    TB mailbox store commands -> GPIO input stimulus / UART RX event                           |
+|                                                                                               |
++-----------------------------------------------------------------------------------------------+
 ```
 
 ---
