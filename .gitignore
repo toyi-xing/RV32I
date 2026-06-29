@@ -14,6 +14,25 @@ obj_dir/
 *.vvp
 *.vcd.*
 
+# FPGA/Quartus generated outputs
+fpga/**/project_*_fpga/build/
+fpga/**/project_*_fpga/fpga/quartus/db/
+fpga/**/project_*_fpga/fpga/quartus/incremental_db/
+fpga/**/project_*_fpga/fpga/quartus/output_files/
+fpga/**/project_*_fpga/fpga/quartus/*.qws
+fpga/**/project_*_fpga/fpga/quartus/*.rpt
+fpga/**/project_*_fpga/fpga/quartus/*.summary
+fpga/**/project_*_fpga/fpga/quartus/*.smsg
+fpga/**/project_*_fpga/fpga/quartus/*.done
+fpga/**/project_*_fpga/fpga/quartus/*.pin
+fpga/**/project_*_fpga/fpga/quartus/*.jdi
+fpga/**/project_*_fpga/fpga/quartus/*.jditmp
+fpga/**/project_*_fpga/fpga/quartus/*.sld
+fpga/**/project_*_fpga/fpga/quartus/*.sof
+fpga/**/project_*_fpga/fpga/quartus/*.pof
+fpga/**/project_*_fpga/fpga/quartus/*.jic
+fpga/**/project_*_fpga/fpga/quartus/*.cdf
+
 # Tool and temporary files
 *.tmp
 *.bak

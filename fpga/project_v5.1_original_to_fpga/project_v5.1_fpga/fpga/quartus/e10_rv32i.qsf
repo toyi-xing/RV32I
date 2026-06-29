@@ -1,0 +1,60 @@
+set_global_assignment -name FAMILY "Cyclone IV E"
+set_global_assignment -name DEVICE EP4CE10F17C8
+set_global_assignment -name TOP_LEVEL_ENTITY e10_rv32i_top
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/common/core_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/common/pipeline_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/common/soc_pkg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/branch_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/decoder.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/imm_gen.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/regfile.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/forwarding_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/hazard_unit.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/pc_reg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/pipe_reg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/if_stage.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/id_stage.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/ex_stage.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/mem_stage.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/wb_stage.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/csr_file.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/trap_ctrl.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/core/core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/periph/mmio_gpio.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/periph/mmio_timer32.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/periph/mmio_uart.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/soc/data_subsystem.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/soc/rv32i_soc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/fpga/fpga_imem.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/fpga/fpga_dmem.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/fpga/uart_tx_phy.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/fpga/uart_rx_phy.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/fpga/e10_rv32i_top.sv
+set_global_assignment -name SDC_FILE e10_rv32i.sdc
+set_global_assignment -name SEARCH_PATH ../..
+
+set_location_assignment PIN_E1 -to sys_clk
+set_location_assignment PIN_M1 -to sys_rst_n
+set_location_assignment PIN_A4 -to led[0]
+set_location_assignment PIN_B5 -to led[1]
+set_location_assignment PIN_E16 -to key[0]
+set_location_assignment PIN_E15 -to key[1]
+set_location_assignment PIN_B13 -to uart_rxd
+set_location_assignment PIN_A13 -to uart_txd
+
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sys_clk
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to sys_rst_n
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to led[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to led[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to key[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to key[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to uart_rxd
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to uart_txd
+
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top

@@ -18,6 +18,7 @@
 - **machine external interrupt**：GPIO 按 bit 独立配置边沿/电平触发、UART RX 事件，汇总为 MEIP（中断优先级 MEIP > MTIP）。
 - **中断精确提交**：CSR 写同拍中断接受、MRET 同拍中断重入、mepc 记录当前提交边界的 interrupt return PC。
 - **设计可综合**：CPU 核及子模块采用可综合 rtl 编写；综合对象为 CPU 核顶层 `core.sv`，综合结果不作为项目重点。SoC 顶层透出固定响应 IMEM/DMEM 端口，仿真内存模型由 testbench 实例化；MMIO 外设模型为简化模型，未面向真实 IO 单元、真实串口协议或 PPA 做优化。
+- **FPGA 上板验证**：基于 v5.1 完成 FPGA 上板验证归档，CPU core RTL 保持不改，SoC MMIO 地址图保持不改；通过 FPGA top、片上 IMEM/DMEM wrapper、UART TX/RX PHY 和 Quartus 工程适配，完成 GPIO/KEY、UART、TIMER polling、TIMER interrupt 等板级验证。
 
 ---
 
@@ -26,6 +27,7 @@
 - **SoC 级程序自检定向测试**：汇编/C 测试程序通过 PASS/FAIL 状态字结束仿真，覆盖 ISA、流水线 hazard、trap/CSR、MMIO 和 machine interrupt 场景。
 - **TB mailbox 外部激励协议**：`sw/include/tb_rv32i_soc_test.h` 与 `tb/sv/tb_rv32i_soc.sv` 约定保留 DMEM store 命令，由测试程序按自身进度请求 testbench 驱动 GPIO 输入、UART RX 事件。该协议只属于当前 testbench，不是 SoC 真实 MMIO ABI。
 - **interrupt directed test**：覆盖 timer interrupt、GPIO/UART external interrupt、MEIP/MTIP 优先级、CSR 写同拍中断、MRET 同拍中断重入和周期 GPIO 输入测量。
+- **FPGA board bring-up**：[fpga/readme.md](fpga/readme.md) 作为 FPGA 上板验证入口，归档板卡资料、通用上板方法，以及已完成版本的专项迁移文档和验证结果。
 
 ---
 
@@ -72,13 +74,13 @@
 
 | 目录 | 说明 |
 |------|------|
+| `docs/` | 说明文档 |
+| `fpga/` | FPGA 上板验证工作区，包含板卡资料、版本归档工程、上板流程和验证结果入口 |
 | `rtl/` | RTL 源码（core_pkg、pipeline_pkg、core 各阶段模块、memory 封装） |
-| `tb/` | testbench（当前维护 SoC 级 testbench） |
+| `scripts/` | 辅助脚本（bin2mem32 等） |
 | `sim/` | 编译和仿真脚本（按汇编/C 分目录） |
 | `sw/` | 汇编和 C 裸机测试程序 |
-| `scripts/` | 辅助脚本（bin2mem32 等） |
-| `build/` | 编译产物（.elf、.dump、.bin、.mem） |
-| `docs/` | 说明文档 |
+| `tb/` | testbench（当前维护 SoC 级 testbench） |
 
 ---
 
@@ -90,7 +92,8 @@
 | 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | 后续开发持续在该文件上累积 |
 | 同步异常扩展、CSR 与最小特权级（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | 自 v3.4 起，将 `core_pipeline5.sv` 改名为 `core.sv` |
 | 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` |
-| machine interrupt、TIMER32 与外部中断 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v5.0 | - |
+| machine interrupt、TIMER32 与外部中断 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 |
+| FPGA 分支：基于 v5.1 的 FPGA 上板验证 | FPGA 顶层 `e10_rv32i_top.sv` + FPGA 工程 `e10_rv32i.qpf` | 已完成 | v5.2 | - |
 
 ---
 
@@ -211,3 +214,7 @@ c 程序编写方法见 [sw/c/readme.md](sw/c/readme.md)。
 MMIO 外设操作手册见 [rtl/periph/readme.md](rtl/periph/readme.md)。
 
 MMIO 地址图镜像查阅见 [sw/linker/readme.md](sw/linker/readme.md)。
+
+## FPGA 上板验证
+
+FPGA 上板验证入口见 [fpga/readme.md](fpga/readme.md)。该目录维护板卡资料、通用上板方法、版本归档工程、专项迁移说明和板级验证结果；根 README 只保留总入口，具体 FPGA 版本的工程细节以后统一在 `fpga/` 工作区内维护。

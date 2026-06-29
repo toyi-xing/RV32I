@@ -288,12 +288,14 @@ module tb_rv32i_soc;
     // -------------------------------------------------------------------------
     // cycle 计数器
     // -------------------------------------------------------------------------
-    logic [31:0] cycle_cnt;
+    logic [31:0] cycle_cnt, trap_cnt;
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             cycle_cnt <= '0;
+            trap_cnt  <= '0;
         end else begin
             cycle_cnt <= cycle_cnt + 1'b1;
+            trap_cnt  <= trap_valid ? trap_cnt + 1 : trap_cnt;
         end
     end
 
@@ -403,6 +405,7 @@ module tb_rv32i_soc;
             end
             print_memory_usage();
             $display("************UART0 TX log:************\n%s\n*************************************", uart0_tx_buffer);
+            $display("trap_cnt:%0d", trap_cnt);
             $finish;
         end
     end
@@ -432,6 +435,7 @@ module tb_rv32i_soc;
     initial begin
         repeat (20010) @(posedge clk);
         $display("TIMEOUT: simulation exceeded [%0d] cycles", cycle_cnt);
+        $display("trap_cnt:%0d", trap_cnt);
         $finish;
     end
 

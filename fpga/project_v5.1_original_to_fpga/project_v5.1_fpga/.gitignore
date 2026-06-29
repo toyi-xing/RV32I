@@ -1,0 +1,43 @@
+# Generated build/simulation outputs
+build/
+
+# Quartus generated outputs
+fpga/quartus/db/
+fpga/quartus/incremental_db/
+fpga/quartus/output_files/
+fpga/quartus/*.qws
+fpga/quartus/*.rpt
+fpga/quartus/*.summary
+fpga/quartus/*.smsg
+fpga/quartus/*.done
+fpga/quartus/*.pin
+fpga/quartus/*.jdi
+fpga/quartus/*.sld
+fpga/quartus/*.sof
+fpga/quartus/*.pof
+fpga/quartus/*.jic
+fpga/quartus/*.cdf
+
+# Simulation logs and waveforms
+*.log
+*.vcd
+*.fst
+*.fsdb
+*.wlf
+*.ghw
+
+# Verilator/Icarus generated outputs
+obj_dir/
+*.vvp
+*.vcd.*
+
+# Tool and temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+
+# not need to commit md
+agent.md
+tmp.md

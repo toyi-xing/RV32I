@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build one SoC-level RV32I C bare-metal test into IMEM/DMEM .mem images.
+# Usage:
+#   sim/soc_c/05_build_mem.sh [test_name]
+# Example:
+#   sim/soc_c/05_build_mem.sh 0651
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+TOOLCHAIN_ENV="${TOOLCHAIN_ENV:-/home/a/tools/riscv-unknown-elf/env.sh}"
+
+source "${REPO_ROOT}/sim/common/resolve_test_name.sh"
+
+TEST_NAME="$(resolve_test_name "${REPO_ROOT}/sw/c" "c" "${1:-}" "0651_soc_mmio_smoke")"
+C_FILE="${REPO_ROOT}/sw/c/${TEST_NAME}.c"
+CRT0_FILE="${REPO_ROOT}/sw/c_runtime/crt0.S"
+LINKER_FILE="${REPO_ROOT}/sw/linker/c_baremetal.ld"
+BUILD_DIR="${REPO_ROOT}/build/soc_c"
+
+if [[ -f "${TOOLCHAIN_ENV}" ]]; then
+    # shellcheck disable=SC1090
+    source "${TOOLCHAIN_ENV}"
+fi
+
+if [[ ! -f "${C_FILE}" ]]; then
+    echo "ERROR: C test not found: ${C_FILE}" >&2
+    exit 1
+fi
+
+if [[ ! -f "${CRT0_FILE}" ]]; then
+    echo "ERROR: C runtime startup not found: ${CRT0_FILE}" >&2
+    exit 1
+fi
+
+mkdir -p "${BUILD_DIR}"
+
+riscv64-unknown-elf-gcc \
+    -march=rv32i \
+    -mabi=ilp32 \
+    -mno-relax \
+    -msmall-data-limit=0 \
+    -mcmodel=medlow \
+    -O2 \
+    -g \
+    -ffreestanding \
+    -fno-builtin \
+    -fno-pic \
+    -fno-pie \
+    -fno-asynchronous-unwind-tables \
+    -fno-unwind-tables \
+    -nostdlib \
+    -nostartfiles \
+    -I "${REPO_ROOT}/sw/include" \
+    -Wl,-T,"${LINKER_FILE}" \
+    -Wl,--no-relax \
+    -Wl,-Map,"${BUILD_DIR}/${TEST_NAME}.map" \
+    -o "${BUILD_DIR}/${TEST_NAME}.elf" \
+    "${CRT0_FILE}" \
+    "${C_FILE}"
+
+riscv64-unknown-elf-objdump \
+    -d \
+    -M no-aliases,numeric \
+    "${BUILD_DIR}/${TEST_NAME}.elf" > "${BUILD_DIR}/${TEST_NAME}.dump"
+
+riscv64-unknown-elf-objcopy \
+    -O binary \
+    -j .text.init \
+    -j .text.trap \
+    -j .text \
+    "${BUILD_DIR}/${TEST_NAME}.elf" \
+    "${BUILD_DIR}/${TEST_NAME}_imem.bin"
+
+riscv64-unknown-elf-objcopy \
+    -O binary \
+    -j .dmem_image \
+    "${BUILD_DIR}/${TEST_NAME}.elf" \
+    "${BUILD_DIR}/${TEST_NAME}_dmem.bin"
+
+python3 "${REPO_ROOT}/scripts/bin2mem32.py" \
+    "${BUILD_DIR}/${TEST_NAME}_imem.bin" \
+    "${BUILD_DIR}/${TEST_NAME}_imem.mem"
+
+python3 "${REPO_ROOT}/scripts/bin2mem32.py" \
+    "${BUILD_DIR}/${TEST_NAME}_dmem.bin" \
+    "${BUILD_DIR}/${TEST_NAME}_dmem.mem"
+
+echo "Built ${BUILD_DIR}/${TEST_NAME}_imem.mem"
+echo "Built ${BUILD_DIR}/${TEST_NAME}_dmem.mem"
