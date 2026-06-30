@@ -32,7 +32,7 @@ module data_subsystem (
     input  logic [core_pkg::XLEN-1:0] core_addr_i,
     input  logic [core_pkg::XLEN-1:0] core_wdata_i,
     output logic [core_pkg::XLEN-1:0] core_rdata_o,
-    output logic                      core_access_fault_o,
+    output logic                      core_access_fault_o,  // core 发送的访存指令地址为定义（当前仅上报未映射地址/未知 offset，不实现权限错误）
 
     output logic                      dmem_we_o,
     output logic [3:0]                dmem_be_o,

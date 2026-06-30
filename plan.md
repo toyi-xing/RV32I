@@ -152,11 +152,11 @@ TB mailbox 监听仍然可以沿用当前 `data_we && dmem_access && data_addr` 
 
 其他文档若只是泛称当前平台有 IMEM/DMEM，不强制在本整理中大改。
 
-## 2. 公共类型和接口命名
+## 2. 公共类型和接口命名 `rtl无变动`
 
-### 2.1 新增或扩展 data bus 公共类型
+### 2.1 新增或扩展 data bus 公共类型 `rtl无变动`
 
-建议在 `rtl/common/core_pkg.sv` 中补充简化 data bus 相关结构或在必要时只使用离散端口。
+第一版先使用离散端口推进，不新增 data bus 结构体。
 
 若使用结构体，建议定义：
 
@@ -176,6 +176,8 @@ typedef struct packed {
 } data_resp_t;
 ```
 
+结构体后续统一替换时再新增；不建议放在 `core_pkg` 或 `soc_pkg`，后续可考虑新建 `data_bus_pkg`。
+
 执行时可根据现有代码风格选择结构体或离散信号。若选择离散信号，命名口径保持：
 
 ```text
@@ -192,7 +194,7 @@ lsu_resp_error_i
 
 计划默认后续条目使用离散信号描述，便于逐步替换当前 `lsu_re/lsu_we/lsu_rdata/lsu_access_fault`。
 
-### 2.2 明确 read/write 指令类型保留位置
+### 2.2 明确 read/write 指令类型保留位置 `无变动`
 
 response error 需要区分 load access fault 和 store access fault，因此 MEM 阶段必须在等待事务期间保留：
 
@@ -208,7 +210,7 @@ CSR/MRET 控制信息
 
 当前这些字段已经在 `ex_mem_reg_t` 中保存，第一版不额外新增 transaction tag。
 
-### 2.3 保留 byte enable 语义
+### 2.3 保留 byte enable 语义 `无变动`
 
 `be` 继续沿用当前 `mem_stage` 生成的 byte lane 含义：
 
@@ -220,9 +222,9 @@ CSR/MRET 控制信息
 
 本阶段不额外加入 `size` 到 data bus。load 扩展仍由 core/MEM 根据 `mem_size/mem_unsigned/addr[1:0]` 完成。
 
-## 3. `mem_stage` 改造为事务发起与完成判定
+## 3. `mem_stage` 改造为事务发起与完成判定 `已完成`
 
-### 3.1 修改 `rtl/core/mem_stage.sv` 模块定位
+### 3.1 修改 `rtl/core/mem_stage.sv` 模块定位 `已完成`
 
 当前 `mem_stage` 是纯组合逻辑，头注释写明固定响应。0834 后需要改成支持时序状态的 MEM transaction controller。
 
@@ -236,7 +238,7 @@ CSR/MRET 控制信息
 - response error 时生成 load/store access fault。
 - 非访存、misaligned、前级 exception 仍可在当前 MEM 边界直接完成或进入 trap。
 
-### 3.2 新增时钟/复位端口
+### 3.2 新增时钟/复位端口 `已完成`
 
 `mem_stage` 需要保存 outstanding 状态，因此端口新增：
 
@@ -247,7 +249,7 @@ input logic rst_n_i;
 
 头注释同步更新，不再写“纯组合逻辑”。
 
-### 3.3 替换 LSU 固定响应端口
+### 3.3 替换 LSU 固定响应端口 `已完成`
 
 移除或不再使用当前固定响应端口：
 
@@ -275,25 +277,27 @@ input  logic            lsu_resp_error_i;
 
 `lsu_req_write_o=1` 表示 store/MMIO write，`0` 表示 load/MMIO read。
 
-### 3.4 新增 MEM wait/complete 输出
+### 3.4 新增 MEM wait/complete 输出 `已完成`
 
 新增输出给 core 控制网络：
 
 ```systemverilog
 output logic mem_wait_o;      // 当前 MEM 指令因为 data transaction 未完成而必须 hold。
 output logic mem_complete_o;  // 当前 MEM 边界本拍可完成；主要用于调试/观察，可选。
+output logic transaction_complete_o; // 当前 data transaction 本拍返回 response，OK/error 均表示事务完成。
 ```
 
 推荐语义：
 
 ```text
+transaction_complete_o = data transaction 本拍完成；支持 accepted 与 response 同拍的 0 wait-state。
 mem_wait_o = 有效 load/store 且尚未到达 completion 边界
 mem_complete_o = 非访存直接完成，或访存 response 返回，或 request 前 exception 直接完成
 ```
 
 若后续发现 `mem_complete_o` 在 core 中不需要，可只保留 `mem_wait_o`，但建议至少保留一个观察口方便 TB/wave debug。
 
-### 3.5 misaligned 和前级 exception 不发 request
+### 3.5 misaligned 和前级 exception 不发 request `已完成`
 
 保持现有优先级：
 
@@ -310,7 +314,7 @@ mem_complete_o = 非访存直接完成，或访存 response 返回，或 request
 - 不等待 response
 - 当前 MEM 指令可在本边界进入 trap
 
-### 3.6 request payload 生成
+### 3.6 request payload 生成 `已完成`
 
 当前 `mem_stage` 已有 `lsu_be_o/lsu_addr_o/lsu_wdata_o` 生成逻辑，0834 保持基本算法。
 
@@ -331,9 +335,9 @@ be    = 当前 byte enable 生成结果
 
 在 `lsu_req_valid_o=1 && lsu_req_ready_i=0` 时，payload 必须保持稳定。因为 EX/MEM 会被 `mem_wait_o` hold，payload 通常自然稳定；仍建议在代码注释中明确这一点。
 
-### 3.7 outstanding 状态机
+### 3.7 outstanding 状态机 `已完成`
 
-第一版可使用一个简单状态：
+为保证副作用最多一次，第一版可使用一个简单状态：
 
 ```text
 req_outstanding_q
@@ -348,14 +352,17 @@ req_outstanding_q
 
 ```text
 reset -> 0
-request accepted -> 1
-response valid -> 0
+request accepted 且本拍未完成 -> 1
+transaction complete -> 0
+request accepted 与 response valid 同拍 -> 0
 当前 MEM 指令被 request 前 exception/trap 处理 -> 0
 ```
 
 因为第一版只允许 single outstanding，`req_outstanding_q=1` 时不允许再次拉起新的 accepted request。
 
-### 3.8 request valid/ready 与 wait 关系
+实现上可以用两个独立 `if` 让 `transaction_complete` 覆盖 `request_accepted` 的置位结果，从而支持类似同步单级 FIFO 的空直通语义。
+
+### 3.8 request valid/ready 与 wait 关系 `已完成`
 
 推荐语义：
 
@@ -377,7 +384,7 @@ mem_wait_o = mem_access && !transaction_complete
 - 若实现上先简化为“accepted 后至少下一拍 response”，则 0 wait-state 行为会多一拍，需明确并更新验证期望；当前不推荐，因为会不必要地改变现有回归时序。
 - 若支持同拍 response，状态更新应在 `request_accepted && lsu_resp_valid_i` 时保持 `req_outstanding_q=0`，不要先置 outstanding 再多等一拍。
 
-### 3.9 load data 生成改为 response 驱动
+### 3.9 load data 生成改为 response 驱动 `已完成`
 
 `load_raw` 的输入从 `lsu_rdata_i` 改为完成 response 的 `lsu_resp_rdata_i`。
 
@@ -388,7 +395,7 @@ response 未到时：
 - `valid_o` 不应让该 load 进入 MEM/WB。
 - `load_data_o` 可给默认值，但不应被使用。
 
-### 3.10 delayed access fault 生成
+### 3.10 delayed access fault 生成 `已完成`
 
 response error 转换为：
 
@@ -411,8 +418,9 @@ tval  -> alu_result_i
 - response error 只在 completion 边界产生。
 - request wait 或 outstanding wait 期间不要提前产生 access fault。
 - error response 不允许写 rd。
+- 当前 RTL 中 access fault 由 `lsu_resp_valid_i && lsu_resp_error_i` 门控生成；data-side 协议要求 `lsu_resp_valid_i` 只对应当前已接受事务，因此在协议约束下等价于 `transaction_complete && lsu_resp_error_i`。后续 SVA 应检查 response 必须对应 accepted/outstanding request。
 
-### 3.11 `valid_o` 口径
+### 3.11 `valid_o` 口径 `已完成`
 
 `valid_o` 送入 MEM/WB，应表示“当前 MEM 指令本拍可以进入下一阶段的普通 WB 生命周期”。
 
@@ -426,7 +434,7 @@ valid_o = valid_i && !mem_wait_o
 
 对于 response error，`valid_o` 可以为 1，让 trap_ctrl 在同拍看见 exception 并用 `kill_mem_wb` 阻止普通 WB；也可以由 core 用 trap kill 清掉。关键是不要让 error load 写 rd。
 
-### 3.12 观察信号更新
+### 3.12 观察信号更新 `无变动`
 
 当前 `mem_access_fault_o/load_access_fault_o/store_access_fault_o` 是固定响应观察口。0834 后语义改为：
 
