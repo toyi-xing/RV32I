@@ -9,8 +9,7 @@
 //   - 每个模块负责在时钟上升沿锁存前一级的控制信号和数据通路值。
 //
 // 控制口径：
-//   - flush 用于普通 EX redirect（branch/JAL/JALR），清掉错误路径上的
-//     IF/ID、ID/EX 指令。
+//   - flush 用于已允许的普通 non-trap redirect，清掉错误路径上的 IF/ID、ID/EX 指令。
 //   - kill 用于 MEM 边界接受 trap/MRET，它比普通 flush/stall/bubble 优先级更高，
 //     用来清掉 trap/MRET 之后的普通流水线路径。
 //   - 对 IF/ID、ID/EX、EX/MEM 来说，kill 清掉的是 younger instruction。
@@ -71,11 +70,10 @@ endmodule
 //                典型用途是 load-use：PC 和 IF/ID 保持，让 consumer 留在 ID；
 //                ID/EX 写入 bubble，让前面的 load 继续进入 EX/MEM、MEM/WB。
 //   - stall_i  : 保持 ID/EX 当前内容。
-//                第一版固定响应 memory 通常不用它处理 load-use；它更适合后续
-//                memory wait、全流水线暂停这类“当前 EX 指令也不能前进”的场景。
+//                load-use 不走这个分支；MEM wait backpressure 用它保持当前 ID/EX。
 //
 // 优先级：reset > kill > flush > stall > bubble > normal advance。
-// 当前设计 EX 及之后流水不会 stall,但统一保留 stall_i 接口，供后续扩展使用。
+// MEM wait 时 stall_i 保持 ID/EX，避免 younger 指令越过 older MEM 指令。
 module pipe_reg_id_ex (
     input  logic                    clk_i,
     input  logic                    rst_n_i,
@@ -107,7 +105,7 @@ module pipe_reg_id_ex (
             data_o  <= '0;
         end
         else if (stall_i) begin
-            // 保持，供后续扩展使用；load-use 不应走这个分支。
+            // MEM wait backpressure 时保持；load-use 不应走这个分支。
         end
         else if (bubble_i) begin
             // 插入 invalid 空槽，避免 ID 阶段 consumer 过早进入 EX。
@@ -127,8 +125,7 @@ endmodule
 //   EX/MEM 的正是 redirect 指令本身，不应被普通 flush 清掉。
 // - trap/MRET 在 MEM 边界被接受时，当前 EX 指令是 younger instruction，必须用
 //   kill_i 阻止它进入 EX/MEM。
-// - data hazard 由 forwarding、late-result-use stall 和 GPR 同拍读写旁路处理，
-//   固定响应 memory 下不需要 stall EX/MEM 或 MEM/WB。
+// - MEM wait 时 stall_i 保持 EX/MEM，使 outstanding transaction 对应的 MEM 指令不被覆盖。
 
 // EX/MEM 流水线寄存器
 module pipe_reg_ex_mem (
@@ -156,7 +153,7 @@ module pipe_reg_ex_mem (
             data_o  <= '0;
         end
         else if (stall_i) begin
-            // 保持，供后续扩展使用
+            // MEM wait backpressure 时保持。
         end
         else begin
             valid_o <= valid_i;
@@ -171,6 +168,7 @@ endmodule
 // 优先级：reset > kill > stall > normal advance。
 // 这里的 kill_i 表示当前 MEM 指令已经在 MEM 边界由 trap_ctrl 接受，
 // 因此本寄存器写入 invalid bubble，不再让它作为普通 WB 指令提交。
+// 当前 MEM wait 不需要 stall MEM/WB；WB 中已有 older 指令可自然提交。
 module pipe_reg_mem_wb (
     input  logic                      clk_i,
     input  logic                      rst_n_i,
@@ -196,7 +194,7 @@ module pipe_reg_mem_wb (
             data_o  <= '0;
         end
         else if (stall_i) begin
-            // 保持，供后续扩展使用
+            // 当前 MEM wait 不使用 MEM/WB stall；若后续接入该口，保持当前 MEM/WB 内容。
         end
         else begin
             valid_o <= valid_i;

@@ -21,6 +21,7 @@
 //   - 连接 pc_reg、if_stage、id_stage、ex_stage、mem_stage、wb_stage、regfile、csr_file 和 trap_ctrl。
 //   - 使用 pipeline_pkg 中的 struct 描述四组流水线寄存器承载的数据和控制。
 //   - 处理 forwarding、load-use/CSR-use stall 和 branch/JAL/JALR redirect flush。
+//   - 支持 MEM backpressure，IMEM 固定响应。
 //   - 在 MEM 边界精确接受 trap/MRET，并通过 kill 清除 younger instruction 或终止当前 MEM 指令普通 WB 路径。
 //   - 输出 commit trace 和 trap/MRET trace 观察信号，供 testbench 打印和调试使用。
 //------------------------------------------------------------------------------
@@ -34,13 +35,24 @@ module core (
     input  logic [core_pkg::ILEN-1:0]     imem_rdata_i,         // imem 返回的 32 bit instruction。
     output logic [core_pkg::XLEN-1:0]     imem_addr_o,          // 输出给 imem 的取指地址。
 
-    output logic                          lsu_re_o,             // LSU load 读请求。
-    output logic                          lsu_we_o,             // LSU store 写请求。
-    output logic [3:0]                    lsu_be_o,             // LSU store byte enable。
-    output logic [core_pkg::XLEN-1:0]     lsu_addr_o,           // LSU load/store 地址，外部负责判断命中 DMEM/MMIO/未映射区域。
-    output logic [core_pkg::XLEN-1:0]     lsu_wdata_o,          // LSU 已按 byte lane 对齐的 store 数据。
-    input  logic [core_pkg::XLEN-1:0]     lsu_rdata_i,          // LSU load 返回的 32 bit 原始 word 数据。
-    input  logic                          lsu_access_fault_i,   // LSU data access 命中未映射或非法 data 地址。
+    // output logic                          lsu_re_o,             // LSU load 读请求。
+    // output logic                          lsu_we_o,             // LSU store 写请求。
+    // output logic [3:0]                    lsu_be_o,             // LSU store byte enable。
+    // output logic [core_pkg::XLEN-1:0]     lsu_addr_o,           // LSU load/store 地址，外部负责判断命中 DMEM/MMIO/未映射区域。
+    // output logic [core_pkg::XLEN-1:0]     lsu_wdata_o,          // LSU 已按 byte lane 对齐的 store 数据。
+    // input  logic [core_pkg::XLEN-1:0]     lsu_rdata_i,          // LSU load 返回的 32 bit 原始 word 数据。
+    // input  logic                          lsu_access_fault_i,   // LSU data access 命中未映射或非法 data 地址。
+    // 可变延迟访存总线
+    input  logic                          lsu_req_ready_i,          // data-side 可以接受本拍 request；valid && !ready 时 MEM 需要保持等待。
+    output logic                          lsu_req_valid_o,          // 当前 MEM 指令需要发起真实 load/store request，指令无效或已有 exception 时不拉高。
+    output logic                          lsu_req_write_o,          // LSU store 写请求；有效访存但 write_o 为 0 时表示为 load 指令
+    output logic [3:0]                    lsu_req_be_o,             // LSU store byte enable，如：SH x1, 0(x2) → 写 2 个字节 → be = 0011 / 1100
+    output logic [core_pkg::XLEN-1:0]     lsu_req_addr_o,           // LSU load/store 地址。
+    output logic [core_pkg::XLEN-1:0]     lsu_req_wdata_o,          // LSU 按 byte lane 对齐后的 store 数据。
+
+    input  logic                          lsu_resp_valid_i,         // data-side response 有效；store/error response 不使用 rdata。
+    input  logic [core_pkg::XLEN-1:0]     lsu_resp_rdata_i,         // LSU load 返回的 32 bit 原始 word 数据，仅 response OK 且当前为 load 时有意义。
+    input  logic                          lsu_resp_error_i,         // data response error，当前主要由未映射地址或未知 MMIO offset 产生。
 
     // 中断信号输入
     input  logic                          mtip_i,               // 外设的 mtip 中断挂起
@@ -69,22 +81,23 @@ module core (
 
     // pc相关信号
     wire [core_pkg::XLEN-1:0] pc;
-    wire [core_pkg::XLEN-1:0] ex_redirect_pc;
     wire                      ex_redirect_valid;
+    wire [core_pkg::XLEN-1:0] ex_redirect_pc;
+    wire                      nontrap_redirect_valid;
+    wire [core_pkg::XLEN-1:0] nontrap_redirect_pc;
     wire                      trap_redirect_valid;
     wire [core_pkg::XLEN-1:0] trap_redirect_pc;
-    wire                      redirect_valid = trap_redirect_valid | ex_redirect_valid;
-    wire [core_pkg::XLEN-1:0] redirect_pc    = trap_redirect_valid ? trap_redirect_pc : ex_redirect_pc;
+    wire                      redirect_valid = trap_redirect_valid | nontrap_redirect_valid;
+    wire [core_pkg::XLEN-1:0] redirect_pc    = trap_redirect_valid ? trap_redirect_pc : nontrap_redirect_pc;
 
-    // 做 data hazard，接 hazard_unit。
-    wire stall_if;
-    wire stall_id;
+    // pipeline_ctrl 输出的非 trap 类 stall/bubble。
+    wire stall_pc;
+    wire stall_if_id;
+    wire stall_id_ex;
+    wire stall_ex_mem;
     wire bubble_ex;
 
-    // 全流水线暂停（如可变延迟 memory），当前不使用。
-    // wire stall_pipeline = 1'b0;
-
-    // 做 control hazard flush/kill，接 hazard_unit。
+    // pipeline_ctrl 输出普通 redirect flush；trap/MRET kill 由 trap_ctrl 输出。
     wire flush_if_id;
     wire flush_id_ex;
 
@@ -171,6 +184,7 @@ module core (
     wire [core_pkg::XLEN-1:0] ex_next_pc;
 
     // MEM
+    wire                      mem_wait;
     wire [core_pkg::XLEN-1:0] mem_load_data;
     wire                      mem_exception_valid;
     core_pkg::excp_cause_e    mem_exception_cause;
@@ -211,7 +225,7 @@ module core (
         .pc_plus4_i         (if_pc_plus4),
         .redirect_pc_i      (redirect_pc),
         .redirect_valid_i   (redirect_valid),
-        .stall_pc_i         (stall_if), // if 要 stall 一拍，让 pc 保持不变
+        .stall_pc_i         (stall_pc), // if 要 stall 一拍，让 pc 保持不变
 
         .pc_o               (pc),
         .pc_valid_o         (pc_valid)
@@ -237,7 +251,7 @@ module core (
         .valid_i    (if_valid),
         .kill_i     (kill_if_id),       // trap control hazard
         .flush_i    (flush_if_id),      // base control hazard
-        .stall_i    (stall_id), // late_result_use_stall 时 id 要 stall 一拍
+        .stall_i    (stall_if_id),      // late_result_use_stall 时 id 要 stall 一拍
 
         .data_o     (if_id_data_q),
         .valid_o    (if_id_valid)
@@ -318,30 +332,6 @@ module core (
         .rd_wdata_i     (wb_rd_wdata)
     );
 
-    // hazard_unit 统一产生 data hazard stall/bubble 和 base control hazard flush/kill。
-    hazard_unit u_hazard_unit (
-        .if_id_valid_i      (if_id_valid),
-        .id_rs1_addr_i      (id_rs1_addr),
-        .id_rs2_addr_i      (id_rs2_addr),
-        .id_uses_rs1_i      (id_uses_rs1),
-        .id_uses_rs2_i      (id_uses_rs2),
-
-        .id_ex_valid_i      (id_ex_valid),
-        .id_ex_rd_addr_i    (id_ex_data_q.rd_addr),
-        .id_ex_reg_we_i     (id_ex_data_q.reg_we),
-        .id_ex_load_re_i    (id_ex_data_q.mem_re),
-        .id_ex_csr_re_i     (id_ex_data_q.csr_writes_rd),
-
-        .stall_if_o         (stall_if),
-        .stall_id_o         (stall_id),
-        .bubble_ex_o        (bubble_ex),
-
-        .redirect_valid_i   (ex_redirect_valid),    // hazard_unit 只负责 branch/jump 产生的 control hazard
-
-        .flush_if_id_o      (flush_if_id),
-        .flush_id_ex_o      (flush_id_ex)
-    );
-
     // forwarding，处理 RAW 时 EX/MEM -> EX 和 MEM/WB -> EX
     forwarding_unit u_forwarding_unit (
         .id_ex_valid_i      (id_ex_valid),
@@ -381,7 +371,7 @@ module core (
         .kill_i     (kill_id_ex),     // trap control hazard
         .flush_i    (flush_id_ex),    // base control hazard
         .bubble_i   (bubble_ex),
-        .stall_i    (1'b0), // EX 在当前设计不会 stall，为后续扩展保留（比如可变延迟 memory 需要全流水线暂停时）
+        .stall_i    (stall_id_ex),
 
         .data_o     (id_ex_data_q),
         .valid_o    (id_ex_valid)
@@ -473,7 +463,7 @@ module core (
         .data_i     (ex_mem_data_d),
         .valid_i    (ex_valid),
         .kill_i     (kill_ex_mem),     // trap control hazard
-        .stall_i    (1'b0), // 为后续扩展保留
+        .stall_i    (stall_ex_mem),
 
         .data_o     (ex_mem_data_q),
         .valid_o    (ex_mem_valid)
@@ -512,6 +502,9 @@ module core (
     assign ex_mem_data_d.next_pc         = ex_next_pc;
 
     mem_stage u_mem_stage (
+        .clk_i                  (clk_i),
+        .rst_n_i                (rst_n_i),
+
         .valid_i                (ex_mem_valid),
         .alu_result_i           (ex_mem_data_q.alu_result),
         .store_data_i           (ex_mem_data_q.store_data),
@@ -519,36 +512,43 @@ module core (
         .mem_we_i               (ex_mem_data_q.mem_we),
         .mem_size_i             (ex_mem_data_q.mem_size),
         .mem_unsigned_i         (ex_mem_data_q.mem_unsigned),
-        .lsu_rdata_i            (lsu_rdata_i),
+
+        .valid_o                (mem_valid),
+        .load_data_o            (mem_load_data),
 
         .exception_valid_i      (ex_mem_data_q.exception_valid),
         .exception_cause_i      (ex_mem_data_q.exception_cause),
         .exception_tval_i       (ex_mem_data_q.exception_tval),
-        .lsu_access_fault_i     (lsu_access_fault_i),
-
-        .valid_o                (mem_valid),
-        .lsu_re_o               (lsu_re_o),
-
-        .lsu_we_o               (lsu_we_o),
-        .lsu_be_o               (lsu_be_o),
-        .lsu_addr_o             (lsu_addr_o),
-        .lsu_wdata_o            (lsu_wdata_o),
-
-        .load_data_o            (mem_load_data),
 
         .exception_valid_o      (mem_exception_valid),
         .exception_cause_o      (mem_exception_cause),
         .exception_tval_o       (mem_exception_tval),
+
+        .lsu_req_ready_i        (lsu_req_ready_i),
+        .lsu_req_valid_o        (lsu_req_valid_o),
+        .lsu_req_write_o        (lsu_req_write_o),
+        .lsu_req_be_o           (lsu_req_be_o),
+        .lsu_req_addr_o         (lsu_req_addr_o),
+        .lsu_req_wdata_o        (lsu_req_wdata_o),
+
+        .lsu_resp_valid_i       (lsu_resp_valid_i),
+        .lsu_resp_rdata_i       (lsu_resp_rdata_i),
+        .lsu_resp_error_i       (lsu_resp_error_i),
+
+        .mem_wait_o             (mem_wait),
+
         .mem_misaligned_o       (),     // 可作为调试信号使用，暂不接
         .load_misaligned_o      (),
         .store_misaligned_o     (),
         .mem_access_fault_o     (),
         .load_access_fault_o    (),
-        .store_access_fault_o   ()
+        .store_access_fault_o   (),
+        .transaction_complete_o (),
+        .mem_complete_o         ()
     );
 
-    // 与 mem_stage “并连”
-    assign mem_csr_valid = ex_mem_valid & ex_mem_data_q.csr & ~mem_exception_valid;
+    // 与 mem_stage “并连”,mem_valid 只是防御性写法，实际上 CSR 指令与访存指令互斥，用 ex_mem_valid 也可且可能更快
+    assign mem_csr_valid = mem_valid & ex_mem_data_q.csr & ~mem_exception_valid;
     csr_file u_csr_file (
         .clk_i              (clk_i),
         .rst_n_i            (rst_n_i),
@@ -584,7 +584,7 @@ module core (
     );
 
     trap_ctrl u_trap_ctrl (
-        .mem_valid_i                (ex_mem_valid),
+        .mem_valid_i                (mem_valid),                // 访存完成后才能明确且允许 trap
         .mem_pc_i                   (ex_mem_data_q.pc),         // 本指令的 pc
         .mem_instr_i                (ex_mem_data_q.instr),
         .mem_mret_i                 (ex_mem_data_q.mret),
@@ -635,6 +635,38 @@ module core (
     assign trap_return_o        = mret_valid;
     assign trap_redirect_pc_o   = trap_redirect_pc;
 
+    // pipeline_ctrl 统一整合 late-result-use stall、non-trap redirect flush 和 MEM backpressure。
+    pipeline_ctrl u_pipeline_ctrl (
+        .if_id_valid_i              (if_id_valid),
+        .id_rs1_addr_i              (id_rs1_addr),
+        .id_rs2_addr_i              (id_rs2_addr),
+        .id_uses_rs1_i              (id_uses_rs1),
+        .id_uses_rs2_i              (id_uses_rs2),
+
+        .id_ex_valid_i              (id_ex_valid),
+        .id_ex_rd_addr_i            (id_ex_data_q.rd_addr),
+        .id_ex_reg_we_i             (id_ex_data_q.reg_we),
+        .id_ex_load_re_i            (id_ex_data_q.mem_re),
+        .id_ex_csr_re_i             (id_ex_data_q.csr_writes_rd),
+
+        .mem_wait_i                 (mem_wait),
+
+        .ex_redirect_valid_i        (ex_redirect_valid),
+        .ex_redirect_pc_i           (ex_redirect_pc),
+
+        .nontrap_redirect_valid_o   (nontrap_redirect_valid),
+        .nontrap_redirect_pc_o      (nontrap_redirect_pc),
+
+        .stall_pc_o                 (stall_pc),
+        .stall_if_id_o              (stall_if_id),
+        .stall_id_ex_o              (stall_id_ex),
+        .stall_ex_mem_o             (stall_ex_mem),
+
+        .bubble_ex_o                (bubble_ex),
+        .flush_if_id_o              (flush_if_id),
+        .flush_id_ex_o              (flush_id_ex)
+    );
+
     pipe_reg_mem_wb u_pipe_reg_mem_wb (
         .clk_i      (clk_i),
         .rst_n_i    (rst_n_i),
@@ -642,7 +674,7 @@ module core (
         .data_i     (mem_wb_data_d),
         .valid_i    (mem_valid),
         .kill_i     (kill_mem_wb),     // trap control hazard，终止该指令生命周期（已被 trap 提交）
-        .stall_i    (1'b0), // 为后续扩展保留
+        .stall_i    (1'b0), // 当前 MEM wait 不 stall MEM/WB，WB 中已有 older 指令可自然提交。
 
         .data_o     (mem_wb_data_q),
         .valid_o    (mem_wb_valid)

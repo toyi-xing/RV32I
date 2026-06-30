@@ -23,9 +23,9 @@ module pc_reg (
     input  logic                          rst_n_i,
 
     input  logic [core_pkg::XLEN-1:0]     pc_plus4_i,         // 默认顺序下一 PC，通常来自 if_stage 的 PC+4。
-    input  logic [core_pkg::XLEN-1:0]     redirect_pc_i,      // branch/JAL/JALR 产生的重定向目标 PC。
+    input  logic [core_pkg::XLEN-1:0]     redirect_pc_i,      // 最终 PC 重定向目标，trap/MRET 优先于 non-trap redirect。
     input  logic                          redirect_valid_i,   // 为 1 时下一拍 PC 跳转到 redirect_pc_i。
-    input  logic                          stall_pc_i,         // 来自 hazard/顶层控制；为 1 时保持 PC，用于 load-use、CSR-use 或后续访存等待。
+    input  logic                          stall_pc_i,         // 来自 pipeline_ctrl；为 1 时保持 PC，用于 late-result-use 或 MEM wait。
 
     output logic [core_pkg::XLEN-1:0]     pc_o,               // 当前取指 PC。
     output logic                          pc_valid_o          // 当前 PC 是否有效；复位后通常为 0，进入运行后为 1。
@@ -39,8 +39,9 @@ module pc_reg (
         end else begin
             pc_valid_o <= 1'b1;
             // 优先级：redirect > stall > PC+4。
-            // redirect 优先于 stall：分支/JAL/JALR 的重定向必须立即生效，
-            // 不能被数据冒险的停顿挡住，否则流水线会多取一条错误路径的指令。
+            // redirect_valid_i 是上游已经仲裁后的最终 redirect：
+            // trap/MRET redirect 保持最高优先级；non-trap redirect 在 MEM wait 期间已被屏蔽。
+            // 因此本模块只需执行最终 redirect 优先于普通 stall 的规则。
             if (pc_valid_o == 1'b1) begin
                 if (redirect_valid_i) begin
                     pc_o <= redirect_pc_i;

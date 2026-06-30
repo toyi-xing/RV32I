@@ -444,9 +444,9 @@ valid_o = valid_i && !mem_wait_o
 
 若保留这些端口，注释必须同步为 delayed response error，不再写“地址未定义或权限不对同拍返回”。
 
-## 4. core 顶层接线与流水线 backpressure
+## 4. core 顶层接线与流水线 backpressure `已完成`
 
-### 4.1 修改 `rtl/core/core.sv` LSU 顶层端口
+### 4.1 修改 `rtl/core/core.sv` LSU 顶层端口 `已完成`
 
 替换当前 LSU 固定响应接口：
 
@@ -476,7 +476,7 @@ input  logic            lsu_resp_error_i;
 
 注释同步说明：IMEM 仍固定响应，LSU data side 为 simple request/response。
 
-### 4.2 接入 `mem_stage` 的 clk/rst 和新接口
+### 4.2 接入 `mem_stage` 的 clk/rst 和新接口 `已完成`
 
 `u_mem_stage` 实例新增：
 
@@ -487,7 +487,7 @@ input  logic            lsu_resp_error_i;
 
 并连接新 request/response 信号。
 
-### 4.3 新增 `mem_wait` 控制信号
+### 4.3 新增 `mem_wait` 控制信号 `已完成`
 
 core 内部新增：
 
@@ -498,7 +498,7 @@ wire mem_complete; // 可选
 
 `mem_wait` 来自 `mem_stage.mem_wait_o`。
 
-### 4.4 PC/IF/ID/EX/MEM backpressure 接线
+### 4.4 新增 `pipeline_ctrl.sv` 统一整合 stall/flush/backpressure `已完成`
 
 memory wait 时需要保持：
 
@@ -509,24 +509,68 @@ ID/EX
 EX/MEM
 ```
 
-建议在 core 中形成：
+不建议在 `core.sv` 顶层分散 OR 各级 stall。新增 `rtl/core/pipeline_ctrl.sv`，作为流水线控制整合层：
 
 ```text
-stall_pipeline = mem_wait
+pipeline_ctrl
+  - 内部实例化 hazard_unit
+  - 复用现有 late-result-use stall 与 EX redirect flush 逻辑
+  - 接收 MEM wait 形成的 backpressure
+  - 汇总非 trap 类 PC redirect 来源
+  - 统一输出最终 PC/IF_ID/ID_EX/EX_MEM stall 和 IF_ID/ID_EX flush
 ```
 
-并参与：
+`hazard_unit` 保持局部 hazard 检测定位，主要负责：
 
 ```text
-pc_reg.stall_pc_i       = stall_if | stall_pipeline
-pipe_reg_if_id.stall_i  = stall_id | stall_pipeline
-pipe_reg_id_ex.stall_i  = stall_pipeline
-pipe_reg_ex_mem.stall_i = stall_pipeline
+load-use / CSR-use late-result stall
+允许后的 EX redirect flush
 ```
+
+`pipeline_ctrl` 新增或整合输入：
+
+```text
+mem_wait_i = mem_wait
+ex_redirect_valid_i
+ex_redirect_pc_i
+```
+
+第一版非 trap redirect 来源只有 EX 阶段 branch/JAL/JALR。后续如果出现 ID 阶段 redirect、预测修正或其他非 trap 类 PC redirect，可以继续收敛到 `pipeline_ctrl` 内部仲裁。
+
+并统一输出：
+
+```text
+stall_pc_o
+stall_if_id_o
+stall_id_ex_o
+stall_ex_mem_o
+flush_if_id_o
+flush_id_ex_o
+nontrap_redirect_valid_o
+nontrap_redirect_pc_o
+```
+
+第一版输出语义：
+
+```text
+stall_mem_backpressure = mem_wait_i
+
+stall_pc_o     = stall_late_result_use | stall_mem_backpressure
+stall_if_id_o  = stall_late_result_use | stall_mem_backpressure
+stall_id_ex_o  = stall_mem_backpressure
+stall_ex_mem_o = stall_mem_backpressure
+
+nontrap_redirect_valid_o = ex_redirect_valid_i && !mem_wait_i
+nontrap_redirect_pc_o    = ex_redirect_pc_i
+flush_if_id_o            = ex_redirect_valid_i && !mem_wait_i
+flush_id_ex_o            = ex_redirect_valid_i && !mem_wait_i
+```
+
+`core.sv` 只连接 `pipeline_ctrl` 的最终控制输出，不在顶层重复组合这些 stall 条件。
 
 `pipe_reg_mem_wb` 通常不因 MEM wait stall，因为 MEM wait 期间 `mem_valid/valid_o` 不应产生新的 MEM/WB 输入；WB 中已有 older 指令可以自然提交。若实现中 MEM/WB 需要 hold 以避免 valid 抖动，必须确认不会重复 commit。
 
-### 4.5 load-use/CSR-use 与 memory wait 的关系
+### 4.5 load-use/CSR-use 与 memory wait 的关系 `无需改动`
 
 `hazard_unit` 仍负责：
 
@@ -542,7 +586,7 @@ producer 已到 MEM 且 response 未完成时，冻结整条前端/EX 路径
 
 实现时不要用固定数量 bubble 处理可变延迟 load-use；load-use 只需要阻止 consumer 过早进入 EX，后续等待由 `mem_wait` 接管。
 
-### 4.6 EX redirect 与 memory wait 的屏蔽
+### 4.6 非 trap redirect 与 memory wait 的屏蔽 `已完成`
 
 当前：
 
@@ -550,23 +594,32 @@ producer 已到 MEM 且 response 未完成时，冻结整条前端/EX 路径
 redirect_valid = trap_redirect_valid | ex_redirect_valid;
 ```
 
-0834 后需要防止 memory wait 期间 younger EX redirect 越过 older MEM 指令。
+0834 后需要防止 memory wait 期间 younger 非 trap redirect 越过 older MEM 指令。当前非 trap redirect 来源只有 EX 阶段 branch/JAL/JALR，后续可以在 `pipeline_ctrl` 内继续扩展其他非 trap redirect 来源。
 
-建议形成：
+`pipeline_ctrl` 第一版形成：
 
 ```text
-ex_redirect_allowed = ex_redirect_valid && !mem_wait && !trap_redirect_valid
-redirect_valid      = trap_redirect_valid | ex_redirect_allowed
+nontrap_redirect_valid = ex_redirect_valid && !mem_wait
+nontrap_redirect_pc    = ex_redirect_pc
 ```
 
-同时传给 `hazard_unit.redirect_valid_i` 的也应是被允许的 EX redirect，而不是原始 `ex_redirect_valid`。
+`pipeline_ctrl` 应使用 `mem_wait` 屏蔽 EX 边界 non-trap redirect 对 PC 和 flush 的影响。这样 memory wait 期间 younger EX redirect 不会产生 flush，也不会越过 older MEM 指令改变前端状态。
+
+core 顶层最终 PC redirect 仍保持 trap/MRET 优先：
+
+```text
+redirect_valid = trap_redirect_valid | nontrap_redirect_valid
+redirect_pc    = trap_redirect_valid ? trap_redirect_pc : nontrap_redirect_pc
+```
+
+`pipeline_ctrl` 不决定 trap/MRET redirect，也不产生 trap kill；这些仍由 `trap_ctrl` 负责。
 
 注意 response OK 同拍：
 
 - 如果 `mem_wait` 在 response valid 当拍降为 0，则 younger EX redirect 可以在该拍生效。
 - 如果同拍 trap/interrupt 被接受，trap redirect 优先，younger redirect 被 kill。
 
-### 4.7 trap_ctrl 只在 MEM completion 边界工作
+### 4.7 trap_ctrl 只在 MEM completion 边界工作 `已完成`
 
 `trap_ctrl.mem_valid_i` 当前接 `ex_mem_valid`。0834 后如果 memory wait 期间 `ex_mem_valid=1`，但 response 未完成，不能接受 interrupt，也不能让 MRET/CSR 同拍 interrupt提前发生。
 
@@ -585,7 +638,7 @@ mem_commit_valid = ex_mem_valid && !mem_wait
 - load/store 等 response 时 `mem_wait=1`，trap_ctrl 不接受 interrupt/MRET/trap。
 - response error/OK 当拍 `mem_wait=0`，trap_ctrl 在 completion 边界处理。
 
-### 4.8 CSR 写提交语义保持
+### 4.8 CSR 写提交语义保持 `防御性改动完成`
 
 `mem_csr_valid` 当前为：
 
@@ -601,7 +654,7 @@ mem_csr_valid = mem_commit_valid && ex_mem_data_q.csr && !mem_exception_valid
 
 CSR 写不应在 MEM 前面有 outstanding memory wait 时提前提交。
 
-### 4.9 MEM/WB valid 口径
+### 4.9 MEM/WB valid 口径 `无需改动`
 
 `pipe_reg_mem_wb.valid_i` 当前接 `mem_valid`。0834 后 `mem_valid` 应已经由 `mem_stage` 在 completion 边界给出。
 
@@ -612,7 +665,7 @@ CSR 写不应在 MEM 前面有 outstanding memory wait 时提前提交。
 - response error / exception / MRET 由 `kill_mem_wb` 阻止普通 WB。
 - interrupt 不 kill 当前已完成旧指令写回，保持 0833 口径。
 
-### 4.10 forwarding 的 EX/MEM load 可前递口径
+### 4.10 forwarding 的 EX/MEM load 可前递口径 `无需改动`
 
 当前 forwarding_unit 会避免从 EX/MEM 前递 load/CSR 晚结果，转而依赖 MEM/WB。
 
@@ -624,42 +677,36 @@ CSR 写不应在 MEM 前面有 outstanding memory wait 时提前提交。
 - response OK 后下一拍进入 MEM/WB，consumer 解除 hold 后可从 MEM/WB forwarding 或 GPR bypass 得到 load 值。
 - 不要新增从 EX/MEM 对 load response 的组合前递，除非有明确必要。
 
-## 5. `hazard_unit` 控制语义同步
+## 5. `hazard_unit` 控制语义同步 `已由4.4/4.6吸收`
 
-### 5.1 保持 late-result-use 检测主体
+0834 原计划中，这一章准备继续让 `hazard_unit` 同时处理 late-result-use stall 和已允许的 EX redirect flush。
 
-`rtl/core/hazard_unit.sv` 当前检测：
-
-- load-use stall。
-- CSR-use stall。
-- EX redirect flush。
-
-这部分主体不需要重写。
-
-### 5.2 输入 redirect 改为 allowed redirect
-
-`redirect_valid_i` 应由 core 传入“已经被 memory wait/trap 优先级允许”的 EX redirect。
-
-这样 hazard_unit 仍只关心普通 control hazard，不需要知道 memory outstanding 细节。
-
-### 5.3 注释同步新增 memory wait 分工
-
-头注释和控制优先级注释需要改为：
+实际实现采用了更清晰的分层：
 
 ```text
-trap/MRET/interrupt 与 memory wait 的全局优先级在 core/trap_ctrl 周边完成；
-hazard_unit 只处理局部 late-result-use 和被允许的 EX redirect。
+hazard_unit
+  只检测 load-use / CSR-use late-result-use RAW hazard。
+
+pipeline_ctrl
+  内部实例化 hazard_unit。
+  统一整合 late-result-use stall、MEM wait backpressure、non-trap redirect 和 flush。
+  memory wait 期间屏蔽 younger non-trap redirect。
 ```
 
-不要让注释继续暗示全局优先级只有：
+因此，第 5 章不再作为独立 RTL 步骤执行；相关设计已经并入第 4.4 和第 4.6。
 
-```text
-trap/MRET redirect > EX redirect > load-use stall
-```
+已完成内容：
 
-## 6. `pipe_reg` 注释和 stall 优先级确认
+- `hazard_unit` 保留 late-result-use 检测主体，输出 `stall_late_result_use_o`。
+- `pipeline_ctrl` 根据 `stall_late_result_use_o` 生成 PC/IF_ID stall 和 ID_EX bubble。
+- `pipeline_ctrl` 根据 `mem_wait_i` 生成 PC/IF_ID/ID_EX/EX_MEM backpressure。
+- `pipeline_ctrl` 根据 `ex_redirect_valid_i && !mem_wait_i` 生成当前 EX 边界 non-trap redirect 和 IF_ID/ID_EX flush。
 
-### 6.1 确认现有优先级是否适配 memory wait
+该实现比原计划更好，因为 `hazard_unit` 保持局部 hazard 检测职责，`pipeline_ctrl` 承担流水线控制整合职责，后续新增 ID redirect、预测修正或其他 non-trap redirect 来源时，可以继续收敛到 `pipeline_ctrl`。
+
+## 6. `pipe_reg` 注释和 stall 优先级确认 `已完成`
+
+### 6.1 确认现有优先级是否适配 memory wait `无需改动`
 
 当前优先级：
 
@@ -678,9 +725,9 @@ MEM/WB: reset > kill > stall > normal
 - flush 优先于 stall：被允许的 EX redirect 需要清掉错误路径。
 - stall 优先于 bubble：memory wait 时不要插入 bubble 丢失当前年轻指令状态。
 
-### 6.2 更新注释
+### 6.2 更新注释 `已完成`
 
-`rtl/core/pipe_reg.sv` 中当前多处写“供后续扩展使用”。0834 实现后需要改成实际用途：
+`rtl/core/pipe_reg.sv` 中 stall 相关注释已按 0834 实际用途同步：
 
 - `ID/EX.stall_i` 用于 memory wait backpressure。
 - `EX/MEM.stall_i` 用于保持 outstanding transaction 对应的 MEM 指令。
