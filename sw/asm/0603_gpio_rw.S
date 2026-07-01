@@ -5,11 +5,11 @@
 #
 # 目的：
 #   - 写 GPIO0 OUT/OE 并读回验证。
-#   - 读取 GPIO0 IN，确认来自 testbench 固定输入 0xA5A55A5A。
+#   - 读取 GPIO0 IN[29:0]，确认来自 testbench 默认固定输入 30'hA5A55A5A。
 #
 # PASS 条件：
 #   - OUT/OE 读回值正确。
-#   - IN 读回值等于 0xA5A55A5A。
+#   - IN[29:0] 读回值等于 30'hA5A55A5A（即 0x25A55A5A）。
 #===============================================================================
 
 
@@ -45,15 +45,18 @@ test_main:
     bne   x6, x5, fail
 
     # =========================================================================
-    # GPIO IN — 读回 testbench 固定驱动值 0xA5A55A5A
-    #           构造方式：lui 0xa5a55 → 0xa5a55000, 逐次 addi 得到 0xa5a55a5a
+    # GPIO IN — 只检查 [29:0] 的 testbench 默认固定驱动值 30'hA5A55A5A
+    #           GPIO_IN[31:30] 由 TB 周期信号驱动，因此先 mask 掉。
     # =========================================================================
-    lui   x5, 0xa5a55
-    addi  x5, x5, 0x5a           # x5 = 0xa5a5505a
-    addi  x5, x5, 0x500          # x5 = 0xa5a5555a
-    addi  x5, x5, 0x500          # x5 = 0xa5a55a5a
     lw    x6, GPIO_IN_OFFSET(x21)   # 读 GPIO0_IN
-    bne   x6, x5, fail            # IN 应等于 TB 驱动的 0xa5a55a5a
+    lui   x7, 0x40000
+    addi  x7, x7, -1             # x7 = 0x3fffffff
+    and   x6, x6, x7             # 只保留 IN[29:0]
+    lui   x5, 0x25a55
+    addi  x5, x5, 0x5a           # x5 = 0x25a5505a
+    addi  x5, x5, 0x500          # x5 = 0x25a5555a
+    addi  x5, x5, 0x500          # x5 = 0x25a55a5a
+    bne   x6, x5, fail           # IN[29:0] 应等于 TB 默认值
 
     # =========================================================================
     # PASS/FAIL — 写 TEST_STATUS 结束仿真

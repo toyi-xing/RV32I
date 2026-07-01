@@ -15,7 +15,7 @@
  *   - Stage2: OE 写 0x0000FFFF 和 0xFFFF0000 后读回均匹配。
  *   - Stage3: OUT=0xAAAAAAAA 时写 OE=0x0000FFFF，读 OUT 仍为 0xAAAAAAAA。
  *   - Stage4: OE=0x0000FFFF 时写 OUT=0x55555555，读 OE 仍为 0x0000FFFF。
- *   - Stage5: 写 IN 偏移地址后读回仍为 TB 固定值 0xA5A55A5A。
+ *   - Stage5: 写 IN 偏移地址后，IN[29:0] 读回仍为 TB 默认固定值 30'hA5A55A5A。
  *   - Stage6: UART TX"0652: GPIO OUT/OE OK\n"等 3 个字符串无异常。
  *
  * 失败返回码：
@@ -112,10 +112,10 @@ int main(void)
     }
 
     /* ---- Stage5: IN 只读验证 ---- */
-    /* 写 IN 偏移地址应是空操作或 access fault；无论如何读回不应为写入值 */
+    /* 写 IN 偏移地址应是空操作；IN[29:0] 应保持 TB 默认值，bit[31:30] 为周期信号。 */
     mmio_write32(gpio_reg(GPIO0_BASE, GPIO_IN_OFFSET), 0xDEADBEEFu);
     value = mmio_read32(gpio_reg(GPIO0_BASE, GPIO_IN_OFFSET));
-    if (value != 0xA5A55A5Au) {
+    if ((value & 0x3fffffffu) != (0xA5A55A5Au & 0x3fffffffu)) {
         return 5;
     }
 

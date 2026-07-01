@@ -210,7 +210,8 @@ module data_subsystem (
     wire resp_undefined_valid = req_undefined_valid;    // undefined同拍响应
 
     // core_resp MUX
-    soc_pkg::target_e resp_target = resp_pending_q ? resp_target_q : target;    // 0 wait-state 时，使用组合信号当拍响应
+    soc_pkg::target_e resp_target;
+    assign resp_target = resp_pending_q ? resp_target_q : target;    // 0 wait-state 时，使用组合信号当拍响应
     always_comb begin
         core_resp_valid_o = 1'b0;
         core_resp_rdata_o = '0;

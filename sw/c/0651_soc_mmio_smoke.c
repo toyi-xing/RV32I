@@ -4,7 +4,7 @@
  * 目的：
  *   - 通过 platform.h 封装函数访问 GPIO/UART MMIO 寄存器。
  *   - 验证 GPIO OUT/OE 写后读正确性。
- *   - 验证 GPIO IN 读回 testbench 固定驱动值 0xA5A55A5A。
+ *   - 验证 GPIO IN[29:0] 读回 testbench 默认固定驱动值 30'hA5A55A5A。
  *   - 验证 UART CTRL/STATUS 寄存器和 TX 数据通路。
  *
  * 关于 MMIO 访问方式：
@@ -15,14 +15,14 @@
  * 通过条件：
  *   - GPIO OUT 写 0x12345678 后读回匹配。
  *   - GPIO OE 写 0x0000ffff 后读回匹配。
- *   - GPIO IN 读回 0xA5A55A5A（TB 驱动固定值）。
+ *   - GPIO IN[29:0] 读回 30'hA5A55A5A（即 0x25A55A5A）。
  *   - UART CTRL.enable 后 STATUS.ready 为 1。
  *   - uart_putc 发送 "SOC\n" 无异常。
  *
  * 失败返回码：
  *   1: GPIO OUT 读回值与写入值不匹配
  *   2: GPIO OE 读回值与写入值不匹配
- *   3: GPIO IN 读回值不是 0xA5A55A5A
+ *   3: GPIO IN[29:0] 读回值不是 30'hA5A55A5A
  *   4: UART 使能后 STATUS.ready 仍为 0
  */
 
@@ -47,9 +47,9 @@ int main(void)
     }
 
     // ---- GPIO IN 只读验证 ----
-    // IN 的值由 testbench 驱动为 0xA5A55A5A，C 程序只能读不能写。
+    // IN[29:0] 由 testbench 默认驱动为 30'hA5A55A5A，bit[31:30] 为周期信号。
     value = mmio_read32(gpio_reg(GPIO0_BASE, GPIO_IN_OFFSET));
-    if (value != 0xa5a55a5au) {     // 应等于 TB 驱动值
+    if ((value & 0x3fffffffu) != (0xa5a55a5au & 0x3fffffffu)) {
         return 3;
     }
 

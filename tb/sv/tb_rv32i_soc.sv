@@ -201,7 +201,7 @@ module tb_rv32i_soc;
     // -------------------------------------------------------------------------
     always_ff @(posedge clk) begin
         if (!rst_n) begin    // soc rst 期间输出无意义
-            gpio0_in[29:0] <= '0;
+            gpio0_in[29:0] <= 30'hA5A55A5A;
             uart0_rx_valid <= 1'b0;
             uart0_rx_data  <= '0;
         end

@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SIM="${REPO_ROOT}/obj_dir/Vtb_rv32i_soc"
+LOG_DIR="${REPO_ROOT}/build/soc_c/logs"
 
 TESTS=()
 shopt -s nullglob
@@ -49,18 +50,30 @@ verilator -sv --binary --timing --top-module tb_rv32i_soc \
 
 echo ""
 echo ">>> [3/3] Running all SoC C tests..."
+mkdir -p "${LOG_DIR}"
 for t in "${TESTS[@]}"; do
     echo ""
     echo "=========================================="
     echo "  RUN: ${t}"
     echo "=========================================="
+    LOG_FILE="${LOG_DIR}/${t}.log"
     if "${SIM}" \
         "+imem=${REPO_ROOT}/build/soc_c/${t}_imem.mem" \
-        "+dmem=${REPO_ROOT}/build/soc_c/${t}_dmem.mem"; then
+        "+dmem=${REPO_ROOT}/build/soc_c/${t}_dmem.mem" 2>&1 | tee "${LOG_FILE}"; then
+        sim_rc=0
+    else
+        sim_rc=$?
+    fi
+
+    if [ "${sim_rc}" -eq 0 ] \
+        && grep -q "PASS after " "${LOG_FILE}" \
+        && ! grep -q "FAIL after " "${LOG_FILE}" \
+        && ! grep -q "TIMEOUT:" "${LOG_FILE}"; then
         echo "  >>> ${t}: PASS"
         PASS=$((PASS + 1))
     else
         echo "  >>> ${t}: FAIL"
+        echo "      log: ${LOG_FILE}"
         FAIL=$((FAIL + 1))
         FAILED="${FAILED} ${t}"
     fi
