@@ -149,7 +149,7 @@ module mem_stage (
 
     // 访存输出信号
     assign lsu_req_valid_o  = mem_access & !req_outstanding_q;  // 需要访存且未被接受
-    assign lsu_req_write_o  = mem_we_i;
+    assign lsu_req_write_o  = lsu_req_valid_o & mem_we_i;       // 仅 lsu_req_valid_o = 1 时有意义
     assign lsu_req_be_o     =(mem_size_i == MEM_WORD ? 4'b1111 : 4'b0000) |
                              (mem_size_i == MEM_HALF ? 4'b0011 << alu_result_i[1:0] : 4'b0000) |
                              (mem_size_i == MEM_BYTE ? 4'b0001 << alu_result_i[1:0] : 4'b0000);

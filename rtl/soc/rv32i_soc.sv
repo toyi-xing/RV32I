@@ -40,6 +40,7 @@ module rv32i_soc (
     input  logic                          uart0_rx_valid_i,      // UART0 RX event 脉冲。
     input  logic [7:0]                    uart0_rx_data_i,       // UART0 RX event 对应字节。
 
+    // ----------------------------以下为 commit/观察口-----------------------------------------
     // load/store 指令既可能是访问 dmem,也可能是访问外设寄存器
     output logic                          data_re_o,             // load 指令观察口。
     output logic                          data_we_o,             // store 指令观察口。
@@ -84,6 +85,10 @@ module rv32i_soc (
     assign meip_o = meip;
     assign mtip_o = mtip;
 
+    // core 与 data_subsystem 之间的 simple data bus 连接信号。
+    wire req_valid, req_ready, resp_valid;
+    assign data_re_o = req_valid & !data_we_o;
+
     core u_core (
         .clk_i                  (clk_i),
         .rst_n_i                (rst_n_i),
@@ -91,13 +96,24 @@ module rv32i_soc (
         .imem_rdata_i           (imem_rdata_i),
         .imem_addr_o            (imem_addr_o),
 
-        .lsu_re_o               (data_re_o),
-        .lsu_we_o               (data_we_o),
-        .lsu_be_o               (data_be_o),
-        .lsu_addr_o             (data_addr_o),
-        .lsu_wdata_o            (data_wdata_o),
-        .lsu_rdata_i            (data_rdata_o),
-        .lsu_access_fault_i     (data_access_fault_o),
+        // .lsu_re_o               (data_re_o),
+        // .lsu_we_o               (data_we_o),
+        // .lsu_be_o               (data_be_o),
+        // .lsu_addr_o             (data_addr_o),
+        // .lsu_wdata_o            (data_wdata_o),
+        // .lsu_rdata_i            (data_rdata_o),
+        // .lsu_access_fault_i     (data_access_fault_o),
+
+        .lsu_req_ready_i        (req_ready),
+        .lsu_req_valid_o        (req_valid),
+        .lsu_req_write_o        (data_we_o),
+        .lsu_req_be_o           (data_be_o),
+        .lsu_req_addr_o         (data_addr_o),
+        .lsu_req_wdata_o        (data_wdata_o),
+
+        .lsu_resp_valid_i       (resp_valid),
+        .lsu_resp_rdata_i       (data_rdata_o),
+        .lsu_resp_error_i       (data_access_fault_o),
 
         .mtip_i                 (mtip),
         .meip_i                 (meip),
@@ -123,13 +139,24 @@ module rv32i_soc (
         .clk_i                 (clk_i),
         .rst_n_i               (rst_n_i),
 
-        .core_re_i             (data_re_o),
-        .core_we_i             (data_we_o),
-        .core_be_i             (data_be_o),
-        .core_addr_i           (data_addr_o),
-        .core_wdata_i          (data_wdata_o),
-        .core_rdata_o          (data_rdata_o),
-        .core_access_fault_o   (data_access_fault_o),
+        // .core_re_i             (data_re_o),
+        // .core_we_i             (data_we_o),
+        // .core_be_i             (data_be_o),
+        // .core_addr_i           (data_addr_o),
+        // .core_wdata_i          (data_wdata_o),
+        // .core_rdata_o          (data_rdata_o),
+        // .core_access_fault_o   (data_access_fault_o),
+
+        .core_req_ready_o       (req_ready),
+        .core_req_valid_i       (req_valid),
+        .core_req_write_i       (data_we_o),
+        .core_req_be_i          (data_be_o),
+        .core_req_addr_i        (data_addr_o),
+        .core_req_wdata_i       (data_wdata_o),
+        
+        .core_resp_valid_o      (resp_valid),
+        .core_resp_rdata_o      (data_rdata_o),
+        .core_resp_error_o      (data_access_fault_o),
 
         .dmem_we_o             (dmem_we_o),
         .dmem_be_o             (dmem_be_o),

@@ -98,4 +98,13 @@ package soc_pkg;
     parameter logic [core_pkg::XLEN-1:0] ACCEL0_BASE        = ACCEL_BASE;
     parameter logic [core_pkg::XLEN-1:0] ACCEL0_SIZE_BYTES  = ACCEL_STRIDE;
 
+    // data_subsystem 访问目标
+    typedef enum logic [2:0] {
+        TARGET_DMEM,
+        TARGET_GPIO0,
+        TARGET_UART0,
+        TARGET_TIMER0,
+        TARGET_UNDEFINED
+    } target_e;
+
 endpackage
