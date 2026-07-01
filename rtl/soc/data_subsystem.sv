@@ -65,6 +65,12 @@ module data_subsystem (
     output logic                      uart0_irq_o,
     output logic                      timer0_irq_o,
 
+    // 供 tb mailbox 配置的 MEM 指令响应延迟
+    input  logic [7:0]                dmem_resp_delay_cycles_i,
+    input  logic [7:0]                gpio0_resp_delay_cycles_i,
+    input  logic [7:0]                uart0_resp_delay_cycles_i,
+    input  logic [7:0]                timer0_resp_delay_cycles_i,
+
     output logic                      dmem_access_o,        // 观察信号：本拍访问命中 DMEM。
     output logic                      mmio_access_o         // 观察信号：本拍访问命中 MMIO。
 );
@@ -115,6 +121,86 @@ module data_subsystem (
     wire req_timer0_valid    = req_accept_fire &  timer0_hit;
     wire req_undefined_valid = req_accept_fire & !mapped_hit;
 
+    //======================================================================
+    // 固定响应的延时响应包装层 wrapper，用计数器假装一个非 0 延迟。使用 tb mailbox 控制外设响应延迟
+    // 即使上 FPGA 也可以模拟外设延迟响应
+    // 固定响应 DMEM/MMIO 在 accepted request 当拍完成本体访问并锁存返回值，
+    // wrapper 根据 TB 配置的 delay cycles 延后向 core 返回 response。
+    // 后续真实慢 slave 可以替换该 wrapper，或自行按 simple bus 语义产生 response。
+    //======================================================================
+
+    wire [7:0] req_delay_cycles = dmem_hit   ? dmem_resp_delay_cycles_i   :
+                                  gpio0_hit  ? gpio0_resp_delay_cycles_i  :
+                                  uart0_hit  ? uart0_resp_delay_cycles_i  :
+                                  timer0_hit ? timer0_resp_delay_cycles_i : '0;
+    wire [core_pkg::XLEN-1:0] resp_rdata = dmem_hit   ? dmem_rdata_i :
+                                           gpio0_hit  ? gpio0_rdata  :
+                                           uart0_hit  ? uart0_rdata  :
+                                           timer0_hit ? timer0_rdata : '0;
+    wire resp_error =  gpio0_hit  ? gpio0_access_fault  :
+                       uart0_hit  ? uart0_access_fault  :
+                       timer0_hit ? timer0_access_fault : 1'b0 ;
+    reg       resp_delay_pending_q;     // 信号等价于 resp_pending_q，驱动与语义稍有差别便于理解
+    reg [7:0] resp_delay_cnt, req_delay_cycles_q;
+    reg                      resp_valid_q;
+    reg [core_pkg::XLEN-1:0] resp_rdata_q;
+    reg                      resp_error_q;
+    always_ff @(posedge clk_i or negedge rst_n_i) begin : RESP_DELAY
+        if (!rst_n_i) begin
+            resp_delay_pending_q <= 1'b0;
+            resp_delay_cnt <= '0;
+            resp_valid_q <= 1'b0;
+            resp_rdata_q <= '0;
+            resp_error_q <= 1'b0;
+        end else begin
+            resp_valid_q <= 1'b0;
+            if (req_accept_fire) begin
+                if (req_delay_cycles == 0) begin // 当拍响应
+                    // 同拍响应时，组合输出直通，不过包装层，无需 resp_valid_q
+                end else begin                   // 需要几拍记数后响应
+                    resp_rdata_q <= resp_rdata;             // 锁存 req 脉冲拍 addr 对应的数据
+                    resp_error_q <= resp_error;             // 锁存 req 脉冲外设的 error 状态
+                    resp_delay_pending_q <= 1'b1;           // 打开计数器
+                    resp_delay_cnt <= 1;                    // 计数器 + 1
+                    req_delay_cycles_q <= req_delay_cycles; // 锁存 req 脉冲外设的延迟拍数
+                    if (req_delay_cycles == 8'd1) begin  // 只延迟一拍时，本拍就应非阻塞赋值
+                        resp_valid_q <= 1'b1;
+                    end
+                end
+            end
+            if (resp_delay_pending_q) begin     // 多拍响应记数阶段
+                resp_delay_cnt <= resp_delay_cnt + 1;
+                // req_delay_cycles_q 恒大于 0
+                if (resp_delay_cnt == req_delay_cycles_q - 1) begin // 本拍够，上拍就应非阻塞赋值
+                    resp_valid_q <= 1'b1;
+                end
+                // 若本拍已够，下拍不用加了
+                if (resp_delay_cnt == req_delay_cycles_q) begin
+                    resp_delay_pending_q <= 1'b0;
+                    resp_delay_cnt <= '0;
+                end
+            end
+        end
+    end
+
+    // 使用包装层接线
+    wire resp_zero_fire = req_accept_fire && (req_delay_cycles == 8'd0);    // 同拍响应脉冲
+
+    wire                      resp_dmem_valid   = resp_zero_fire ? req_dmem_valid : (resp_valid_q & (resp_target_q == TARGET_DMEM));
+    wire [core_pkg::XLEN-1:0] resp_dmem_rdata   = resp_zero_fire ? dmem_rdata_i : resp_rdata_q;
+
+    wire                      resp_gpio0_valid  = resp_zero_fire ? req_gpio0_valid : (resp_valid_q & (resp_target_q == TARGET_GPIO0));
+    wire [core_pkg::XLEN-1:0] resp_gpio0_rdata  = resp_zero_fire ? gpio0_rdata : resp_rdata_q;
+    wire                      resp_gpio0_error  = resp_zero_fire ? gpio0_access_fault : resp_error_q;
+
+    wire                      resp_uart0_valid  = resp_zero_fire ? req_uart0_valid : (resp_valid_q & (resp_target_q == TARGET_UART0));
+    wire [core_pkg::XLEN-1:0] resp_uart0_rdata  = resp_zero_fire ? uart0_rdata : resp_rdata_q;
+    wire                      resp_uart0_error  = resp_zero_fire ? uart0_access_fault : resp_error_q;
+
+    wire                      resp_timer0_valid = resp_zero_fire ? req_timer0_valid : (resp_valid_q & (resp_target_q == TARGET_TIMER0));
+    wire [core_pkg::XLEN-1:0] resp_timer0_rdata = resp_zero_fire ? timer0_rdata : resp_rdata_q;
+    wire                      resp_timer0_error = resp_zero_fire ? timer0_access_fault : resp_error_q;
+
     //==============================================================
     // 子模块实例化
     //==============================================================
@@ -124,8 +210,10 @@ module data_subsystem (
     assign dmem_be_o    = core_req_be_i;
     assign dmem_addr_o  = dmem_hit ? core_req_addr_i : DMEM_BASE;
     assign dmem_wdata_o = core_req_wdata_i;
-    wire                      resp_dmem_valid = req_dmem_valid;    // 暂时同拍响应，未改 dmem 延迟
-    wire [core_pkg::XLEN-1:0] resp_dmem_rdata = dmem_rdata_i;
+        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
+    // wire                      resp_dmem_valid = req_dmem_valid;
+    // wire [core_pkg::XLEN-1:0] resp_dmem_rdata = dmem_rdata_i;
+
 
     wire [core_pkg::XLEN-1:0] gpio0_rdata;
     wire gpio0_access_fault;
@@ -150,9 +238,10 @@ module data_subsystem (
 
         .gpio_irq_o     (gpio0_irq_o)
     );
-    wire                      resp_gpio0_valid = req_gpio0_valid;    // 暂时同拍响应，未改外设延迟
-    wire [core_pkg::XLEN-1:0] resp_gpio0_rdata = gpio0_rdata;
-    wire                      resp_gpio0_error = gpio0_access_fault;
+        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
+    // wire                      resp_gpio0_valid = req_gpio0_valid;    // 暂时同拍响应，未改外设延迟
+    // wire [core_pkg::XLEN-1:0] resp_gpio0_rdata = gpio0_rdata;
+    // wire                      resp_gpio0_error = gpio0_access_fault;
 
 
     wire [core_pkg::XLEN-1:0] uart0_rdata;
@@ -180,9 +269,10 @@ module data_subsystem (
 
         .uart_irq_o     (uart0_irq_o)
     );
-    wire                      resp_uart0_valid = req_uart0_valid;    // 暂时同拍响应，未改外设延迟
-    wire [core_pkg::XLEN-1:0] resp_uart0_rdata = uart0_rdata;
-    wire                      resp_uart0_error = uart0_access_fault;
+        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
+    // wire                      resp_uart0_valid = req_uart0_valid;    // 暂时同拍响应，未改外设延迟
+    // wire [core_pkg::XLEN-1:0] resp_uart0_rdata = uart0_rdata;
+    // wire                      resp_uart0_error = uart0_access_fault;
 
     wire [core_pkg::XLEN-1:0] timer0_rdata;
     wire timer0_access_fault;
@@ -202,12 +292,13 @@ module data_subsystem (
 
         .timer32_irq_o  (timer0_irq_o)
     );
-    wire                      resp_timer0_valid = req_timer0_valid;    // 暂时同拍响应，未改外设延迟
-    wire [core_pkg::XLEN-1:0] resp_timer0_rdata = timer0_rdata;
-    wire                      resp_timer0_error = timer0_access_fault;
+        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
+    // wire                      resp_timer0_valid = req_timer0_valid;    // 暂时同拍响应，未改外设延迟
+    // wire [core_pkg::XLEN-1:0] resp_timer0_rdata = timer0_rdata;
+    // wire                      resp_timer0_error = timer0_access_fault;
 
     // undefined
-    wire resp_undefined_valid = req_undefined_valid;    // undefined同拍响应
+    wire resp_undefined_valid = req_undefined_valid;    // undefined 保持同拍响应
 
     // core_resp MUX
     soc_pkg::target_e resp_target;
@@ -246,8 +337,8 @@ module data_subsystem (
     end
 
     // 观察信号驱动
-    assign dmem_access_o = resp_dmem_valid;
-    assign mmio_access_o = resp_gpio0_valid | resp_uart0_valid | resp_timer0_valid;
+    assign dmem_access_o = req_dmem_valid;
+    assign mmio_access_o = req_gpio0_valid | req_uart0_valid | req_timer0_valid;
 
 endmodule
 

@@ -173,32 +173,38 @@ module pipe_reg_mem_wb (
     input  logic                      clk_i,
     input  logic                      rst_n_i,
 
-    input  pipeline_pkg::mem_wb_reg_t  data_i,
+    input  pipeline_pkg::mem_wb_reg_t data_i,
     input  logic                      valid_i,
-    input  logic                       kill_i,
+    input  logic                      kill_i,
     input  logic                      stall_i,
 
-    output pipeline_pkg::mem_wb_reg_t  data_o,
-    output logic                      valid_o
+    output pipeline_pkg::mem_wb_reg_t data_o,
+    output logic                      valid_o,
+    output logic                      commit_valid_o
 );
     import core_pkg::*;
     import pipeline_pkg::*;
 
     always_ff @(posedge clk_i or negedge rst_n_i) begin
         if (~rst_n_i) begin
-            valid_o <= 1'b0;
-            data_o  <= '0;
+            valid_o        <= 1'b0;
+            commit_valid_o <= 1'b0;
+            data_o         <= '0;
+            
         end
         else if (kill_i) begin
-            valid_o <= 1'b0;
-            data_o  <= '0;
+            valid_o        <= 1'b0;
+            commit_valid_o <= 1'b0;
+            data_o         <= '0;
         end
         else if (stall_i) begin
-            // 当前 MEM wait 不使用 MEM/WB stall；若后续接入该口，保持当前 MEM/WB 内容。
+            // MEM/WB stall 需要额外处理重复提交，即应真的只送去 wb 阶段 1 次
+            commit_valid_o <= 1'b0;
         end
         else begin
-            valid_o <= valid_i;
-            data_o  <= data_i;
+            valid_o        <= valid_i;
+            commit_valid_o <= valid_i;
+            data_o         <= data_i;
         end
     end
 

@@ -50,6 +50,7 @@ module pipeline_ctrl (
     output logic                      stall_if_id_o,
     output logic                      stall_id_ex_o,
     output logic                      stall_ex_mem_o,
+    output logic                      stall_mem_wb_o,
 
     // bubble/flush 输出
     output logic                      bubble_ex_o,
@@ -89,6 +90,7 @@ module pipeline_ctrl (
     assign stall_if_id_o  = stall_late_result_use | stall_mem_backpressure;
     assign stall_id_ex_o  = stall_mem_backpressure;
     assign stall_ex_mem_o = stall_mem_backpressure;
+    assign stall_mem_wb_o = stall_mem_backpressure;     // MEM/WB 比较特殊，要额外处理重复提交
 
     assign bubble_ex_o    = stall_late_result_use & !mem_wait_i;
     assign flush_if_id_o  = ex_redirect_valid_i   & !mem_wait_i;

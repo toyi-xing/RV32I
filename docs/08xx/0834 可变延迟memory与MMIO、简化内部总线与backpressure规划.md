@@ -529,7 +529,60 @@ memory wait backpressure 会继续冻结 consumer；
 
 不要用固定数量 bubble 猜测 memory latency。latency 是外部响应决定的。
 
-### 4.6 younger branch redirect 与 memory wait
+### 4.6 memory wait 对 forwarding 生命周期的影响
+
+固定响应阶段，MEM/WB 作为 forwarding 来源通常只需要存在一个很短的窗口：
+
+```text
+producer 进入 MEM/WB；
+consumer 下一拍进入 EX；
+forwarding_unit 从 MEM/WB 选择最新值。
+```
+
+可变延迟后，这个窗口会被 memory wait 拉长。一个典型场景是：
+
+```text
+older 指令已经在 MEM/WB 中产生可前递结果；
+younger 指令停在 ID/EX，等待更 older 的 memory transaction 完成；
+ID/EX 寄存器不会重新读取 GPR，只保存当初 decode 时采样到的 rs*_rdata。
+```
+
+如果 memory wait 期间 MEM/WB 自然流走，而 ID/EX 中的 younger 指令仍然被 hold，那么 forwarding 来源会消失。等 memory wait 解除后，consumer 可能退回使用 ID/EX 里保存的旧操作数，而不是 producer 已经提交或正在提交的新值。
+
+因此，本阶段除了要 hold PC/IF/ID/ID_EX/EX_MEM，还要明确 forwarding 来源的生命周期：
+
+```text
+memory wait 期间，仍可能需要保留 MEM/WB 作为 forwarding source；
+但被保留的 MEM/WB 不能重复执行架构提交。
+```
+
+实现上有两类常见做法：
+
+| 做法 | 说明 |
+|---|---|
+| hold MEM/WB forwarding source，并区分 commit valid | `mem_wb_valid` 可继续表示该槽可用于 forwarding；另用 `commit_valid` 或等效信号表示本拍是否真正写回/提交 |
+| 在 ID/EX hold 时锁存已选择的 forwarding operand | 将前递后的操作数保存下来，后续 wait 解除时不再依赖 MEM/WB 是否仍存在 |
+
+本项目第一版更适合采用前一种做法。它和现有 forwarding_unit 结构更接近，也更容易从波形中观察：
+
+```text
+forwarding 需要的是“这个结果仍可作为旁路来源”；
+writeback/commit 需要的是“这个结果本拍只提交一次”。
+```
+
+这两个概念不能混在同一个 valid 位里。否则要么 forwarding 来源过早消失，要么被 hold 的 MEM/WB 会在多个周期重复写回或重复进入 commit trace。
+
+可以用下面的例子理解这个问题：
+
+```text
+addi x15, x11, 0
+lw   x13, 0(x15)     // 触发 memory wait
+addi x15, x15, 4     // 停在 ID/EX，依赖前面的 x15
+```
+
+若 `addi x15, x11, 0` 的结果在 memory wait 期间离开 MEM/WB，而第三条 `addi` 的 ID/EX 操作数仍是旧的 `x15`，那么 wait 解除后第三条指令可能计算出错误结果。这个问题在固定一拍 memory 中不明显，但在可变延迟下会成为真实的 RAW hazard。
+
+### 4.7 younger branch redirect 与 memory wait
 
 如果 older memory instruction 正在 MEM 等 response，EX 阶段可能保存着一条 younger branch/JAL/JALR。
 
@@ -553,7 +606,7 @@ younger redirect 不能越过 older instruction 生效。
 
 这一条是 0834 的关键控制语义之一。
 
-### 4.7 wrong-path request 不允许发出
+### 4.8 wrong-path request 不允许发出
 
 wrong-path 指令不能产生 memory/MMIO 副作用。
 
@@ -960,7 +1013,38 @@ MMIO 副作用不会重复发生。
 
 因此，后续测试如果用 timer 测量周期，应把 wait-state 作为可变因素，而不是仍然期待固定指令周期。
 
-### 8.4 FENCE 暂时仍可保持 NOP
+### 8.4 外部中断采样与软件观测周期
+
+memory wait 只会阻塞 CPU 流水线，不会让外设世界暂停。
+
+例如：
+
+```text
+CPU 因 DMEM/MMIO response 未返回而停在 MEM；
+TIMER32 仍然计数；
+GPIO 输入同步和边沿/电平检测仍然运行；
+UART 简化模型仍可接收 TB 注入的 RX event；
+MEIP/MTIP pending 仍可在 mip 中置位。
+```
+
+这意味着，可变延迟会改变软件 handler 观测到的时间间隔。特别是 GPIO 这类 pending bit 通常不是“边沿计数器”：
+
+```text
+外部信号发生多次边沿；
+CPU handler 因 memory wait 变慢，尚未来得及清 pending；
+多个边沿可能合并成同一个 pending 状态。
+```
+
+因此，软件通过中断 handler 统计高频周期信号时，不能把“测得的平均周期必须等于 TB 产生周期”作为任意 wait-state 下的严格 PASS 标准。可检查的应是：
+
+- interrupt pending 能被置位并最终被接受。
+- handler 能按寄存器语义清除 pending。
+- 低频或有足够间隔的信号不会丢失预期事件。
+- 在已知、固定、足够小的 wait-state 条件下，周期统计落在合理范围。
+
+类似地，某些精确到固定 `nop` 数量的外部中断测试，本质上依赖“软件执行时间固定”。加入 data wait 后，TB 若仍按旧的固定周期注入外部事件，事件可能提前或延后到达软件预期边界。这类测试要么在 `delay=0` 下保留为旧语义回归，要么改成由软件/TB mailbox 明确协调注入时机。
+
+### 8.5 FENCE 暂时仍可保持 NOP
 
 当前核是：
 
@@ -991,6 +1075,8 @@ MMIO 副作用不会重复发生。
 | delayed store access fault | 失败 store 不产生成功副作用 |
 | memory wait 期间 interrupt pending | response 完成前不接受；完成边界按优先级接受 |
 | memory wait 期间 younger branch | branch redirect 不越过 older memory instruction |
+| memory wait 期间 forwarding source 保持 | 被 hold 的 ID/EX consumer 解除等待后仍使用最新 producer 结果 |
+| wait-state 下周期观测 | timer/GPIO/interrupt 类测试区分语义正确性和固定周期统计 |
 | 随机 wait-state regression | 现有 RV32I/trap/MMIO/interrupt tests 仍 PASS |
 
 这些测试属于阶段实现后的验证方向，不是本文的执行步骤。
@@ -1006,6 +1092,7 @@ MMIO 副作用不会重复发生。
 | response matched | 每个 response 必须对应一个 outstanding transaction |
 | no duplicate side effect | 一笔 store/MMIO write 最多产生一次副作用 |
 | stall hold | memory wait 期间关键 pipeline register 保持 |
+| forwarding source lifetime | memory wait 期间保留必要旁路来源，且不会因此重复 commit |
 | no wrong-path request | invalid/kill/wrong-path 指令不发起 request |
 | error no writeback | error response 不写 rd，不产生成功写副作用 |
 | interrupt boundary | outstanding 未完成时不接受 interrupt |

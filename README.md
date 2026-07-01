@@ -89,11 +89,11 @@
 | 核（相对于上版本的改动） | 顶层 | 状态 | release 版本 | 备注 |
 |---|------|------|------|------|
 | 单周期 RV32I | `core_single_cycle.sv` | 历史版本已完成，当前不再维护 | v1.0 | 最终兼容版本为 v2.0，自 v2.10 起删除该文件 |
-| 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | 后续开发持续在该文件上累积 |
+| 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | - |
 | 同步异常扩展、CSR 与最小特权级（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | 自 v3.4 起，将 `core_pipeline5.sv` 改名为 `core.sv` |
-| 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` |
-| machine interrupt、TIMER32 与外部中断 | CPU 核 `core.sv` + SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 |
-| FPGA 分支：基于 v5.1 的 FPGA 上板验证 | FPGA 顶层 `e10_rv32i_top.sv` + FPGA 工程 `e10_rv32i.qpf` | 已完成 | v5.2 | - |
+| 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` |
+| machine interrupt、TIMER32 与外部中断 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 1. 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 <br> 2. 回归测试统计存在 bug，已在 v5.6 定位并修复，详见对应版本的提交说明 |
+| FPGA 分支：基于 v5.1 的 FPGA 上板验证 | FPGA 顶层 `e10_rv32i_top.sv` <br> FPGA 工程 `e10_rv32i.qpf` | 已完成 | v5.2 | - |
 
 ---
 

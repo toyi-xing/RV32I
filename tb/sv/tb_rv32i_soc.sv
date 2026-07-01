@@ -433,7 +433,7 @@ module tb_rv32i_soc;
     // 超时保护
     // -------------------------------------------------------------------------
     initial begin
-        repeat (20010) @(posedge clk);
+        repeat (30010) @(posedge clk);
         $display("TIMEOUT: simulation exceeded [%0d] cycles", cycle_cnt);
         $display("trap_cnt:%0d", trap_cnt);
         $finish;

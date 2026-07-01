@@ -545,6 +545,7 @@ stall_pc_o
 stall_if_id_o
 stall_id_ex_o
 stall_ex_mem_o
+stall_mem_wb_o
 flush_if_id_o
 flush_id_ex_o
 nontrap_redirect_valid_o
@@ -560,6 +561,7 @@ stall_pc_o     = stall_late_result_use | stall_mem_backpressure
 stall_if_id_o  = stall_late_result_use | stall_mem_backpressure
 stall_id_ex_o  = stall_mem_backpressure
 stall_ex_mem_o = stall_mem_backpressure
+stall_mem_wb_o = stall_mem_backpressure
 
 nontrap_redirect_valid_o = ex_redirect_valid_i && !mem_wait_i
 nontrap_redirect_pc_o    = ex_redirect_pc_i
@@ -569,7 +571,14 @@ flush_id_ex_o            = ex_redirect_valid_i && !mem_wait_i
 
 `core.sv` 只连接 `pipeline_ctrl` 的最终控制输出，不在顶层重复组合这些 stall 条件。
 
-`pipe_reg_mem_wb` 通常不因 MEM wait stall，因为 MEM wait 期间 `mem_valid/valid_o` 不应产生新的 MEM/WB 输入；WB 中已有 older 指令可以自然提交。若实现中 MEM/WB 需要 hold 以避免 valid 抖动，必须确认不会重复 commit。
+`pipe_reg_mem_wb` 当前也接入 `stall_mem_wb_o`。它的作用不是阻止当前 MEM 指令进入 WB，而是在 MEM wait 期间保留已有 MEM/WB 槽作为 forwarding source。为避免被 hold 的 MEM/WB 重复提交，MEM/WB 需要额外输出 `commit_valid_o` 或等效信号：
+
+```text
+mem_wb_valid        = MEM/WB 槽内容有效，可作为 forwarding source。
+mem_wb_commit_valid = 本拍允许 WB/commit trace 使用该槽，只提交一次。
+```
+
+`wb_stage.valid_i` 应接 `mem_wb_commit_valid` 或等效提交 valid；forwarding_unit 仍使用 `mem_wb_valid` 判断 MEM/WB 是否可作为旁路来源。
 
 ### 4.5 load-use/CSR-use 与 memory wait 的关系 `无需改动`
 
@@ -666,7 +675,30 @@ CSR 写不应在 MEM 前面有 outstanding memory wait 时提前提交。
 - response error / exception / MRET 由 `kill_mem_wb` 阻止普通 WB。
 - interrupt 不 kill 当前已完成旧指令写回，保持 0833 口径。
 
-### 4.10 forwarding 的 EX/MEM load 可前递口径 `无需改动`
+### 4.10 MEM/WB forwarding source 与 commit valid 分离 `已完成`
+
+可变延迟后，ID/EX 可能被 memory wait hold 多拍。ID/EX 中保存的是 decode 时采样的 `rs*_rdata`，不会在 hold 期间重新读 GPR。
+
+如果 MEM/WB 中的 older producer 在 memory wait 期间自然流走，而 ID/EX 中的 younger consumer 仍然等待，那么 wait 解除后 forwarding_unit 可能看不到 MEM/WB producer，只能使用 ID/EX 里保存的旧操作数。
+
+当前实现采用：
+
+```text
+MEM/WB 在 memory wait 期间 hold，继续作为 forwarding source。
+MEM/WB 额外给出 commit_valid，避免 hold 期间重复写回/重复提交。
+```
+
+具体口径：
+
+- `pipeline_ctrl` 输出 `stall_mem_wb_o = stall_mem_backpressure`。
+- `pipe_reg_mem_wb.valid_o` 保留槽有效性，供 forwarding_unit 使用。
+- `pipe_reg_mem_wb.commit_valid_o` 表示本拍是否真正进入 WB/commit。
+- `wb_stage.valid_i` 使用 `mem_wb_commit_valid`。
+- forwarding_unit 仍使用 `mem_wb_valid`。
+
+这个实现把“旁路来源仍有效”和“本拍执行架构提交”分开，既解决 memory wait 下 forwarding 来源过早消失的问题，也避免 MEM/WB 被 hold 时重复写 rd。
+
+### 4.11 forwarding 的 EX/MEM load 可前递口径 `无需改动`
 
 当前 forwarding_unit 会避免从 EX/MEM 前递 load/CSR 晚结果，转而依赖 MEM/WB。
 
@@ -732,9 +764,10 @@ MEM/WB: reset > kill > stall > normal
 
 - `ID/EX.stall_i` 用于 memory wait backpressure。
 - `EX/MEM.stall_i` 用于保持 outstanding transaction 对应的 MEM 指令。
-- `MEM/WB.stall_i` 若仍不用，应注明当前 MEM wait 不需要 stall MEM/WB，避免误解。
+- `MEM/WB.stall_i` 用于 memory wait 期间保持已有 MEM/WB forwarding source。
+- `MEM/WB.commit_valid_o` 或等效提交 valid 用于避免被 hold 的 MEM/WB 重复 WB/commit。
 
-## 7. data_subsystem simple data bus 骨架与最小 wait-state `执行中`
+## 7. data_subsystem simple data bus 骨架与最小 wait-state `已完成`
 
 本章按当前实际实现路径推进：先在 `data_subsystem` 内完成 0 wait-state 的 simple bus 骨架，再只给 DMEM 加最小可变延迟；DMEM 跑通后，再把同一模式推广到 MMIO wrapper。这样每一步都可仿真验证，不要求一开始就拆出完整 target slave 模块。
 
@@ -795,7 +828,7 @@ req_we_accept   = req_accept_fire  &  core_req_write_i;
 
 这个中间态的目标是让 simple bus 语义先与原固定响应行为等价，后续再逐个 target 加延迟。
 
-### 7.4 给 DMEM 增加最小可变延迟 `执行中`
+### 7.4 给 DMEM 增加最小可变延迟 `已完成`
 
 下一步只改 DMEM target，先不要同时改 GPIO/UART/TIMER。目标是验证 core 的 MEM wait/backpressure 能处理真正多拍 data response。
 
@@ -826,7 +859,7 @@ localparam int unsigned DMEM_RESP_DELAY_CYCLES = 0;
 - `resp_pending_q` 在 DMEM 多拍等待期间保持为 1，`core_req_ready_o=0`。
 - `core_resp_valid_o` 在延迟结束时只拉高一拍。
 
-### 7.5 修正 request/response 观察口口径
+### 7.5 修正 request/response 观察口口径 `已完成`
 
 DMEM 多拍后，request accepted 与 response valid 不再等价。观察口需要明确：
 
@@ -845,7 +878,7 @@ data_resp_valid_o
 data_resp_error_o
 ```
 
-### 7.6 增加 TB 可配置 DMEM delay 输入
+### 7.6 增加 TB 可配置 DMEM delay 输入 `已完成`
 
 DMEM 常量版本跑通后，把 DMEM delay 改成由 SoC/TB 驱动的输入，默认 0。
 
@@ -861,7 +894,7 @@ input logic [7:0] dmem_resp_delay_cycles_i;
 - 已经 pending 的 DMEM response 使用锁存的 counter，不受后续修改影响。
 - TB mailbox 后续修改 delay 只影响之后的新 DMEM request。
 
-### 7.7 处理 unknown address response
+### 7.7 处理 unknown address response `已完成`
 
 未映射地址先保持 0 wait-state error response：
 
@@ -873,7 +906,7 @@ resp_undefined_error = 1
 
 该路径不产生 DMEM/MMIO 副作用。后续若要验证 delayed unknown address fault，可以按 DMEM delay 状态机复制一个 `undefined_pending_q`。
 
-### 7.8 给 MMIO 增加最小 wrapper/delay
+### 7.8 给 MMIO 增加最小 wrapper/delay `已完成`
 
 DMEM 多拍跑通后，再处理 MMIO。当前 GPIO/UART/TIMER32 本体接口不改，仍是固定响应 register block；先在 `data_subsystem.sv` 内部为 MMIO target 加 wrapper 逻辑：
 
@@ -892,7 +925,7 @@ req_gpio0_valid/req_uart0_valid/req_timer0_valid 当拍：
 
 第一版可以先用统一 `mmio_resp_delay_cycles_i`，不必拆成每个外设独立 delay。
 
-### 7.9 后续是否拆出独立 simple slave 模块
+### 7.9 后续是否拆出独立 simple slave 模块 `不拆分`
 
 上述逻辑都可先内嵌在 `data_subsystem.sv` 中，便于逐步调试。等 DMEM/MMIO delay 都跑通后，再决定是否拆出：
 
@@ -912,7 +945,7 @@ core simple bus
 
 后续 FPGA BRAM、外部 SRAM controller、真实慢外设或 accelerator 可以直接实现 simple slave 接口，CPU 和 `data_subsystem` 主体不需要重写。
 
-## 8. 外设寄存器块的事务副作用整理
+## 8. 外设寄存器块的事务副作用整理 `执行中`
 
 ### 8.1 保持外设 ABI 不变
 
@@ -935,7 +968,7 @@ wrapper 负责 request/ready/response、wait-state、rdata/error 锁存和 accep
 
 这样既能先把 CPU backpressure 和 data bus 语义跑通，也能让后续真实慢外设或 accelerator 直接实现 simple slave 接口，而不必改变 CPU/data_subsystem 主体。
 
-### 8.3 外设访问脉冲连接规则 `执行中`
+### 8.3 外设访问脉冲连接规则
 
 外设 wrapper 给固定响应 register block 的 `valid_i/re_i/we_i` 必须来自该 wrapper 的 accepted pulse：
 
@@ -955,7 +988,7 @@ periph_we    = periph_req_fire &&  req_write_i;
 
 外设 wrapper 头注释需要说明：固定响应外设本体的 `valid_i` 是一次 accepted MMIO transaction 的访问脉冲，而不是可保持的 bus valid。
 
-### 8.4 unknown offset 不产生副作用 `执行中`
+### 8.4 unknown offset 不产生副作用
 
 当前外设一般先写寄存器，再由 `offset_illegal` 输出 access_fault。0834 需要检查所有外设：
 
@@ -966,7 +999,7 @@ periph_we    = periph_req_fire &&  req_write_i;
 
 若现有代码已经通过 `rw_hit/wo_hit/rw1c_hit` 门控写副作用，需要确认读副作用是否也只在合法 offset 下触发。
 
-### 8.5 UART RXDATA 读副作用采样点 `执行中`
+### 8.5 UART RXDATA 读副作用采样点
 
 第一版采用：
 
@@ -986,7 +1019,7 @@ response OK 时软件认为 read 完成；
 
 本阶段不做 response OK 时才清 pending 的 delayed commit 版本，避免把固定响应外设改成完整事务外设。
 
-### 8.6 UART TX event `执行中`
+### 8.6 UART TX event
 
 写 UART TXDATA 应只在 accepted pulse 且 offset 合法时产生一个 `tx_valid_o` 脉冲。
 
@@ -996,7 +1029,7 @@ response OK 时软件认为 read 完成；
 - `tx_valid_o` 不因 request valid 等 ready 重复拉高。
 - unknown offset 或 `be_i[0]=0` 不产生 TX event。
 
-### 8.7 GPIO W1C 和 pending set `执行中`
+### 8.7 GPIO W1C 和 pending set
 
 GPIO 的中断 pending 硬件 set 仍按同步输入每拍运行，不受 bus wait 影响。
 
@@ -1004,13 +1037,13 @@ GPIO 的中断 pending 硬件 set 仍按同步输入每拍运行，不受 bus wa
 
 同拍 set/clear 优先级保持当前实现：硬件 set 优先。
 
-### 8.8 TIMER32 计数 `执行中`
+### 8.8 TIMER32 计数
 
 TIMER32 自增仍按 `clk_i` 运行，不因为 CPU bus wait 暂停。
 
 写 MTIME 的“本拍不自增”、写非 MTIME 时允许自增的语义保持。
 
-### 8.9 外设注释和手册同步 `执行中`
+### 8.9 外设注释和手册同步
 
 三个外设头注释需要统一说明：
 
@@ -1371,9 +1404,11 @@ RTL 完成后第一步只跑默认 0 wait-state。
 在具体功能验证方案展开前，至少需要能手工或用一个简单配置确认：
 
 - DMEM load 能等待 response 后写回。
+- memory wait 期间 MEM/WB forwarding source 不丢失，held ID/EX consumer 解除等待后仍使用最新 producer 结果。
 - DMEM store 不重复写。
 - MMIO read/write 能等待 response 后完成。
 - delayed unknown address/offset error 能进入 access fault。
+- GPIO/timer/interrupt 类周期观测测试在 wait-state 下按语义判断，不继续把旧固定周期统计作为任意 delay 下的严格 PASS 条件。
 
 这不是完整验证计划，只是证明 RTL 前提可用。
 
@@ -1382,8 +1417,9 @@ RTL 完成后第一步只跑默认 0 wait-state。
 0834 RTL 完成并通过基本 smoke 后，再单独规划验证收口。大体方向包括：
 
 - 继续保留 C/asm directed self-check 作为端到端回归主线。
-- 补 wait-state directed test，覆盖慢 load/store、慢 MMIO、delayed fault、interrupt pending、younger redirect 和 MMIO 副作用不重复。
-- 补 simple data bus monitor/SVA，检查单 outstanding、payload stable、request/response 配对和 stall hold。
+- 补 wait-state directed test，覆盖慢 load/store、慢 MMIO、delayed fault、interrupt pending、younger redirect、MEM/WB forwarding source 保持和 MMIO 副作用不重复。
+- 对 timer/GPIO/interrupt 周期类测试区分“语义正确”和“固定周期统计”；高频 pending bit 合并、handler 被 wait-state 拉慢时，不应按 0 wait-state 的固定周期窗口判错。
+- 补 simple data bus monitor/SVA，检查单 outstanding、payload stable、request/response 配对、stall hold 和 forwarding source lifetime。
 - 用 UVM simple-bus/peripheral demo 学习 driver、monitor、sequence、scoreboard 和 coverage，不直接从整颗 CPU UVM 起步。
 
 SVA/UVM 和完整测试矩阵仍放到 0835，不在本计划展开。
@@ -1396,6 +1432,7 @@ SVA/UVM 和完整测试矩阵仍放到 0835，不在本计划展开。
 - data_subsystem 能完成 simple data bus 地址译码、request 分发和 response 汇总。
 - DMEM/MMIO target simple slave/wrapper 能接受 request、插入 0/N 拍等待并返回 response。
 - MEM wait 能正确冻结 PC/IF/ID/EX/MEM，年轻指令不能越过 older memory instruction。
+- MEM wait 期间必要的 MEM/WB forwarding source 不丢失，同时 WB/commit 不重复发生。
 - 0 wait-state 下现有 regression 不退化。
 - delayed response error 能产生精确 load/store access fault。
 - MMIO write/read 副作用不因 wait 或 valid 保持重复发生。

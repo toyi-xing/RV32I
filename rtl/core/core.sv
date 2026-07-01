@@ -95,6 +95,7 @@ module core (
     wire stall_if_id;
     wire stall_id_ex;
     wire stall_ex_mem;
+    wire stall_mem_wb;
     wire bubble_ex;
 
     // pipeline_ctrl 输出普通 redirect flush；trap/MRET kill 由 trap_ctrl 输出。
@@ -112,7 +113,7 @@ module core (
     wire if_valid, if_id_valid;
     wire id_valid, id_ex_valid;
     wire ex_valid, ex_mem_valid;
-    wire mem_valid, mem_wb_valid;
+    wire mem_valid, mem_wb_valid, mem_wb_commit_valid;
     wire wb_valid;
     pipeline_pkg::if_id_reg_t if_id_data_d;
     pipeline_pkg::if_id_reg_t if_id_data_q;
@@ -661,6 +662,7 @@ module core (
         .stall_if_id_o              (stall_if_id),
         .stall_id_ex_o              (stall_id_ex),
         .stall_ex_mem_o             (stall_ex_mem),
+        .stall_mem_wb_o             (stall_mem_wb),
 
         .bubble_ex_o                (bubble_ex),
         .flush_if_id_o              (flush_if_id),
@@ -668,16 +670,17 @@ module core (
     );
 
     pipe_reg_mem_wb u_pipe_reg_mem_wb (
-        .clk_i      (clk_i),
-        .rst_n_i    (rst_n_i),
+        .clk_i          (clk_i),
+        .rst_n_i        (rst_n_i),
 
-        .data_i     (mem_wb_data_d),
-        .valid_i    (mem_valid),
-        .kill_i     (kill_mem_wb),     // trap control hazard，终止该指令生命周期（已被 trap 提交）
-        .stall_i    (1'b0), // 当前 MEM wait 不 stall MEM/WB，WB 中已有 older 指令可自然提交。
+        .data_i         (mem_wb_data_d),
+        .valid_i        (mem_valid),
+        .kill_i         (kill_mem_wb),     // trap control hazard，终止该指令生命周期（已被 trap 提交）
+        .stall_i        (stall_mem_wb),    // MEM wait 还要 stall MEM/WB，供 forwarding 的 MEM/WB -> EX，但续额外处理重复提交问题
 
-        .data_o     (mem_wb_data_q),
-        .valid_o    (mem_wb_valid)
+        .data_o         (mem_wb_data_q),
+        .valid_o        (mem_wb_valid),
+        .commit_valid_o (mem_wb_commit_valid)   // 一次有效指令只能提交一次
     );
 
     // MEM/WB 输入组包。WB 使用这里保存的最终写回选择和数据。
@@ -698,7 +701,7 @@ module core (
     assign mem_wb_data_d.csr_rdata     = mem_csr_rdata;
 
     wb_stage u_wb_stage (
-        .valid_i        (mem_wb_valid),
+        .valid_i        (mem_wb_commit_valid),
         .reg_we_i       (mem_wb_data_q.reg_we),
         .rd_addr_i      (mem_wb_data_q.rd_addr),
         .wb_sel_i       (mem_wb_data_q.wb_sel),

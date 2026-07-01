@@ -177,6 +177,11 @@ module rv32i_soc (
         .uart0_irq_o           (uart0_irq_o),
         .timer0_irq_o          (timer0_irq_o),
 
+        .dmem_resp_delay_cycles_i   (8'd0),
+        .gpio0_resp_delay_cycles_i  ('0),
+        .uart0_resp_delay_cycles_i  ('0),
+        .timer0_resp_delay_cycles_i ('0),
+
         .dmem_access_o         (dmem_access_o),
         .mmio_access_o         (mmio_access_o)
     );
