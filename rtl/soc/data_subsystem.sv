@@ -5,8 +5,8 @@
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
 //   - core 侧使用单 outstanding request/response 简化 data bus。
-//   - core_req_valid_i/core_req_ready_o 接受一次 load/store request。
-//   - core_resp_valid_o/core_resp_error_o 返回该 request 的完成结果。
+//   - core_req_i.valid/core_req_ready_o 接受一次 load/store request。
+//   - core_resp_o.valid/core_resp_o.error 返回该 request 的完成结果。
 //   - dmem_access_o/mmio_access_o 是 accepted request 命中观察信号，给 testbench 做统计或波形 debug。
 //
 // 功能：
@@ -27,15 +27,8 @@ module data_subsystem (
     input  logic                      rst_n_i,
 
     output logic                      core_req_ready_o,
-    input  logic                      core_req_valid_i,
-    input  logic                      core_req_write_i,
-    input  logic [3:0]                core_req_be_i,
-    input  logic [core_pkg::XLEN-1:0] core_req_addr_i,
-    input  logic [core_pkg::XLEN-1:0] core_req_wdata_i,
-
-    output logic                      core_resp_valid_o,
-    output logic [core_pkg::XLEN-1:0] core_resp_rdata_o,
-    output logic                      core_resp_error_o,
+    input  data_bus_pkg::data_req_t   core_req_i,
+    output data_bus_pkg::data_resp_t  core_resp_o,
 
     output logic                      dmem_we_o,
     output logic [3:0]                dmem_be_o,
@@ -69,6 +62,7 @@ module data_subsystem (
 
     import core_pkg::*;
     import soc_pkg::*;
+    import data_bus_pkg::*;
 
     // 状态信号
     reg resp_pending_q; // 接受了 req 但还没给出 resp
@@ -87,7 +81,7 @@ module data_subsystem (
                 resp_pending_q <= 1'b1;
                 resp_target_q  <= target;
             end
-            if (core_resp_valid_o) begin    // 0 wait-state 时 resp_pending_q 无需置位
+            if (core_resp_o.valid) begin    // 0 wait-state 时 resp_pending_q 无需置位
                 resp_pending_q <= 1'b0;
             end
         end
@@ -95,15 +89,15 @@ module data_subsystem (
     assign core_req_ready_o = !resp_pending_q;
 
     // 本拍是一个真实被接受的的访存信号（脉冲信号）
-    wire req_accept_fire = core_req_valid_i &  core_req_ready_o;
-    wire req_re_accept   = req_accept_fire  & !core_req_write_i;
-    wire req_we_accept   = req_accept_fire  &  core_req_write_i;
+    wire req_accept_fire = core_req_i.valid &  core_req_ready_o;
+    wire req_re_accept   = req_accept_fire  & !core_req_i.write;
+    wire req_we_accept   = req_accept_fire  &  core_req_i.write;
 
     // core_addr 命中分配
-    wire dmem_hit   = (core_req_addr_i >= DMEM_BASE)   & (core_req_addr_i < DMEM_BASE   + DMEM_SIZE_BYTES);
-    wire gpio0_hit  = (core_req_addr_i >= GPIO0_BASE)  & (core_req_addr_i < GPIO0_BASE  + GPIO0_SIZE_BYTES);
-    wire uart0_hit  = (core_req_addr_i >= UART0_BASE)  & (core_req_addr_i < UART0_BASE  + UART0_SIZE_BYTES);
-    wire timer0_hit = (core_req_addr_i >= TIMER0_BASE) & (core_req_addr_i < TIMER0_BASE + TIMER0_SIZE_BYTES);
+    wire dmem_hit   = (core_req_i.addr >= DMEM_BASE)   & (core_req_i.addr < DMEM_BASE   + DMEM_SIZE_BYTES);
+    wire gpio0_hit  = (core_req_i.addr >= GPIO0_BASE)  & (core_req_i.addr < GPIO0_BASE  + GPIO0_SIZE_BYTES);
+    wire uart0_hit  = (core_req_i.addr >= UART0_BASE)  & (core_req_i.addr < UART0_BASE  + UART0_SIZE_BYTES);
+    wire timer0_hit = (core_req_i.addr >= TIMER0_BASE) & (core_req_i.addr < TIMER0_BASE + TIMER0_SIZE_BYTES);
     wire mapped_hit = dmem_hit | gpio0_hit | uart0_hit | timer0_hit;    // addr 命中已实现的地址
 
     //accepted request 命中各目标窗口时，产生对应 target 的访问脉冲
@@ -198,9 +192,13 @@ module data_subsystem (
 
     // 外置 simple_ram 固定响应端口。未命中 DMEM 时地址指向 DMEM_BASE，避免 RAM model 看到无意义索引。
     assign dmem_we_o    = req_we_accept & req_dmem_valid;
-    assign dmem_be_o    = core_req_be_i;
-    assign dmem_addr_o  = dmem_hit ? core_req_addr_i : DMEM_BASE;
-    assign dmem_wdata_o = core_req_wdata_i;
+    assign dmem_be_o    = core_req_i.be;
+    assign dmem_addr_o  = dmem_hit ? core_req_i.addr : DMEM_BASE;
+    assign dmem_wdata_o = core_req_i.wdata;
+    // 若后续移除 wrapper、改为固定响应 DMEM 直连，可恢复下列接线。
+    // core_resp_o.valid = req_dmem_valid;
+    // core_resp_o.rdata = dmem_rdata_i;
+
     wire [core_pkg::XLEN-1:0] gpio0_rdata;
     wire gpio0_access_fault;
     mmio_gpio #(
@@ -212,9 +210,9 @@ module data_subsystem (
 
         .valid_i        (req_gpio0_valid),
         .we_i           (req_we_accept),
-        .be_i           (core_req_be_i),
-        .addr_i         (core_req_addr_i),
-        .wdata_i        (core_req_wdata_i),
+        .be_i           (core_req_i.be),
+        .addr_i         (core_req_i.addr),
+        .wdata_i        (core_req_i.wdata),
         .rdata_o        (gpio0_rdata),
         .access_fault_o (gpio0_access_fault),
 
@@ -224,6 +222,11 @@ module data_subsystem (
 
         .gpio_irq_o     (gpio0_irq_o)
     );
+    // 若后续移除 wrapper、改为固定响应 GPIO0 直连，可恢复下列接线。
+    // core_resp_o.valid = req_gpio0_valid;
+    // core_resp_o.rdata = gpio0_rdata;
+    // core_resp_o.error = gpio0_access_fault;
+
     wire [core_pkg::XLEN-1:0] uart0_rdata;
     wire uart0_access_fault;
     mmio_uart #(
@@ -235,9 +238,9 @@ module data_subsystem (
         .valid_i        (req_uart0_valid),
         .re_i           (req_re_accept),
         .we_i           (req_we_accept),
-        .be_i           (core_req_be_i),
-        .addr_i         (core_req_addr_i),
-        .wdata_i        (core_req_wdata_i),
+        .be_i           (core_req_i.be),
+        .addr_i         (core_req_i.addr),
+        .wdata_i        (core_req_i.wdata),
         .rdata_o        (uart0_rdata),
         .access_fault_o (uart0_access_fault),
 
@@ -249,6 +252,11 @@ module data_subsystem (
 
         .uart_irq_o     (uart0_irq_o)
     );
+    // 若后续移除 wrapper、改为固定响应 UART0 直连，可恢复下列接线。
+    // core_resp_o.valid = req_uart0_valid;
+    // core_resp_o.rdata = uart0_rdata;
+    // core_resp_o.error = uart0_access_fault;
+
     wire [core_pkg::XLEN-1:0] timer0_rdata;
     wire timer0_access_fault;
     mmio_timer32 #(
@@ -259,14 +267,19 @@ module data_subsystem (
 
         .valid_i        (req_timer0_valid),
         .we_i           (req_we_accept),
-        .be_i           (core_req_be_i),
-        .addr_i         (core_req_addr_i),
-        .wdata_i        (core_req_wdata_i),
+        .be_i           (core_req_i.be),
+        .addr_i         (core_req_i.addr),
+        .wdata_i        (core_req_i.wdata),
         .rdata_o        (timer0_rdata),
         .access_fault_o (timer0_access_fault),
 
         .timer32_irq_o  (timer0_irq_o)
     );
+    // 若后续移除 wrapper、改为固定响应 TIMER0 直连，可恢复下列接线。
+    // core_resp_o.valid = req_timer0_valid;
+    // core_resp_o.rdata = timer0_rdata;
+    // core_resp_o.error = timer0_access_fault;
+
     // undefined
     wire resp_undefined_valid = req_undefined_valid;    // undefined 保持同拍响应
 
@@ -274,34 +287,32 @@ module data_subsystem (
     soc_pkg::target_e resp_target;
     assign resp_target = resp_pending_q ? resp_target_q : target;    // 0 wait-state 时，使用组合信号当拍响应
     always_comb begin
-        core_resp_valid_o = 1'b0;
-        core_resp_rdata_o = '0;
-        core_resp_error_o = 1'b0;
+        core_resp_o = '0;
         unique case (resp_target)
             TARGET_DMEM: begin
-                core_resp_valid_o = resp_dmem_valid;
-                core_resp_rdata_o = resp_dmem_rdata;
-                core_resp_error_o = 1'b0;   // 目前 ram 窗口内不产生 bus error，若上 FPGA 调整 RAM 容量则需调整此处
+                core_resp_o.valid = resp_dmem_valid;
+                core_resp_o.rdata = resp_dmem_rdata;
+                core_resp_o.error = 1'b0;   // 目前 ram 窗口内不产生 bus error，若上 FPGA 调整 RAM 容量则需调整此处
             end
             TARGET_GPIO0: begin
-                core_resp_valid_o = resp_gpio0_valid;
-                core_resp_rdata_o = resp_gpio0_rdata;
-                core_resp_error_o = resp_gpio0_error;
+                core_resp_o.valid = resp_gpio0_valid;
+                core_resp_o.rdata = resp_gpio0_rdata;
+                core_resp_o.error = resp_gpio0_error;
             end
             TARGET_UART0: begin
-                core_resp_valid_o = resp_uart0_valid;
-                core_resp_rdata_o = resp_uart0_rdata;
-                core_resp_error_o = resp_uart0_error;
+                core_resp_o.valid = resp_uart0_valid;
+                core_resp_o.rdata = resp_uart0_rdata;
+                core_resp_o.error = resp_uart0_error;
             end
             TARGET_TIMER0: begin
-                core_resp_valid_o = resp_timer0_valid;
-                core_resp_rdata_o = resp_timer0_rdata;
-                core_resp_error_o = resp_timer0_error;
+                core_resp_o.valid = resp_timer0_valid;
+                core_resp_o.rdata = resp_timer0_rdata;
+                core_resp_o.error = resp_timer0_error;
             end
             default: begin  // TARGET_UNDEFINED
-                core_resp_valid_o = resp_undefined_valid;
-                core_resp_rdata_o = '0;
-                core_resp_error_o = 1'b1;   // undefined 直接出错
+                core_resp_o.valid = resp_undefined_valid;
+                core_resp_o.rdata = '0;
+                core_resp_o.error = 1'b1;   // undefined 直接出错
             end
         endcase
     end

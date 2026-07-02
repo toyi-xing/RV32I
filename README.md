@@ -1,6 +1,6 @@
 # RV32I SoC
 
-本仓库是一个 RV32I SoC 实现仓库，维护对象包括五级流水线核 `core.sv`、MMIO 外设（GPIO/UART/TIMER32）、SoC 集成顶层 `rv32i_soc.sv` 及 SoC 级 testbench。已完成最小 M-mode CSR/trap、MMIO 地址图及外设、machine timer/external interrupt 支持。
+本仓库是一个 RV32I SoC 实现仓库，维护对象包括五级流水线核 `core.sv`、MMIO 外设（GPIO/UART/TIMER32）、SoC 集成顶层 `rv32i_soc.sv` 及 SoC 级 testbench。已完成最小 M-mode CSR/trap、MMIO 地址图及外设、machine timer/external interrupt、data-side 可变延迟访问与流水线 backpressure 支持。
 
 ## 当前特性（已经过定向验证）
 
@@ -17,7 +17,8 @@
 - **machine timer interrupt**：TIMER0.MTIME ≥ MTIMECMP 触发 MTIP，level pending 输出到 mtip_o。
 - **machine external interrupt**：GPIO 按 bit 独立配置边沿/电平触发、UART RX 事件，汇总为 MEIP（中断优先级 MEIP > MTIP）。
 - **中断精确提交**：CSR 写同拍中断接受、MRET 同拍中断重入、mepc 记录当前提交边界的 interrupt return PC。
-- **设计可综合**：CPU 核及子模块采用可综合 rtl 编写；综合对象为 CPU 核顶层 `core.sv`，综合结果不作为项目重点。SoC 顶层透出固定响应 IMEM/DMEM 端口，仿真内存模型由 testbench 实例化；MMIO 外设模型为简化模型，未面向真实 IO 单元、真实串口协议或 PPA 做优化。
+- **data-side 可变延迟访问**：LSU 使用单 outstanding simple request/response 协议访问 DMEM/MMIO，`data_subsystem` 支持 0/N 拍 response delay、response error 汇总和 MEM backpressure；MMIO 读写副作用保持一次 accepted request 最多发生一次。
+- **设计可综合**：CPU 核及子模块采用可综合 rtl 编写；综合对象为 CPU 核顶层 `core.sv`，综合结果不作为项目重点。SoC 顶层透出 IMEM/DMEM 端口，仿真内存模型由 testbench 实例化；MMIO 外设模型为简化模型，未面向真实 IO 单元、真实串口协议或 PPA 做优化。
 - **FPGA 上板验证**：基于 v5.1 完成 FPGA 上板验证归档，CPU core RTL 保持不改，SoC MMIO 地址图保持不改；通过 FPGA top、片上 IMEM/DMEM wrapper、UART TX/RX PHY 和 Quartus 工程适配，完成 GPIO/KEY、UART、TIMER polling、TIMER interrupt 等板级验证。
 
 ---
@@ -25,8 +26,9 @@
 ## 验证能力
 
 - **SoC 级程序自检定向测试**：汇编/C 测试程序通过 PASS/FAIL 状态字结束仿真，覆盖 ISA、流水线 hazard、trap/CSR、MMIO 和 machine interrupt 场景。
-- **TB mailbox 外部激励协议**：`sw/include/tb_rv32i_soc_test.h` 与 `tb/sv/tb_rv32i_soc.sv` 约定保留 DMEM store 命令，由测试程序按自身进度请求 testbench 驱动 GPIO 输入、UART RX 事件。该协议只属于当前 testbench，不是 SoC 真实 MMIO ABI。
-- **interrupt directed test**：覆盖 timer interrupt、GPIO/UART external interrupt、MEIP/MTIP 优先级、CSR 写同拍中断、MRET 同拍中断重入和周期 GPIO 输入测量。
+- **TB mailbox 外部激励协议**：`sw/include/tb_rv32i_soc_test.h` 与 `tb/sv/tb_rv32i_soc.sv` 约定保留 DMEM store 命令，由测试程序按自身进度请求 testbench 驱动 GPIO 输入、UART RX 事件，并配置 DMEM/GPIO0/UART0/TIMER0 response delay。该协议只属于当前 testbench，不是 SoC 真实 MMIO ABI。
+- **interrupt directed test**：覆盖 timer interrupt、GPIO/UART external interrupt、MEIP/MTIP 优先级、CSR 写同拍中断、MRET 同拍中断重入和周期 GPIO 输入测量，测试程序由 TB mailbox 机制自行激发。
+- **data_subsystem response delay wrapper**：在固定响应的 DMEM/GPIO0/UART0/TIMER0 目标外侧统一插入可配置 response delay，用于验证 LSU single outstanding、MEM backpressure、delayed response error 和 MMIO 副作用不重复触发。delay 配置由当前 testbench 的 TB mailbox 提供，只属于仿真验证约定，不是 SoC 真实 MMIO ABI，也不改变外设寄存器软件接口。
 - **FPGA board bring-up**：[fpga/readme.md](fpga/readme.md) 作为 FPGA 上板验证入口，归档板卡资料、通用上板方法，以及已完成版本的专项迁移文档和验证结果。
 
 ---
@@ -46,12 +48,13 @@
 |  +-----------------------+    data      |  | IF / ID / EX / MEM / WB        | <----+     |    |
 |  | simple_ram / DMEM     | <----------> |  | fwd + stall + redirect         |      |     |    |
 |  | 0x0004_0000  256 KiB  |  TB mailbox  |  | CSR + trap + precise interrupt |      |     |    |
-|  | +dmem image           |              |  +----------------+---------------+      |     |    |
-|  +-----------------------+              |                   | LSU load/store       |     |    |
+|  | +dmem image           |              |  | MEM backpressure               |      |     |    |
+|  +-----------------------+              |  +----------------+---------------+      |     |    |
+|                                         |                   | LSU req/resp         |     |    |
 |                                         |                   v                      |     |    |
 |                                         |  +-----------------------------------+   |     |    |
-|                                         |  | data_subsystem: fixed decoder     |   |     |    |
-|                                         |  |                                   |   |     |    |
+|                                         |  | data_subsystem: simple data bus   |   |     |    |
+|                                         |  | decoder + response delay wrapper  |   |     |    |
 |                                         |  | 0x0004_0000 DMEM    external port |   |     |    |
 |                                         |  | 0x0008_0000 GPIO0      IN IRQ --+ |   |     |    |
 |                                         |  | 0x0008_2000 UART0      RX IRQ --+-> MEIP    |    |
@@ -62,8 +65,8 @@
 |                                         |             GPIO / UART / IRQ                  |    |
 |                                         +------------------------------------------------+    |
 |                                                                                               |
-|    memory images | PASS/FAIL monitor | commit/trap trace                                      |
-|    TB mailbox store commands -> GPIO input stimulus / UART RX event                           |
+|    memory images | PASS/FAIL monitor | commit/trap/data req-resp trace                        |
+|    TB mailbox store commands -> GPIO input stimulus / UART RX event / response delay config   |
 |                                                                                               |
 +-----------------------------------------------------------------------------------------------+
 ```
@@ -92,8 +95,9 @@
 | 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | - |
 | 同步异常扩展、CSR 与最小特权级（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | 自 v3.4 起，将 `core_pipeline5.sv` 改名为 `core.sv` |
 | 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` |
-| machine interrupt、TIMER32 与外部中断 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 1. 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 <br> 2. 回归测试统计存在 bug，已在 v5.6 定位并修复，详见对应版本的提交说明 |
+| machine interrupt：MTIP、MEIP | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 1. 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 <br> 2. 回归测试统计存在 bug，已在 v5.6 定位并修复，详见对应版本的提交说明 |
 | FPGA 分支：基于 v5.1 的 FPGA 上板验证 | FPGA 顶层 `e10_rv32i_top.sv` <br> FPGA 工程 `e10_rv32i.qpf` | 已完成 | v5.2 | - |
+| data-side 可变延迟 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v6.0 | - |
 
 ---
 
@@ -154,6 +158,12 @@ sw/asm/0606_wrong_path_mmio.S                 # wrong-path MMIO 不提交
 # interrupt 测试
 sw/asm/0705_interrupt_commit_precise.S        # CSR 写同拍中断精确提交
 sw/asm/0706_mret_interrupt_reentry.S          # MRET 同拍中断重入
+
+# wait-state 测试
+sw/asm/0801_dmem_wait_basic.S                 # DMEM 固定延迟下基本 load/store
+sw/asm/0802_dmem_wait_forwarding.S            # DMEM wait 下 forwarding 与 consumer 正确性
+sw/asm/0804_mmio_wait_access_fault.S          # MMIO delayed response error 精确 access fault
+sw/asm/0805_wait_interrupt_boundary.S         # MEM wait 期间 interrupt 不越过 older 指令
 ```
 
 **C 测试程序：**
@@ -169,11 +179,13 @@ sw/c/0752_gpio_irq_basic.c                    # GPIO 外部中断基础行为（
 sw/c/0753_uart_rx_irq.c                       # UART RX 中断（TB 注入、rx_irq_enable 门控、读清与 W1C 差异）
 sw/c/0754_external_timer_priority.c           # MEIP/MTIP 优先级（同时 pending 优先进 MEIP，清后进 MTIP）
 sw/c/0757_gpio_periodic_irq.c                 # TB 固定周期 GPIO 中断精确测量（TIMER0.MTIME + UART 报告）
+sw/c/0853_mmio_wait_basic.c                   # MMIO 固定延迟下 GPIO/UART/TIMER 基本读写
+sw/c/0856_wait_mixed_random_smoke.c           # 随机 wait-state 下 DMEM/MMIO 混合 smoke
 ```
 
 **仿真脚本：** `sim/soc_asm/`、`sim/soc_c/`
 
-当前共 **32 个 directed tests**（汇编 21 + C 11），覆盖 RV32I 指令集、五级流水线 hazard（6 种 RAW forward + load-use stall + redirect）、7 种同步异常、MMIO 外设访问与 access fault、machine timer/external interrupt（GPIO 4 类触发、UART RX、MEIP/MTIP 优先级、CSR 同拍中断、MRET 同拍重入）。
+当前共 **38 个 directed tests**（汇编 25 + C 13），覆盖 RV32I 指令集、五级流水线 hazard（6 种 RAW forward + load-use stall + redirect）、7 种同步异常、MMIO 外设访问与 access fault、machine timer/external interrupt（GPIO 4 类触发、UART RX、MEIP/MTIP 优先级、CSR 同拍中断、MRET 同拍重入），以及 data-side wait-state/backpressure 场景。
 
 ### 仿真命令
 
@@ -209,7 +221,7 @@ sim/soc_c/run_test.sh <四位编号或完整basename>
 
 汇编测试集分类见 [sw/asm/readme.md](sw/asm/readme.md)。
 
-c 程序编写方法见 [sw/c/readme.md](sw/c/readme.md)。
+c 程序测试集分类与编写方法见 [sw/c/readme.md](sw/c/readme.md)。
 
 MMIO 外设操作手册见 [rtl/periph/readme.md](rtl/periph/readme.md)。
 

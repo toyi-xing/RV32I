@@ -14,6 +14,7 @@
 //   - 当前 UART0 RX 事件固定拉低；后续 interrupt directed test 会改为 task 注入。
 //   - 在每次提交时打印当前指令的 PC、原始指令、指令类型、rd 写使能和写回数据。
 //   - 观察 trap/MRET trace 信号，并打印 trap_is_interrupt/trap_cause_code。
+//   - 观察结构体形式的 data request/response trace。
 //   - 观察 GPIO0/UART0/TIMER0 interrupt 和 MEIP/MTIP 汇总信号。
 //   - 观察 UART TX event 并打印字符。
 //   - 通过写约定 DMEM 地址作为 PASS/FAIL 标志自动结束仿真。
@@ -26,6 +27,7 @@ module tb_rv32i_soc;
     import core_pkg::*;
     import pipeline_pkg::*;
     import soc_pkg::*;
+    import data_bus_pkg::*;
 
     // -------------------------------------------------------------------------
     // 时钟和复位
@@ -75,15 +77,8 @@ module tb_rv32i_soc;
     logic [6:0]                    timer0_resp_delay_cycles;
 
     logic                          data_req_ready;
-    logic                          data_req_valid;
-    logic                          data_req_write;
-    logic [3:0]                    data_req_be;
-    logic [core_pkg::XLEN-1:0]     data_req_addr;
-    logic [core_pkg::XLEN-1:0]     data_req_wdata;
-
-    logic                          data_resp_valid;
-    logic [core_pkg::XLEN-1:0]     data_resp_rdata;
-    logic                          data_resp_error;
+    data_bus_pkg::data_req_t       data_req;
+    data_bus_pkg::data_resp_t      data_resp;
 
     logic                          dmem_access;
     logic                          mmio_access;
@@ -164,15 +159,8 @@ module tb_rv32i_soc;
         .timer0_resp_delay_cycles_i (timer0_resp_delay_cycles),
 
         .data_req_ready_o      (data_req_ready),
-        .data_req_valid_o      (data_req_valid),
-        .data_req_write_o      (data_req_write),
-        .data_req_be_o         (data_req_be),
-        .data_req_addr_o       (data_req_addr),
-        .data_req_wdata_o      (data_req_wdata),
-
-        .data_resp_valid_o     (data_resp_valid),
-        .data_resp_rdata_o     (data_resp_rdata),
-        .data_resp_error_o     (data_resp_error),
+        .data_req_o            (data_req),
+        .data_resp_o           (data_resp),
 
         .dmem_access_o         (dmem_access),
         .mmio_access_o         (mmio_access),
@@ -317,11 +305,11 @@ module tb_rv32i_soc;
         timer0_resp_delay_cycles <= cfg[31] ? random_delay(cfg[30:24]) : cfg[30:24];
     endtask
     // dmem、gpio0、uart0、timer0 的随机访问延迟激励
-    wire data_req_fire = data_req_valid & data_req_ready;
-    wire dmem_hit   = (data_req_addr >= DMEM_BASE)   & (data_req_addr < DMEM_BASE   + DMEM_SIZE_BYTES);
-    wire gpio0_hit  = (data_req_addr >= GPIO0_BASE)  & (data_req_addr < GPIO0_BASE  + GPIO0_SIZE_BYTES);
-    wire uart0_hit  = (data_req_addr >= UART0_BASE)  & (data_req_addr < UART0_BASE  + UART0_SIZE_BYTES);
-    wire timer0_hit = (data_req_addr >= TIMER0_BASE) & (data_req_addr < TIMER0_BASE + TIMER0_SIZE_BYTES);
+    wire data_req_fire = data_req.valid & data_req_ready;
+    wire dmem_hit   = (data_req.addr >= DMEM_BASE)   & (data_req.addr < DMEM_BASE   + DMEM_SIZE_BYTES);
+    wire gpio0_hit  = (data_req.addr >= GPIO0_BASE)  & (data_req.addr < GPIO0_BASE  + GPIO0_SIZE_BYTES);
+    wire uart0_hit  = (data_req.addr >= UART0_BASE)  & (data_req.addr < UART0_BASE  + UART0_SIZE_BYTES);
+    wire timer0_hit = (data_req.addr >= TIMER0_BASE) & (data_req.addr < TIMER0_BASE + TIMER0_SIZE_BYTES);
     task automatic random_resp_delay_stimulus();
         if (data_req_fire) begin
             if (dmem_hit   && resp_delay_cfg0[7]) begin
@@ -391,8 +379,8 @@ module tb_rv32i_soc;
     wire [core_pkg::XLEN-1:0] current_sp = u_soc.u_core.u_regfile.gpr_q[2];
     wire dmem_access_for_stats = rst_n
                               && dmem_access
-                              && data_req_valid
-                              && (data_req_addr != TEST_STATUS_ADDR);
+                              && data_req.valid
+                              && (data_req.addr != TEST_STATUS_ADDR);
     wire sp_in_dmem_range = (current_sp >= core_pkg::DMEM_BASE) && (current_sp <= STACK_TOP_ADDR);
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -406,11 +394,11 @@ module tb_rv32i_soc;
         end else begin
             if (dmem_access_for_stats) begin
                 dmem_access_seen <= 1'b1;
-                if (!dmem_access_seen || data_req_addr < dmem_min_addr) begin
-                    dmem_min_addr <= data_req_addr;
+                if (!dmem_access_seen || data_req.addr < dmem_min_addr) begin
+                    dmem_min_addr <= data_req.addr;
                 end
-                if (!dmem_access_seen || data_req_addr > dmem_max_addr) begin
-                    dmem_max_addr <= data_req_addr;
+                if (!dmem_access_seen || data_req.addr > dmem_max_addr) begin
+                    dmem_max_addr <= data_req.addr;
                 end
             end
 
@@ -473,15 +461,35 @@ module tb_rv32i_soc;
             $display("[TRAP_RETURN] trap_redirect_pc:0x%08h", trap_redirect_pc);
         end
 
-        if (data_req_valid && data_req_ready) begin
+        if (data_req_fire) begin
             $display("^^^^^^^^^^  this cycle accept data_req   ^^^^^^^^^^");
+            if (dmem_hit) begin
+                $display("################ [REQ] target=DMEM   delay_cycles=%0d addr=0x%08h we=%0b ################",
+                         dmem_resp_delay_cycles, data_req.addr, data_req.write);
+            end
+            else if (gpio0_hit) begin
+                $display("################ [REQ] target=GPIO0  delay_cycles=%0d addr=0x%08h we=%0b ################",
+                         gpio0_resp_delay_cycles, data_req.addr, data_req.write);
+            end
+            else if (uart0_hit) begin
+                $display("################ [REQ] target=UART0  delay_cycles=%0d addr=0x%08h we=%0b ################",
+                         uart0_resp_delay_cycles, data_req.addr, data_req.write);
+            end
+            else if (timer0_hit) begin
+                $display("################ [REQ] target=TIMER0 delay_cycles=%0d addr=0x%08h we=%0b ################",
+                         timer0_resp_delay_cycles, data_req.addr, data_req.write);
+            end
+            else begin
+                $display("################ [REQ] target=UNDEF  delay_cycles=0 addr=0x%08h we=%0b ################",
+                         data_req.addr, data_req.write);
+            end
         end
         if (mem_wait) begin
             $display("^^^^^^^^^^        pipeline pausing       ^^^^^^^^^^");
-            $display("################ [%0d][MEM_WAIT] req_valid=%0b req_ready=%0b resp_valid=%0b addr=0x%08h ################",
-                  cycle_cnt, data_req_valid, data_req_ready, data_resp_valid, data_req_addr);
+            $display("................ [%0d][MEM_WAIT] req_valid=%0b req_ready=%0b resp_valid=%0b addr=0x%08h ................",
+                  cycle_cnt, data_req.valid, data_req_ready, data_resp.valid, data_req.addr);
         end
-        if (data_resp_valid) begin
+        if (data_resp.valid) begin
             $display("^^^^^^^^^^  this cycle happen data_resp  ^^^^^^^^^^");
         end
 

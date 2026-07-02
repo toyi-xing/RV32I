@@ -155,3 +155,29 @@ first_entry:
 ```
 
 mret 在 MEM 提交时：`MIE <= MPIE = 1`。同拍 trap_ctrl 检测到 mret_accept + irq_request → 同一周期再次进入中断 entry。mepc 保持原值（仍是 `after_enable`），流水线不执行任何一条用户指令即重定向回 mtvec。第二次 handler 入口还会检查 `mstatus.MIE=0, MPIE=1`；第二次 handler 清 pending 后正常 mret 回到主流程，并检查最终 `mstatus.MIE=1, MPIE=1`。
+
+## 8. wait-state 汇编测试 `已通过`
+
+| 文件 | 验证内容 |
+|------|----------|
+| `0801_dmem_wait_basic.S` | DMEM 固定延迟下基本 load/store — SW/LW、SB/LB/LBU、SH/LH/LHU 的读写语义、byte enable、符号/零扩展和基址+偏移访问。DMEM resp_delay=3 |
+| `0802_dmem_wait_forwarding.S` | DMEM wait 下 forwarding 正确性 — delayed load 后立即 ALU 运算、store data 转发、load-use stall + MEM wait、连续 load 后链式加。DMEM resp_delay=4 |
+| `0804_mmio_wait_access_fault.S` | MMIO 窗口内未定义 offset 的 delayed access fault — GPIO0/UART0/TIMER0 各配 resp_delay=3，验证 delayed response error 转精确 load/store access fault、faulting store 不产生副作用、wrong-path store 被 kill |
+| `0805_wait_interrupt_boundary.S` | MEM wait 期间 interrupt 不越过 older 指令 — DMEM resp_delay=7 下执行 load，wait 期间 MTIP 置位，core 不提前 trap；response 完成后在提交边界接受 timer interrupt，mepc == after_wait_load |
+
+### 8.1 延迟配置
+
+四个测试通过 `TB_RESP_DELAY_CFG0_ADDR` mailbox 设置 DMEM/GPIO0/UART0/TIMER0 各自的 response delay。汇编测试直接写 packed 32-bit config 到该地址，不依赖 C helper。
+
+每个测试文件头注释中写明使用的 delay 配置，以便调试时直接确认预期 wait-state 行为。
+
+### 8.2 已有测试不受影响
+
+所有 06xx/07xx 测试默认 delay=0（固定响应），不因 data_subsystem 新增延迟能力而改变行为。新增 08xx 测试专门在非 0 delay 下运行，只验证 wait-state 相关语义，不重复覆盖 0 wait-state 基本正确性。
+
+### 8.3 验证口径
+
+- **DMEM wait 基本访存**（0801）：延迟下逐条验证 load/store 结果，通过 CHECK_EQ 按 bit 或汇总错误码。
+- **DMEM wait forwarding**（0802）：使用 RISC-V 的正常数据依赖链（load→alu、load→store），不需要 NOP 隔离。load 在 wait 期间 MEM/WB 被 stall，forwarding_unit 应能从被 hold 的 MEM/WB 正确前递数据。
+- **Delayed access fault**（0804）：复用 0604 的 SET_EXPECT/check_step 框架，addr 设置到外设窗口内未定义 offset（如 GPIO0+0x028）。error 经 target wrapper 延迟返回后，在 MEM completion 边界触发精确 load/store access fault。
+- **Interrupt boundary**（0805）：访问 DMEM 时使用 resp_delay=7，在 wait 期间触发 MTIP，验证 core 不会越过 older load 提前进入 timer interrupt handler。

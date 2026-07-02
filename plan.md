@@ -1068,7 +1068,7 @@ TIMER32 自增仍按 `clk_i` 运行，不因为 CPU bus wait 暂停。
 
 若采用 accepted pulse 访问外设，则“本拍”指 request accepted 那一拍，而不是 response 返回那一拍。
 
-## 9. SoC 顶层接口和观察口 `执行中`
+## 9. SoC 顶层接口和观察口 `已完成`
 
 ### 9.1 修改 `rtl/soc/rv32i_soc.sv` core/data_subsystem 连接 `已完成`
 
@@ -1279,7 +1279,7 @@ timer0_resp_delay_cycles_i
 - MMIO unknown offset 由外设 offset decode 和 wrapper response error 处理，不产生对应寄存器副作用。
 - `req_accept_fire` 只打一拍，DMEM/MMIO accepted 副作用不会因 response delay 重复发生。
 
-## 12. 注释和文档同步 `基本完成`
+## 12. 注释和文档同步 `已完成`
 
 ### 12.1 RTL 头注释必须同步的文件 `已完成`
 
@@ -1318,15 +1318,15 @@ valid_i 是保持的访问信号
 - 若采用 wrapper accepted 时触发外设访问，读副作用/写副作用的软件语义仍是“一次成功访问最多一次”，不要求软件关心 accepted/response 内部时序。
 - unknown offset 仍表现为 load/store access fault。
 
-### 12.3 README 当前特性 `暂缓，定向验证无误后补充`
+### 12.3 README 当前特性 `已完成`
 
 0834 完成后更新 README：
 
 - 当前特性新增 data-side variable-latency / simple data bus / MEM backpressure。
 - 系统架构图中 `data_subsystem: fixed DMEM/MMIO decoder` 改为 simple data bus decoder/interconnect，并体现 DMEM/MMIO simple slave wrapper。
-- 项目时间戳新增 v5.1 或 v6.0，具体版本号由提交前统一决定。
+- 项目时间戳由提交前统一决定。
 
-本项等顶层连接和基本验证通过后再补，避免 README 提前写入尚未收口的当前特性。
+README 已同步 0834 当前特性、系统架构图、验证能力、08xx/085x wait-state 测试列表和 directed test 数量。项目时间戳不在计划中写死，由提交前统一补充。
 
 ### 12.4 0834 文档 `已完成`
 
@@ -1548,7 +1548,7 @@ static inline uint8_t tb_pack_resp_delay_cfg(bool random_en, uint8_t cycles_or_m
 
 这些 helper 只属于 `tb_rv32i_soc.sv` directed-test 协议，不属于真实 SoC ABI；汇编测试若需要使用，可以直接写 `TB_RESP_DELAY_CFG0_ADDR` 和 packed config，不强制提供汇编函数。
 
-## 14. 回归与验收顺序 `执行中`
+## 14. 回归与验收顺序 `已完成`
 
 ### 14.1 0 wait-state 等价回归 `已通过`
 
@@ -1560,9 +1560,9 @@ RTL 完成后第一步只跑默认 0 wait-state。
 - commit/trap 关键 trace 不出现明显乱序。
 - UART TX、GPIO IRQ、TIMER IRQ 不重复触发。
 
-### 14.2 更多定向测试集验证 `执行中`
+### 14.2 更多定向测试集验证 `已完成`
 
-本节开始为 0834 wait-state 功能补充专用 directed tests。测试仍沿用当前“软件自检 + TB mailbox 激励”的方式，不在本阶段展开完整 UVM/scoreboard。
+本节开始为 0834 wait-state 功能补充专用 directed tests。测试仍沿用当前“软件自检 + TB mailbox 激励”的方式；测试程序内部可以用错误位图/计分板式汇总失败项，但本阶段不展开 TB/UVM scoreboard。
 
 测试程序集建议按下列顺序增加：
 
@@ -1582,7 +1582,7 @@ RTL 完成后第一步只跑默认 0 wait-state。
 - 访问 fault 测试优先使用“命中外设窗口但 offset 未定义”的地址，因为这类 error 会经过对应 target wrapper 延迟返回；完全未映射地址当前仍保持同拍 error response，可作为 0 wait-state error 路径补充。
 - 每个测试程序应在头注释中写明使用的 delay 配置、期望覆盖的 wait-state 场景，以及哪些现象不作为 PASS/FAIL 标准。
 
-## 15. 完成标准
+## 15. 完成标准 `已满足`
 
 本阶段完成时应满足：
 
@@ -1597,3 +1597,270 @@ RTL 完成后第一步只跑默认 0 wait-state。
 - interrupt pending 在 memory wait 期间不被提前接受，只在 completion 边界按 0833 语义处理。
 - 注释不再保留“固定响应/无 backpressure”的过时描述。
 - testbench 已具备后续 wait-state directed tests 所需的 data bus 观察和延迟注入入口。
+
+## 16. data bus 结构体化整理 `已完成`
+
+本章是在 0834 功能已经完成后的代码整理项。目标是把当前为了逐步改造而使用的 `lsu_req_*`、`lsu_resp_*`、`data_req_*`、`data_resp_*`、`core_req_*`、`core_resp_*` 离散信号，收拢为 request/response 结构体连线。该整理不改变协议、状态机、wait-state、trap/interrupt 语义和外设 ABI。
+
+整理原则：
+
+- 只做接口和连线形态整理，不重写 MEM transaction、data_subsystem wrapper 或 TB mailbox 逻辑。
+- `ready` 不是 request payload，建议继续作为离散握手信号保留；`valid` 是否放入结构体按当前 2.1 的 `data_req_t/data_resp_t` 定义执行。
+- `data_resp_t.error` 继续表示 response error，不改变 load/store access fault 生成条件。
+- delay 配置输入 `dmem_resp_delay_cycles_i/gpio0_resp_delay_cycles_i/uart0_resp_delay_cycles_i/timer0_resp_delay_cycles_i` 不属于 data bus 事务结构体，仍保持离散 target 配置输入。
+- TB 顶层观察口可以使用结构体端口，但 trace/monitor 内部仍可拆成局部 wire，便于打印和命中判断。
+- 每改完一层先跑 0 wait-state smoke，再继续下一层，避免把纯连线错误和协议错误混在一起。
+
+### 16.1 新增 data bus 公共类型 `已完成`
+
+建议新建 `rtl/common/data_bus_pkg.sv`，而不是放入 `core_pkg` 或 `soc_pkg`：
+
+```systemverilog
+package data_bus_pkg;
+    import core_pkg::*;
+
+    typedef struct packed {
+        logic                      valid;
+        logic                      write;
+        logic [3:0]                be;
+        logic [core_pkg::XLEN-1:0] addr;
+        logic [core_pkg::XLEN-1:0] wdata;
+    } data_req_t;
+
+    typedef struct packed {
+        logic                      valid;
+        logic [core_pkg::XLEN-1:0] rdata;
+        logic                      error;
+    } data_resp_t;
+endpackage
+```
+
+若工具对 `import core_pkg::*;` 后在 packed struct 内直接写 `XLEN` 支持稳定，也可以把 `core_pkg::XLEN` 简化为 `XLEN`；建议第一版保持显式 `core_pkg::XLEN`，降低包依赖歧义。
+
+所有使用 data bus 结构体的 RTL/TB 文件需要增加：
+
+```systemverilog
+import data_bus_pkg::*;
+```
+
+编译脚本当前使用 `rtl/common/*.sv`，新增 common 包后通常无需修改文件列表；若后续改为显式 filelist，需要保证 `core_pkg.sv` 在 `data_bus_pkg.sv` 前编译。
+
+### 16.2 整理 `rtl/core/mem_stage.sv` 端口 `已完成`
+
+把 MEM 阶段 LSU 端口从离散信号收拢为：
+
+```systemverilog
+input  logic                lsu_req_ready_i;
+output data_bus_pkg::data_req_t  lsu_req_o;
+input  data_bus_pkg::data_resp_t lsu_resp_i;
+```
+
+替换关系：
+
+| 当前离散信号 | 结构体字段 |
+| --- | --- |
+| `lsu_req_valid_o` | `lsu_req_o.valid` |
+| `lsu_req_write_o` | `lsu_req_o.write` |
+| `lsu_req_be_o` | `lsu_req_o.be` |
+| `lsu_req_addr_o` | `lsu_req_o.addr` |
+| `lsu_req_wdata_o` | `lsu_req_o.wdata` |
+| `lsu_resp_valid_i` | `lsu_resp_i.valid` |
+| `lsu_resp_rdata_i` | `lsu_resp_i.rdata` |
+| `lsu_resp_error_i` | `lsu_resp_i.error` |
+
+内部逻辑保持等价：
+
+- `request_accepted = lsu_req_o.valid & lsu_req_ready_i`
+- `transaction_complete_o = lsu_resp_i.valid & (req_outstanding_q | request_accepted)`
+- load 原始数据从 `lsu_resp_i.rdata` 取得。
+- load/store access fault 仍由 `lsu_resp_i.valid && lsu_resp_i.error` 门控。
+
+注意继续保证无效 request 时 payload 不被下游使用；若为了波形可读性，可以在 `always_comb` 中给整个 `lsu_req_o = '0` 后再逐字段赋值。
+
+### 16.3 整理 `rtl/core/core.sv` 端口和 MEM 实例连线 `已完成`
+
+把 core 顶层 data-side 端口整理为：
+
+```systemverilog
+input  logic                lsu_req_ready_i;
+output data_bus_pkg::data_req_t  lsu_req_o;
+input  data_bus_pkg::data_resp_t lsu_resp_i;
+```
+
+需要同步修改：
+
+- core 模块端口列表。
+- `u_mem_stage` 实例端口连接。
+- 顶部头注释中对 LSU request/response 的说明。
+
+不应修改：
+
+- `mem_wait_o` 观察口。
+- trap/CSR/interrupt 相关端口。
+- pipeline register、forwarding、hazard 控制逻辑。
+
+### 16.4 整理 `rtl/soc/rv32i_soc.sv` core 与 data_subsystem 连线 `已完成`
+
+SoC 顶层直接使用结构体观察口作为 core 与 data_subsystem 的连接信号：
+
+```systemverilog
+output data_bus_pkg::data_req_t  data_req_o;
+output logic                     data_req_ready_o;
+output data_bus_pkg::data_resp_t data_resp_o;
+```
+
+core 侧：
+
+```systemverilog
+.lsu_req_ready_i (data_req_ready_o),
+.lsu_req_o       (data_req_o),
+.lsu_resp_i      (data_resp_o)
+```
+
+data_subsystem 侧：
+
+```systemverilog
+.core_req_ready_o (data_req_ready_o),
+.core_req_i       (data_req_o),
+.core_resp_o      (data_resp_o)
+```
+
+该实现把当前：
+
+```text
+data_req_valid_o/data_req_write_o/data_req_be_o/data_req_addr_o/data_req_wdata_o
+data_resp_valid_o/data_resp_rdata_o/data_resp_error_o
+```
+
+统一替换为：
+
+```text
+data_req_o.valid/write/be/addr/wdata
+data_resp_o.valid/rdata/error
+```
+
+`data_req_ready_o` 建议保留离散输出。
+
+### 16.5 整理 `rtl/soc/data_subsystem.sv` core 侧接口 `已完成`
+
+把 data_subsystem core 侧端口整理为：
+
+```systemverilog
+output logic                     core_req_ready_o;
+input  data_bus_pkg::data_req_t  core_req_i;
+output data_bus_pkg::data_resp_t core_resp_o;
+```
+
+替换关系：
+
+| 当前离散信号 | 结构体字段 |
+| --- | --- |
+| `core_req_valid_i` | `core_req_i.valid` |
+| `core_req_write_i` | `core_req_i.write` |
+| `core_req_be_i` | `core_req_i.be` |
+| `core_req_addr_i` | `core_req_i.addr` |
+| `core_req_wdata_i` | `core_req_i.wdata` |
+| `core_resp_valid_o` | `core_resp_o.valid` |
+| `core_resp_rdata_o` | `core_resp_o.rdata` |
+| `core_resp_error_o` | `core_resp_o.error` |
+
+需要同步检查的位置：
+
+- `req_accept_fire = core_req_i.valid & core_req_ready_o`
+- `req_re_accept/req_we_accept`
+- 地址命中判断使用 `core_req_i.addr`
+- DMEM 外置端口使用 `core_req_i.be/addr/wdata`
+- GPIO/UART/TIMER32 实例端口使用 `core_req_i.be/addr/wdata`
+- `core_resp` mux 先给 `core_resp_o = '0`，再按 target 赋值字段。
+
+子模块实例化附近保留的“后续移除 wrapper、固定响应直连”注释也需要同步成结构体字段口径，例如：
+
+```systemverilog
+// core_resp_o.valid = req_gpio0_valid;
+// core_resp_o.rdata = gpio0_rdata;
+// core_resp_o.error = gpio0_access_fault;
+```
+
+或改写成更抽象的注释，避免恢复时误用旧离散信号名。
+
+### 16.6 整理 `tb/sv/tb_rv32i_soc.sv` 观察口和 trace `已完成`
+
+若 SoC 顶层观察口改为结构体，TB 中对应声明改为：
+
+```systemverilog
+data_bus_pkg::data_req_t  data_req;
+data_bus_pkg::data_resp_t data_resp;
+logic                    data_req_ready;
+```
+
+替换关系：
+
+| 当前 TB 信号 | 新字段 |
+| --- | --- |
+| `data_req_valid` | `data_req.valid` |
+| `data_req_write` | `data_req.write` |
+| `data_req_be` | `data_req.be` |
+| `data_req_addr` | `data_req.addr` |
+| `data_req_wdata` | `data_req.wdata` |
+| `data_resp_valid` | `data_resp.valid` |
+| `data_resp_rdata` | `data_resp.rdata` |
+| `data_resp_error` | `data_resp.error` |
+
+需要重点检查：
+
+- `data_req_fire = data_req.valid & data_req_ready`
+- dmem/gpio/uart/timer hit 判断使用 `data_req.addr`
+- TB mailbox 监听使用 accepted request 当拍的 `data_req.addr/data_req.wdata`
+- DMEM access 地址范围统计使用 `data_req.addr`
+- REQ/MEM_WAIT/RESP trace 打印字段名更新。
+- 随机 delay 更新仍以 `data_req_fire` 和 target hit 为触发条件。
+
+TB 内部若觉得字段写法太长，可以定义只读别名 wire，例如：
+
+```systemverilog
+wire data_req_fire = data_req.valid & data_req_ready;
+wire [core_pkg::XLEN-1:0] data_req_addr = data_req.addr;
+```
+
+但不建议重新建立完整一套离散寄存器，否则整理收益会被抵消。
+
+### 16.7 文档和注释同步 `已完成`
+
+需要同步的位置：
+
+- `plan.md` 中 2.1 按当前要求保持不变，继续记录第一版使用离散端口推进的历史口径；本章记录后续结构体化整理结果。
+- `rtl/core/mem_stage.sv` 头注释：LSU request/response 使用 `data_req_t/data_resp_t`。
+- `rtl/core/core.sv` 头注释：data-side 端口使用结构体 request/response，`ready` 仍为离散握手。
+- `rtl/soc/data_subsystem.sv` 头注释：core 侧 simple data bus 使用结构体接口。
+- `rtl/soc/rv32i_soc.sv` 头注释和端口注释：SoC 观察口若改为结构体，需要说明字段含义。
+- `tb/sv/tb_rv32i_soc.sv` 头注释：trace/monitor 观察的是结构体 data bus。
+- `README.md` ASCII 图一般不需要大改；若正文出现离散端口名示例，需要同步为结构体口径。
+
+`rtl/periph/readme.md` 不需要因本整理修改，因为外设寄存器 ABI 没变。
+
+### 16.8 验证顺序 `已完成`
+
+建议按下列顺序验收：
+
+1. 只新增 `data_bus_pkg.sv`，不改端口，确认编译脚本能找到新包。
+2. 改 `mem_stage.sv` 与 `core.sv`，保持 SoC 外部观察口暂时不变；跑一个 ASM smoke。
+3. 改 `rv32i_soc.sv` 与 `data_subsystem.sv` 内部连接；跑 0 wait-state smoke。
+4. 改 TB 观察口和 trace；跑 `0601_soc_smoke` 与一个 wait-state 测试。
+5. 跑 0 wait-state 全量回归。
+6. 跑 0834 新增 wait-state 测试集。
+
+推荐最小 smoke：
+
+```text
+0601_soc_smoke
+0801_dmem_wait_basic
+0853_mmio_wait_basic
+0856_wait_mixed_random_smoke
+```
+
+如果某一步出错，优先检查字段方向和字段名：
+
+- `req.valid` 是否仍是 request 发起方驱动。
+- `req_ready` 是否仍是 responder 驱动的离散信号。
+- `resp.valid/rdata/error` 是否仍是 responder 驱动。
+- 0 wait-state 下 `req.valid && req_ready && resp.valid` 同拍是否仍可成立。

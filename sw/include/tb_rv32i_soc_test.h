@@ -19,7 +19,7 @@
     #define TB_GPIO0_PULSE_CMD_ADDR  (TB_CMD_BASE + RV32I_U32_C(0x08))  /* 写 packed command，TB 在指定 GPIO 输入上产生脉冲。 */
     #define TB_UART0_RX_ADDR         (TB_CMD_BASE + RV32I_U32_C(0x0c))  /* 写 byte[7:0]，TB 向 UART0 注入一个 RX 字节。 */
     #define TB_RESP_DELAY_CFG0_ADDR  (TB_CMD_BASE + RV32I_U32_C(0x10))  /* 写 packed config，TB 配置四个 data response 延迟源。 */
-    #define TB_RESP_DELAY_RESET_CFG  RV32I_U32_C(0x00000001)  /* 与 tb_rv32i_soc.sv 复位默认 delay config 保持一致。 */
+    #define TB_RESP_DELAY_RESET_CFG  RV32I_U32_C(0x00000000)  /* 与 tb_rv32i_soc.sv 复位默认 delay config 保持一致。 */
     
     #define TB_GPIO0_FAST_PERIODIC_BIT   RV32I_U32_C(30)  /* 快速周期翻转 GPIO 的 bit 号。 */
     #define TB_GPIO0_SLOW_PERIODIC_BIT   RV32I_U32_C(31)  /* 慢速周期翻转 GPIO 的 bit 号。 */

@@ -4,18 +4,17 @@
 //
 // 综合PPA：
 //   - 该顶层使用 yosys 综合器 + 浙芯 55nm 开源工艺库综合结果：
-//   - 最终面积 28036.12，其中时序单元 16880.36 (60.21%)
-//   - Setup (max) Worst Slack = 18.002 ns  理论上可以跑到 ~500MHz
-//   -  Hold (min) Worst Slack = 0.125 ns
-//   - Total Power = 0.708 W
-//   - 注：功耗数据不可靠，iEDA 功耗计算存在大量"slew is not exist"错误，且开关功耗(Switch Power)为 0，说明 toggle rate 约束未正确生效。
+//   - 最终面积 28351.40，其中时序单元 16896.04 (59.60%)
+//   - Setup (max) Worst Slack = 17.569 ns  理论上可以跑到 ~411MHz
+//   - Hold (min) Worst Slack = 0.125 ns
+//   - Total Power = 0.445 W
 //
 // 规范：
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
 //   - commit_instr_id_o 为仿真 trace 观察口，沿用 commit_* 分组命名。
 //   - 本模块实现 IF/ID/EX/MEM/WB 五级流水线顶层连接。
 //   - 外接 imem 和 LSU 数据侧接口，不在 core 内部实例化具体 memory。
-//   - 当前 IMEM 仍为固定响应；LSU 数据侧使用单 outstanding req/resp 握手。
+//   - 当前 IMEM 仍为固定响应；LSU 数据侧使用单 outstanding req/resp 结构体接口。
 //
 // 功能：
 //   - 连接 pc_reg、if_stage、id_stage、ex_stage、mem_stage、wb_stage、regfile、csr_file 和 trap_ctrl。
@@ -37,15 +36,8 @@ module core (
 
     // 可变延迟访存总线
     input  logic                          lsu_req_ready_i,          // data-side 可以接受本拍 request；valid && !ready 时 MEM 需要保持等待。
-    output logic                          lsu_req_valid_o,          // 当前 MEM 指令需要发起真实 load/store request，指令无效或已有 exception 时不拉高。
-    output logic                          lsu_req_write_o,          // LSU store 写请求；有效访存但 write_o 为 0 时表示为 load 指令
-    output logic [3:0]                    lsu_req_be_o,             // LSU store byte enable，如：SH x1, 0(x2) → 写 2 个字节 → be = 0011 / 1100
-    output logic [core_pkg::XLEN-1:0]     lsu_req_addr_o,           // LSU load/store 地址。
-    output logic [core_pkg::XLEN-1:0]     lsu_req_wdata_o,          // LSU 按 byte lane 对齐后的 store 数据。
-
-    input  logic                          lsu_resp_valid_i,         // data-side response 有效；store/error response 不使用 rdata。
-    input  logic [core_pkg::XLEN-1:0]     lsu_resp_rdata_i,         // LSU load 返回的 32 bit 原始 word 数据，仅 response OK 且当前为 load 时有意义。
-    input  logic                          lsu_resp_error_i,         // data response error，当前主要由未映射地址或未知 MMIO offset 产生。
+    output data_bus_pkg::data_req_t       lsu_req_o,                // LSU load/store request payload。
+    input  data_bus_pkg::data_resp_t      lsu_resp_i,               // LSU response，包含 valid/rdata/error。
 
     // 中断信号输入
     input  logic                          mtip_i,               // 外设的 mtip 中断挂起
@@ -74,6 +66,7 @@ module core (
 );
     import core_pkg::*;
     import pipeline_pkg::*;
+    import data_bus_pkg::*;
 
     // pc相关信号
     wire [core_pkg::XLEN-1:0] pc;
@@ -522,15 +515,8 @@ module core (
         .exception_tval_o       (mem_exception_tval),
 
         .lsu_req_ready_i        (lsu_req_ready_i),
-        .lsu_req_valid_o        (lsu_req_valid_o),
-        .lsu_req_write_o        (lsu_req_write_o),
-        .lsu_req_be_o           (lsu_req_be_o),
-        .lsu_req_addr_o         (lsu_req_addr_o),
-        .lsu_req_wdata_o        (lsu_req_wdata_o),
-
-        .lsu_resp_valid_i       (lsu_resp_valid_i),
-        .lsu_resp_rdata_i       (lsu_resp_rdata_i),
-        .lsu_resp_error_i       (lsu_resp_error_i),
+        .lsu_req_o              (lsu_req_o),
+        .lsu_resp_i             (lsu_resp_i),
 
         .mem_wait_o             (mem_wait),
 

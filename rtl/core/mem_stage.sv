@@ -6,6 +6,7 @@
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
 //   - 本模块使用单 outstanding request/response 模型管理 data-side 事务。
 //   - 访存宽度统一使用 core_pkg::mem_size_e。
+//   - LSU request/response 使用 data_bus_pkg::data_req_t/data_resp_t 描述。
 //   - LSU request payload 在 valid 拉高且 ready 未接受期间保持稳定。
 //
 // 功能：
@@ -55,18 +56,11 @@ module mem_stage (
     output logic [core_pkg::XLEN-1:0]     exception_tval_o,     // MEM 边界最终 exception tval。
 
     // 可变延迟总线
-    // 访存输出信号
+        // 访存输出信号
     input  logic                          lsu_req_ready_i,          // data-side 可以接受本拍 request；valid && !ready 时 MEM 需要保持等待。
-    output logic                          lsu_req_valid_o,          // 当前 MEM 指令需要发起真实 load/store request，指令无效或已有 exception 时不拉高。
-    output logic                          lsu_req_write_o,          // LSU store 写请求；有效访存但 write_o 为 0 时表示为 load 指令
-    output logic [3:0]                    lsu_req_be_o,             // LSU store byte enable，如：SH x1, 0(x2) → 写 2 个字节 → be = 0011 / 1100
-    output logic [core_pkg::XLEN-1:0]     lsu_req_addr_o,           // LSU load/store 地址。
-    output logic [core_pkg::XLEN-1:0]     lsu_req_wdata_o,          // LSU 按 byte lane 对齐后的 store 数据。
-
-    // 访存反馈信号
-    input  logic                          lsu_resp_valid_i,         // data-side response 有效；store/error response 不使用 rdata。
-    input  logic [core_pkg::XLEN-1:0]     lsu_resp_rdata_i,         // LSU load 返回的 32 bit 原始 word 数据，仅 response OK 且当前为 load 时有意义。
-    input  logic                          lsu_resp_error_i,         // data response error，当前主要由未映射地址或未知 MMIO offset 产生。
+    output data_bus_pkg::data_req_t       lsu_req_o,                // LSU load/store request payload。
+        // 访存反馈信号
+    input  data_bus_pkg::data_resp_t      lsu_resp_i,               // data-side response；store/error response 不使用 rdata。
 
     // 控制信号
     output logic                          mem_wait_o,               // 当前 MEM 指令因为 data transaction 未完成而必须 hold。
@@ -82,11 +76,12 @@ module mem_stage (
     output logic                          mem_complete_o            // 当前指令的 MEM 边界本拍可完成
 );
     import core_pkg::*;
+    import data_bus_pkg::*;
 
     assign valid_o = valid_i & mem_complete_o;
     // 按地址偏移右移并低位对齐后取出的原始 load 数据，尚未做符号/零扩展。
     // 仅当正确的 load 指令返回结果有意义
-    wire [XLEN-1:0] load_raw = (lsu_resp_rdata_i >> {alu_result_i[1:0], 3'b000}) &
+    wire [XLEN-1:0] load_raw = (lsu_resp_i.rdata >> {alu_result_i[1:0], 3'b000}) &
                                (mem_size_i == MEM_WORD ? 32'hffffffff :
                                (mem_size_i == MEM_HALF ? 32'h0000ffff : 32'h000000ff));
     assign load_data_o       =  mem_size_i == MEM_WORD ? load_raw :
@@ -102,9 +97,9 @@ module mem_stage (
     assign store_misaligned_o   = valid_i & mem_misaligned_o & mem_we_i;
 
     // 访问错误异常（EXCEPTION_CAUSE_LOAD_ACCESS_FAULT, EXCEPTION_CAUSE_STORE_ACCESS_FAULT）。
-    // lsu_resp_valid_i 由 data-side 协议保证只对应已接受的当前事务，支持的错误类型查看 data_subsystem.sv。
-    assign load_access_fault_o  = valid_i & (lsu_resp_valid_i & lsu_resp_error_i) & mem_re_i;
-    assign store_access_fault_o = valid_i & (lsu_resp_valid_i & lsu_resp_error_i) & mem_we_i;
+    // lsu_resp_i.valid 由 data-side 协议保证只对应已接受的当前事务，支持的错误类型查看 data_subsystem.sv。
+    assign load_access_fault_o  = valid_i & (lsu_resp_i.valid & lsu_resp_i.error) & mem_re_i;
+    assign store_access_fault_o = valid_i & (lsu_resp_i.valid & lsu_resp_i.error) & mem_we_i;
     assign mem_access_fault_o   = load_access_fault_o | store_access_fault_o;
 
     assign exception_valid_o    = exception_valid_i | mem_misaligned_o | mem_access_fault_o;
@@ -122,8 +117,8 @@ module mem_stage (
     // 保证访存副作用最多一次（即一个访存指令只被接受一次），引入状态机
     logic req_outstanding_q;    // 为 1 表示当前访存请求已被接受，等待响应中。此时不应再发出访存请求。
     // 支持 0 wait-state，类似于同步单级 FIFO（支持空直通）语义。
-    wire   request_accepted = lsu_req_valid_o & lsu_req_ready_i;  // 本拍被接受
-    assign transaction_complete_o = lsu_resp_valid_i & (req_outstanding_q | request_accepted);   // 已被接受并响应（多拍或同拍均可）
+    wire   request_accepted = lsu_req_o.valid & lsu_req_ready_i;  // 本拍被接受
+    assign transaction_complete_o = lsu_resp_i.valid & (req_outstanding_q | request_accepted);   // 已被接受并响应（多拍或同拍均可）
     always_ff @(posedge clk_i or negedge rst_n_i) begin : REQ_OUTSTANDING_CTRL
         if (!rst_n_i) begin
             req_outstanding_q <= 1'b0;
@@ -139,13 +134,13 @@ module mem_stage (
     end
 
     // 访存输出信号
-    assign lsu_req_valid_o  = mem_access & !req_outstanding_q;  // 需要访存且未被接受
-    assign lsu_req_write_o  = lsu_req_valid_o & mem_we_i;       // 仅 lsu_req_valid_o = 1 时有意义
-    assign lsu_req_be_o     =(mem_size_i == MEM_WORD ? 4'b1111 : 4'b0000) |
+    assign lsu_req_o.valid  = mem_access & !req_outstanding_q;  // 需要访存且未被接受
+    assign lsu_req_o.write  = lsu_req_o.valid & mem_we_i;       // 仅 lsu_req_o.valid = 1 时有意义
+    assign lsu_req_o.be     =(mem_size_i == MEM_WORD ? 4'b1111 : 4'b0000) |
                              (mem_size_i == MEM_HALF ? 4'b0011 << alu_result_i[1:0] : 4'b0000) |
                              (mem_size_i == MEM_BYTE ? 4'b0001 << alu_result_i[1:0] : 4'b0000);
-    assign lsu_req_addr_o   = alu_result_i;
-    assign lsu_req_wdata_o  = store_data_i << {alu_result_i[1:0], 3'b000};
+    assign lsu_req_o.addr   = alu_result_i;
+    assign lsu_req_o.wdata  = store_data_i << {alu_result_i[1:0], 3'b000};
 
     assign mem_wait_o       =  mem_access & !transaction_complete_o;
     assign mem_complete_o   = !mem_access |  transaction_complete_o;    // = !mem_wait_o

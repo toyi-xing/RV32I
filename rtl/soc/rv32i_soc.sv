@@ -6,7 +6,7 @@
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
 //   - 本模块集成固定响应 IMEM、data-side simple bus 和最小 MMIO 外设。
 //   - CPU core、外置 IMEM、外置 DMEM/MMIO 数据子系统在本层连接，具体 data 地址译码和 wait-state 注入由 data_subsystem 完成。
-//   - data 观察口按 request/response 分组命名，避免混淆 request 意图和 response completion。
+//   - data 观察口按 request/response 结构体分组，避免混淆 request 意图和 response completion。
 //
 // 功能：
 //   - 实例化 core 作为 CPU core。
@@ -51,15 +51,8 @@ module rv32i_soc (
     // ----------------------------以下为 commit/观察口-----------------------------------------
     // data request/response 观察口；load/store 既可能访问 DMEM，也可能访问外设寄存器。
     output logic                          data_req_ready_o,      // data-side 握手：本拍可接受 request。
-    output logic                          data_req_valid_o,      // core 发起 LSU request。
-    output logic                          data_req_write_o,      // 1=store，0=load。
-    output logic [3:0]                    data_req_be_o,         // LSU request byte enable。
-    output logic [core_pkg::XLEN-1:0]     data_req_addr_o,       // LSU request 地址。
-    output logic [core_pkg::XLEN-1:0]     data_req_wdata_o,      // LSU request store 写数据。
-
-    output logic                          data_resp_valid_o,     // data-side response 有效。
-    output logic [core_pkg::XLEN-1:0]     data_resp_rdata_o,     // data-side response 读数据。
-    output logic                          data_resp_error_o,     // data-side response 错误（未映射/非法）。
+    output data_bus_pkg::data_req_t       data_req_o,            // core 发起的 LSU request。
+    output data_bus_pkg::data_resp_t      data_resp_o,           // data-side response。
 
 
     output logic                          dmem_access_o,         // 本拍 data access 是否命中 DMEM。
@@ -93,6 +86,7 @@ module rv32i_soc (
     output logic                          meip_o,                // MEIP = gpio0_irq_o | uart0_irq_o。
     output logic                          mtip_o                 // MTIP = timer0_irq_o。
 );
+    import data_bus_pkg::*;
 
     // interrupt 汇总
     wire   meip   = gpio0_irq_o | uart0_irq_o;
@@ -108,15 +102,8 @@ module rv32i_soc (
         .imem_addr_o            (imem_addr_o),
 
         .lsu_req_ready_i        (data_req_ready_o),
-        .lsu_req_valid_o        (data_req_valid_o),
-        .lsu_req_write_o        (data_req_write_o),
-        .lsu_req_be_o           (data_req_be_o),
-        .lsu_req_addr_o         (data_req_addr_o),
-        .lsu_req_wdata_o        (data_req_wdata_o),
-
-        .lsu_resp_valid_i       (data_resp_valid_o),
-        .lsu_resp_rdata_i       (data_resp_rdata_o),
-        .lsu_resp_error_i       (data_resp_error_o),
+        .lsu_req_o              (data_req_o),
+        .lsu_resp_i             (data_resp_o),
 
         .mtip_i                 (mtip),
         .meip_i                 (meip),
@@ -145,15 +132,8 @@ module rv32i_soc (
         .rst_n_i               (rst_n_i),
 
         .core_req_ready_o      (data_req_ready_o),
-        .core_req_valid_i      (data_req_valid_o),
-        .core_req_write_i      (data_req_write_o),
-        .core_req_be_i         (data_req_be_o),
-        .core_req_addr_i       (data_req_addr_o),
-        .core_req_wdata_i      (data_req_wdata_o),
-        
-        .core_resp_valid_o     (data_resp_valid_o),
-        .core_resp_rdata_o     (data_resp_rdata_o),
-        .core_resp_error_o     (data_resp_error_o),
+        .core_req_i            (data_req_o),
+        .core_resp_o           (data_resp_o),
 
         .dmem_we_o             (dmem_we_o),
         .dmem_be_o             (dmem_be_o),
