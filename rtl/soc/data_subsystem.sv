@@ -1,22 +1,22 @@
 //------------------------------------------------------------------------------
 // 文件      : rtl/soc/data_subsystem.sv
-// 用途      : core LSU 数据访问与具体数据设备之间的固定响应译码层。
+// 用途      : core LSU simple data bus 与具体数据设备之间的译码/响应包装层。
 //
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 当前是固定响应译码层，没有 ready/valid backpressure。
-//   - core_re_i/core_we_i 来自 core.lsu_re_o/lsu_we_o。
-//   - core_access_fault_o 接回 core.lsu_access_fault_i。
-//   - dmem_access_o/mmio_access_o 只是观察信号，给 testbench 做统计或波形 debug。
+//   - core 侧使用单 outstanding request/response 简化 data bus。
+//   - core_req_valid_i/core_req_ready_o 接受一次 load/store request。
+//   - core_resp_valid_o/core_resp_error_o 返回该 request 的完成结果。
+//   - dmem_access_o/mmio_access_o 是 accepted request 命中观察信号，给 testbench 做统计或波形 debug。
 //
 // 功能：
-//   - 接收 core 的 lsu_* request（re/we/be/addr/wdata）。
+//   - 接收 core 的 data request（valid/write/be/addr/wdata）。
 //   - 判断地址命中 DMEM、UART0、GPIO0、TIMER0，还是未映射。
 //   - 通过外置固定响应 DMEM 端口访问上层连接的 simple_ram/DMEM model。
 //   - 实例化 mmio_uart、mmio_gpio、mmio_timer32。
-//   - 对 store，只把写使能送到命中的设备。
-//   - 对 load，返回命中设备的 32-bit rdata。
-//   - 对未映射 load/store，返回 core_access_fault_o = 1，读数据返回 0。
+//   - 在 request accepted 当拍访问固定响应 DMEM/MMIO target，并锁存 rdata/error。
+//   - 根据 TB 配置的 delay cycles 同拍或延迟返回 response。
+//   - 对未映射 load/store，返回 response error，读数据返回 0。
 //   - 暴露 GPIO 输出、UART TX/RX 事件接口和 GPIO/UART/TIMER0 中断给 SoC/testbench。
 //------------------------------------------------------------------------------
 
@@ -25,14 +25,6 @@
 module data_subsystem (
     input  logic                      clk_i,
     input  logic                      rst_n_i,
-
-    // input  logic                      core_re_i,            // cpu 为 load 指令
-    // input  logic                      core_we_i,            // cpu 为 store 指令
-    // input  logic [3:0]                core_be_i,            // 字节使能
-    // input  logic [core_pkg::XLEN-1:0] core_addr_i,
-    // input  logic [core_pkg::XLEN-1:0] core_wdata_i,
-    // output logic [core_pkg::XLEN-1:0] core_rdata_o,
-    // output logic                      core_access_fault_o,  // core 发送的访存指令地址为定义（当前仅上报未映射地址/未知 offset，不实现权限错误）
 
     output logic                      core_req_ready_o,
     input  logic                      core_req_valid_i,
@@ -65,14 +57,14 @@ module data_subsystem (
     output logic                      uart0_irq_o,
     output logic                      timer0_irq_o,
 
-    // 供 tb mailbox 配置的 MEM 指令响应延迟
-    input  logic [7:0]                dmem_resp_delay_cycles_i,
-    input  logic [7:0]                gpio0_resp_delay_cycles_i,
-    input  logic [7:0]                uart0_resp_delay_cycles_i,
-    input  logic [7:0]                timer0_resp_delay_cycles_i,
+    // 供 tb mailbox 配置的 data target 响应延迟，默认 0 时等价于固定响应。
+    input  logic [6:0]                dmem_resp_delay_cycles_i,
+    input  logic [6:0]                gpio0_resp_delay_cycles_i,
+    input  logic [6:0]                uart0_resp_delay_cycles_i,
+    input  logic [6:0]                timer0_resp_delay_cycles_i,
 
-    output logic                      dmem_access_o,        // 观察信号：本拍访问命中 DMEM。
-    output logic                      mmio_access_o         // 观察信号：本拍访问命中 MMIO。
+    output logic                      dmem_access_o,        // 观察信号：本拍 accepted request 命中 DMEM。
+    output logic                      mmio_access_o         // 观察信号：本拍 accepted request 命中 MMIO。
 );
 
     import core_pkg::*;
@@ -122,14 +114,13 @@ module data_subsystem (
     wire req_undefined_valid = req_accept_fire & !mapped_hit;
 
     //======================================================================
-    // 固定响应的延时响应包装层 wrapper，用计数器假装一个非 0 延迟。使用 tb mailbox 控制外设响应延迟
-    // 即使上 FPGA 也可以模拟外设延迟响应
+    // 固定响应 target 的延时响应包装层，用计数器注入非 0 wait-state。
     // 固定响应 DMEM/MMIO 在 accepted request 当拍完成本体访问并锁存返回值，
     // wrapper 根据 TB 配置的 delay cycles 延后向 core 返回 response。
     // 后续真实慢 slave 可以替换该 wrapper，或自行按 simple bus 语义产生 response。
     //======================================================================
 
-    wire [7:0] req_delay_cycles = dmem_hit   ? dmem_resp_delay_cycles_i   :
+    wire [6:0] req_delay_cycles = dmem_hit   ? dmem_resp_delay_cycles_i   :
                                   gpio0_hit  ? gpio0_resp_delay_cycles_i  :
                                   uart0_hit  ? uart0_resp_delay_cycles_i  :
                                   timer0_hit ? timer0_resp_delay_cycles_i : '0;
@@ -141,7 +132,7 @@ module data_subsystem (
                        uart0_hit  ? uart0_access_fault  :
                        timer0_hit ? timer0_access_fault : 1'b0 ;
     reg       resp_delay_pending_q;     // 信号等价于 resp_pending_q，驱动与语义稍有差别便于理解
-    reg [7:0] resp_delay_cnt, req_delay_cycles_q;
+    reg [6:0] resp_delay_cnt, req_delay_cycles_q;
     reg                      resp_valid_q;
     reg [core_pkg::XLEN-1:0] resp_rdata_q;
     reg                      resp_error_q;
@@ -163,7 +154,7 @@ module data_subsystem (
                     resp_delay_pending_q <= 1'b1;           // 打开计数器
                     resp_delay_cnt <= 1;                    // 计数器 + 1
                     req_delay_cycles_q <= req_delay_cycles; // 锁存 req 脉冲外设的延迟拍数
-                    if (req_delay_cycles == 8'd1) begin  // 只延迟一拍时，本拍就应非阻塞赋值
+                    if (req_delay_cycles == 7'd1) begin  // 只延迟一拍时，本拍就应非阻塞赋值
                         resp_valid_q <= 1'b1;
                     end
                 end
@@ -184,7 +175,7 @@ module data_subsystem (
     end
 
     // 使用包装层接线
-    wire resp_zero_fire = req_accept_fire && (req_delay_cycles == 8'd0);    // 同拍响应脉冲
+    wire resp_zero_fire = req_accept_fire && (req_delay_cycles == 7'd0);    // 同拍响应脉冲
 
     wire                      resp_dmem_valid   = resp_zero_fire ? req_dmem_valid : (resp_valid_q & (resp_target_q == TARGET_DMEM));
     wire [core_pkg::XLEN-1:0] resp_dmem_rdata   = resp_zero_fire ? dmem_rdata_i : resp_rdata_q;
@@ -210,11 +201,6 @@ module data_subsystem (
     assign dmem_be_o    = core_req_be_i;
     assign dmem_addr_o  = dmem_hit ? core_req_addr_i : DMEM_BASE;
     assign dmem_wdata_o = core_req_wdata_i;
-        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
-    // wire                      resp_dmem_valid = req_dmem_valid;
-    // wire [core_pkg::XLEN-1:0] resp_dmem_rdata = dmem_rdata_i;
-
-
     wire [core_pkg::XLEN-1:0] gpio0_rdata;
     wire gpio0_access_fault;
     mmio_gpio #(
@@ -238,12 +224,6 @@ module data_subsystem (
 
         .gpio_irq_o     (gpio0_irq_o)
     );
-        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
-    // wire                      resp_gpio0_valid = req_gpio0_valid;    // 暂时同拍响应，未改外设延迟
-    // wire [core_pkg::XLEN-1:0] resp_gpio0_rdata = gpio0_rdata;
-    // wire                      resp_gpio0_error = gpio0_access_fault;
-
-
     wire [core_pkg::XLEN-1:0] uart0_rdata;
     wire uart0_access_fault;
     mmio_uart #(
@@ -269,11 +249,6 @@ module data_subsystem (
 
         .uart_irq_o     (uart0_irq_o)
     );
-        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
-    // wire                      resp_uart0_valid = req_uart0_valid;    // 暂时同拍响应，未改外设延迟
-    // wire [core_pkg::XLEN-1:0] resp_uart0_rdata = uart0_rdata;
-    // wire                      resp_uart0_error = uart0_access_fault;
-
     wire [core_pkg::XLEN-1:0] timer0_rdata;
     wire timer0_access_fault;
     mmio_timer32 #(
@@ -292,11 +267,6 @@ module data_subsystem (
 
         .timer32_irq_o  (timer0_irq_o)
     );
-        // 固定响应直通写法保留为对照；当前通过上方 wrapper 注入可配置 response delay。
-    // wire                      resp_timer0_valid = req_timer0_valid;    // 暂时同拍响应，未改外设延迟
-    // wire [core_pkg::XLEN-1:0] resp_timer0_rdata = timer0_rdata;
-    // wire                      resp_timer0_error = timer0_access_fault;
-
     // undefined
     wire resp_undefined_valid = req_undefined_valid;    // undefined 保持同拍响应
 

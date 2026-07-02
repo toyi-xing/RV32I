@@ -4,9 +4,10 @@
 //
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 当前是固定响应 MMIO register block，没有 ready/valid backpressure。
-//   - valid_i 表示地址已经命中该外设窗口。
-//   - access_fault_o 表示地址已命中本外设窗口，但 offset 或访问类型不被接受。
+//   - 本模块是固定响应 MMIO register block，本体不包含 ready/valid backpressure。
+//   - 在 0834 simple data bus 平台中，valid_i 由外层 wrapper 在 request accepted 当拍拉高一拍。
+//   - 外设寄存器访问和读写副作用发生在 valid_i 访问脉冲当拍；response 延迟不会重复访问本体。
+//   - access_fault_o 表示地址已命中本外设窗口，但 offset 未定义。
 //
 // 功能：
 //   - MTIME（offset 0x00）是 32-bit RW 计数器，使能时每个 clk 递增。
@@ -26,7 +27,7 @@ module mmio_timer32 #(
     input  logic                      clk_i,
     input  logic                      rst_n_i,
 
-    input  logic                      valid_i,         // 地址已命中 TIMER0 窗口。
+    input  logic                      valid_i,         // 外层 wrapper 已接受一次 TIMER0 访问；地址已命中 TIMER0 窗口。
     input  logic                      we_i,            // 本拍是对 TIMER0 的 store。
     input  logic [3:0]                be_i,            // byte enable，bit0 对应 wdata_i[7:0]。
     input  logic [core_pkg::XLEN-1:0] addr_i,          // 完整 byte address，内部用 addr_i - BASE_ADDR 得到 offset。

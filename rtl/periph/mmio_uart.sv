@@ -4,8 +4,9 @@
 //
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 当前是固定响应 MMIO register block，没有 ready/valid backpressure。
-//   - valid_i 表示地址已经命中该外设窗口。
+//   - 本模块是固定响应 MMIO register block，本体不包含 ready/valid backpressure。
+//   - 在 0834 simple data bus 平台中，valid_i 由外层 wrapper 在 request accepted 当拍拉高一拍。
+//   - 外设寄存器访问和读写副作用发生在 valid_i 访问脉冲当拍；response 延迟不会重复访问本体。
 //   - access_fault_o 只表示外设窗口内 offset 不存在，不负责判断整个地址是否命中外设。真正未映射地址由 data_subsystem 汇总判断。
 //
 // 功能：
@@ -30,8 +31,8 @@ module mmio_uart #(
     input  logic                      clk_i,
     input  logic                      rst_n_i,
 
-    input  logic                      valid_i,         // 地址已命中 UART 窗口。
-    input  logic                      re_i,            // 本拍确实是一个 load 指令。实际上 valid_i 已经确保是仿存指令，此处为通用加双重保险。
+    input  logic                      valid_i,         // 外层 wrapper 已接受一次 UART 访问；地址已命中 UART 窗口。
+    input  logic                      re_i,            // 本拍是一个 load 访问，用于门控读副作用。
     input  logic                      we_i,            // 本拍是对 UART 的 store。
     input  logic [3:0]                be_i,            // byte enable，bit0 对应 wdata_i[7:0]。
     input  logic [core_pkg::XLEN-1:0] addr_i,          // 完整 byte address，内部用 addr_i - BASE_ADDR 得到 offset。

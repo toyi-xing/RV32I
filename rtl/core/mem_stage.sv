@@ -39,24 +39,15 @@ module mem_stage (
     input  logic                          mem_we_i,        // 当前指令是否执行 store。
     input  core_pkg::mem_size_e           mem_size_i,      // 访存宽度：byte、halfword 或 word。
     input  logic                          mem_unsigned_i,  // load 是否零扩展；为 0 时表示符号扩展。
-    // input  logic [core_pkg::XLEN-1:0]     lsu_rdata_i,     // LSU load 返回的 32 bit 原始 word 数据。
 
     // 流水线输出
     output logic                          valid_o,         // 送入 MEM/WB 的 valid（不必送入 data_subsystem，re 和 we 已包含该信息）
     output logic [core_pkg::XLEN-1:0]     load_data_o,     // 送往 WB 的 32 bit load 扩展结果。
 
-    // output logic                          lsu_re_o,        // LSU load 读请求；地址不对齐或前级已有 exception 时不发起访问。
-    //                                                        // simple_ram 无需读使能，但此处可以作为 WB 阶段写回判定。
-    // output logic                          lsu_we_o,        // LSU store 写请求；地址不对齐或前级已有 exception 时不发起访问。
-    // output logic [3:0]                    lsu_be_o,        // LSU store byte enable，如：SH x1, 0(x2) → 写 2 个字节 → be = 0011 / 1100
-    // output logic [core_pkg::XLEN-1:0]     lsu_addr_o,      // LSU load/store 地址。
-    // output logic [core_pkg::XLEN-1:0]     lsu_wdata_o,     // LSU 按 byte lane 对齐后的 store 数据。
-
     // trap 相关输入
     input  logic                          exception_valid_i,   // 前级已经发现的 exception 是否有效。
     input  core_pkg::excp_cause_e         exception_cause_i,   // 前级 exception cause。
     input  logic [core_pkg::XLEN-1:0]     exception_tval_i,    // 前级 exception tval。
-    // input  logic                          lsu_access_fault_i,  // 当前有效 load/store 地址没有命中已实现 data region。
 
     // trap 相关输出
     output logic                          exception_valid_o,    // MEM 边界最终 exception 是否有效，包含前级透传和本级 misaligned。

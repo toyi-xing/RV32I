@@ -15,7 +15,7 @@
 //   - commit_instr_id_o 为仿真 trace 观察口，沿用 commit_* 分组命名。
 //   - 本模块实现 IF/ID/EX/MEM/WB 五级流水线顶层连接。
 //   - 外接 imem 和 LSU 数据侧接口，不在 core 内部实例化具体 memory。
-//   - 当前假设 imem/LSU 数据侧固定响应，没有 valid/ready 握手。
+//   - 当前 IMEM 仍为固定响应；LSU 数据侧使用单 outstanding req/resp 握手。
 //
 // 功能：
 //   - 连接 pc_reg、if_stage、id_stage、ex_stage、mem_stage、wb_stage、regfile、csr_file 和 trap_ctrl。
@@ -35,13 +35,6 @@ module core (
     input  logic [core_pkg::ILEN-1:0]     imem_rdata_i,         // imem 返回的 32 bit instruction。
     output logic [core_pkg::XLEN-1:0]     imem_addr_o,          // 输出给 imem 的取指地址。
 
-    // output logic                          lsu_re_o,             // LSU load 读请求。
-    // output logic                          lsu_we_o,             // LSU store 写请求。
-    // output logic [3:0]                    lsu_be_o,             // LSU store byte enable。
-    // output logic [core_pkg::XLEN-1:0]     lsu_addr_o,           // LSU load/store 地址，外部负责判断命中 DMEM/MMIO/未映射区域。
-    // output logic [core_pkg::XLEN-1:0]     lsu_wdata_o,          // LSU 已按 byte lane 对齐的 store 数据。
-    // input  logic [core_pkg::XLEN-1:0]     lsu_rdata_i,          // LSU load 返回的 32 bit 原始 word 数据。
-    // input  logic                          lsu_access_fault_i,   // LSU data access 命中未映射或非法 data 地址。
     // 可变延迟访存总线
     input  logic                          lsu_req_ready_i,          // data-side 可以接受本拍 request；valid && !ready 时 MEM 需要保持等待。
     output logic                          lsu_req_valid_o,          // 当前 MEM 指令需要发起真实 load/store request，指令无效或已有 exception 时不拉高。
@@ -74,7 +67,10 @@ module core (
     output logic [4:0]                    trap_cause_code_o,    // 当前 trap entry 的 cause code，配合 trap_is_interrupt_o 区分异常和中断。
     output logic [core_pkg::XLEN-1:0]     trap_tval_o,          // 异常相关附加值（mtval 写入值）。
     output logic                          trap_return_o,        // MRET 返回事件有效。
-    output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o    // trap 或 MRET 的跳转目标 PC。
+    output logic [core_pkg::XLEN-1:0]     trap_redirect_pc_o,   // trap 或 MRET 的跳转目标 PC。
+
+    // 流水线暂停观察
+    output logic                          mem_wait_o            // 因 mem wait 导致的流水线暂停
 );
     import core_pkg::*;
     import pipeline_pkg::*;
@@ -701,7 +697,7 @@ module core (
     assign mem_wb_data_d.csr_rdata     = mem_csr_rdata;
 
     wb_stage u_wb_stage (
-        .valid_i        (mem_wb_commit_valid),
+        .valid_i        (mem_wb_commit_valid),  // 指令一旦流入 wb 阶段比被提交，因此副作用、提交 valid 需要用脉冲 mem_wb_commit_valid
         .reg_we_i       (mem_wb_data_q.reg_we),
         .rd_addr_i      (mem_wb_data_q.rd_addr),
         .wb_sel_i       (mem_wb_data_q.wb_sel),
@@ -723,6 +719,8 @@ module core (
     assign commit_reg_we_o   = wb_rd_we;
     assign commit_rd_addr_o  = wb_rd_addr;
     assign commit_rd_wdata_o = wb_rd_wdata;
+
+    assign mem_wait_o = mem_wait;
 
 endmodule
 

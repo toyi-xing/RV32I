@@ -8,7 +8,7 @@
 software_address = instance_BASE_ADDR + register_offset
 ```
 
-当前三个外设都是固定响应 register block，没有软件可见 wait state 或 backpressure。`access_fault_o` 当前只检测未知 offset：访问未定义 offset 时拉高；写 RO、读 WO、写保留 bit 等访问类型或字段错误当前不额外触发 fault。
+当前三个外设本体都是固定响应 register block，寄存器 ABI 不包含软件可见的 ready/valid 信号。若系统外层使用 simple data bus wrapper 注入 wait-state，则寄存器访问和读写副作用仍发生在 request accepted 当拍；response 延迟只影响 CPU 看到访问完成的时间，不会让外设本体被重复访问。`access_fault_o` 当前只检测未知 offset：访问未定义 offset 时拉高；写 RO、读 WO、写保留 bit 等访问类型或字段错误当前不额外触发 fault。
 
 通用访问属性：
 

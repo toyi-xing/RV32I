@@ -9,6 +9,7 @@
 //
 // 功能：
 //   - 产生 clk/rst 驱动 rv32i_soc，并连接固定响应 IMEM/DMEM 仿真模型。
+//   - 通过 TB mailbox 配置 data-side target response delay，用于验证 MEM backpressure。
 //   - 驱动 gpio0_in 为固定值，供 MMIO GPIO 读取。
 //   - 当前 UART0 RX 事件固定拉低；后续 interrupt directed test 会改为 task 注入。
 //   - 在每次提交时打印当前指令的 PC、原始指令、指令类型、rd 写使能和写回数据。
@@ -50,15 +51,6 @@ module tb_rv32i_soc;
     // rv32i_soc 接口信号
     // -------------------------------------------------------------------------
 
-    logic [31:0]                   gpio0_in;
-    logic [31:0]                   gpio0_out;
-    logic [31:0]                   gpio0_oe;
-
-    logic                          uart0_tx_valid;
-    logic [7:0]                    uart0_tx_data;
-    logic                          uart0_rx_valid;
-    logic [7:0]                    uart0_rx_data;
-
     logic [core_pkg::XLEN-1:0]     imem_addr;
     logic [core_pkg::ILEN-1:0]     imem_rdata;
 
@@ -68,13 +60,30 @@ module tb_rv32i_soc;
     logic [core_pkg::XLEN-1:0]     dmem_wdata;
     logic [core_pkg::XLEN-1:0]     dmem_rdata;
 
-    logic                          data_re;
-    logic                          data_we;
-    logic [3:0]                    data_be;
-    logic [core_pkg::XLEN-1:0]     data_addr;
-    logic [core_pkg::XLEN-1:0]     data_wdata;
-    logic [core_pkg::XLEN-1:0]     data_rdata;
-    logic                          data_access_fault;
+    logic [31:0]                   gpio0_in;
+    logic [31:0]                   gpio0_out;
+    logic [31:0]                   gpio0_oe;
+
+    logic                          uart0_tx_valid;
+    logic [7:0]                    uart0_tx_data;
+    logic                          uart0_rx_valid;
+    logic [7:0]                    uart0_rx_data;
+
+    logic [6:0]                    dmem_resp_delay_cycles;
+    logic [6:0]                    gpio0_resp_delay_cycles;
+    logic [6:0]                    uart0_resp_delay_cycles;
+    logic [6:0]                    timer0_resp_delay_cycles;
+
+    logic                          data_req_ready;
+    logic                          data_req_valid;
+    logic                          data_req_write;
+    logic [3:0]                    data_req_be;
+    logic [core_pkg::XLEN-1:0]     data_req_addr;
+    logic [core_pkg::XLEN-1:0]     data_req_wdata;
+
+    logic                          data_resp_valid;
+    logic [core_pkg::XLEN-1:0]     data_resp_rdata;
+    logic                          data_resp_error;
 
     logic                          dmem_access;
     logic                          mmio_access;
@@ -95,6 +104,8 @@ module tb_rv32i_soc;
     logic                          trap_return;
     logic [core_pkg::XLEN-1:0]     trap_redirect_pc;
 
+    logic                          mem_wait;
+
     logic                          gpio0_irq;
     logic                          uart0_irq;
     logic                          timer0_irq;
@@ -114,6 +125,7 @@ module tb_rv32i_soc;
     localparam logic [core_pkg::XLEN-1:0] TB_GPIO0_CLR_MASK_ADDR   = TB_CMD_BASE + 32'h04;
     localparam logic [core_pkg::XLEN-1:0] TB_GPIO0_PULSE_CMD_ADDR  = TB_CMD_BASE + 32'h08;
     localparam logic [core_pkg::XLEN-1:0] TB_UART0_RX_ADDR         = TB_CMD_BASE + 32'h0c;
+    localparam logic [core_pkg::XLEN-1:0] TB_RESP_DELAY_CFG0       = TB_CMD_BASE + 32'h10;
 
     // gpio0[31]、gpio0[30] 接时钟信号
     localparam int   TB_GPIO0_FAST_PERIODIC_BIT  = 30;
@@ -146,13 +158,21 @@ module tb_rv32i_soc;
         .uart0_rx_valid_i      (uart0_rx_valid),
         .uart0_rx_data_i       (uart0_rx_data),
 
-        .data_re_o             (data_re),
-        .data_we_o             (data_we),
-        .data_be_o             (data_be),
-        .data_addr_o           (data_addr),
-        .data_wdata_o          (data_wdata),
-        .data_rdata_o          (data_rdata),
-        .data_access_fault_o   (data_access_fault),
+        .dmem_resp_delay_cycles_i   (dmem_resp_delay_cycles),
+        .gpio0_resp_delay_cycles_i  (gpio0_resp_delay_cycles),
+        .uart0_resp_delay_cycles_i  (uart0_resp_delay_cycles),
+        .timer0_resp_delay_cycles_i (timer0_resp_delay_cycles),
+
+        .data_req_ready_o      (data_req_ready),
+        .data_req_valid_o      (data_req_valid),
+        .data_req_write_o      (data_req_write),
+        .data_req_be_o         (data_req_be),
+        .data_req_addr_o       (data_req_addr),
+        .data_req_wdata_o      (data_req_wdata),
+
+        .data_resp_valid_o     (data_resp_valid),
+        .data_resp_rdata_o     (data_resp_rdata),
+        .data_resp_error_o     (data_resp_error),
 
         .dmem_access_o         (dmem_access),
         .mmio_access_o         (mmio_access),
@@ -172,6 +192,8 @@ module tb_rv32i_soc;
         .trap_tval_o           (trap_tval),
         .trap_return_o         (trap_return),
         .trap_redirect_pc_o    (trap_redirect_pc),
+
+        .mem_wait_o            (mem_wait),
 
         .gpio0_irq_o           (gpio0_irq),
         .uart0_irq_o           (uart0_irq),
@@ -199,20 +221,32 @@ module tb_rv32i_soc;
     // -------------------------------------------------------------------------
     // TB 命令执行：监听 DMEM store，驱动外部激励
     // -------------------------------------------------------------------------
+    localparam logic [XLEN-1:0] RESET_RESP_DELAY_CFG = 32'h0000_0000;   // dmem、外设的默认 resp 响应延迟配置
+    logic [31:0] resp_delay_cfg0;
     always_ff @(posedge clk) begin
         if (!rst_n) begin    // soc rst 期间输出无意义
-            gpio0_in[29:0] <= 30'hA5A55A5A;
-            uart0_rx_valid <= 1'b0;
-            uart0_rx_data  <= '0;
+            gpio0_in[29:0]  <= 30'hA5A55A5A;
+            uart0_rx_valid  <= 1'b0;
+            uart0_rx_data   <= '0;
+            resp_delay_cfg0 <= RESET_RESP_DELAY_CFG;
+            dmem_resp_delay_cycles   <= RESET_RESP_DELAY_CFG[6:0];
+            gpio0_resp_delay_cycles  <= RESET_RESP_DELAY_CFG[14:8];
+            uart0_resp_delay_cycles  <= RESET_RESP_DELAY_CFG[22:16];
+            timer0_resp_delay_cycles <= RESET_RESP_DELAY_CFG[30:24];
         end
-        else if (dmem_we) begin
-            unique case (data_addr)
-                TB_GPIO0_SET_MASK_ADDR:  gpio0_set(data_wdata);
-                TB_GPIO0_CLR_MASK_ADDR:  gpio0_clear(data_wdata);
-                TB_GPIO0_PULSE_CMD_ADDR: gpio0_pulse(data_wdata);
-                TB_UART0_RX_ADDR:        uart0_rx(data_wdata);
-                default: ;
-            endcase
+        // 直接使用 dmem 接受的结果，无需再判断握手
+        else begin
+            random_resp_delay_stimulus();
+            if (dmem_we) begin
+                unique case (dmem_addr)
+                    TB_GPIO0_SET_MASK_ADDR:  gpio0_set(dmem_wdata);
+                    TB_GPIO0_CLR_MASK_ADDR:  gpio0_clear(dmem_wdata);
+                    TB_GPIO0_PULSE_CMD_ADDR: gpio0_pulse(dmem_wdata);
+                    TB_UART0_RX_ADDR:        uart0_rx(dmem_wdata);
+                    TB_RESP_DELAY_CFG0:      set_resp_delay_cfg0(dmem_wdata);
+                    default: ;
+                endcase
+            end
         end
     end
 
@@ -260,6 +294,49 @@ module tb_rv32i_soc;
         uart0_rx_valid <= 1'b1;
         @(posedge clk);
         uart0_rx_valid <= 1'b0;
+    endtask
+    // 包含 dmem、gpio0、uart0、timer0 的访问延迟设置
+        // 随机数函数
+    function automatic logic [6:0] random_delay(input logic [6:0] max_delay);
+        int unsigned r;
+        begin
+            if (max_delay == 7'b0) begin
+                random_delay = 7'b0;
+            end else begin
+                r = $urandom_range({25'b0,max_delay},0);
+                random_delay = r[6:0];
+            end
+        end
+    endfunction
+        // 配置 cfg 与首次驱动激励
+    task automatic set_resp_delay_cfg0(input [31:0] cfg);
+        resp_delay_cfg0 <= cfg;
+        dmem_resp_delay_cycles   <= cfg[7]  ? random_delay(cfg[6:0])   : cfg[6:0];
+        gpio0_resp_delay_cycles  <= cfg[15] ? random_delay(cfg[14:8])  : cfg[14:8];
+        uart0_resp_delay_cycles  <= cfg[23] ? random_delay(cfg[22:16]) : cfg[22:16];
+        timer0_resp_delay_cycles <= cfg[31] ? random_delay(cfg[30:24]) : cfg[30:24];
+    endtask
+    // dmem、gpio0、uart0、timer0 的随机访问延迟激励
+    wire data_req_fire = data_req_valid & data_req_ready;
+    wire dmem_hit   = (data_req_addr >= DMEM_BASE)   & (data_req_addr < DMEM_BASE   + DMEM_SIZE_BYTES);
+    wire gpio0_hit  = (data_req_addr >= GPIO0_BASE)  & (data_req_addr < GPIO0_BASE  + GPIO0_SIZE_BYTES);
+    wire uart0_hit  = (data_req_addr >= UART0_BASE)  & (data_req_addr < UART0_BASE  + UART0_SIZE_BYTES);
+    wire timer0_hit = (data_req_addr >= TIMER0_BASE) & (data_req_addr < TIMER0_BASE + TIMER0_SIZE_BYTES);
+    task automatic random_resp_delay_stimulus();
+        if (data_req_fire) begin
+            if (dmem_hit   && resp_delay_cfg0[7]) begin
+                dmem_resp_delay_cycles   <= random_delay(resp_delay_cfg0[6:0]);
+            end
+            if (gpio0_hit  && resp_delay_cfg0[15]) begin
+                gpio0_resp_delay_cycles  <= random_delay(resp_delay_cfg0[14:8]);
+            end
+            if (uart0_hit  && resp_delay_cfg0[23]) begin
+                uart0_resp_delay_cycles  <= random_delay(resp_delay_cfg0[22:16]);
+            end
+            if (timer0_hit && resp_delay_cfg0[31]) begin
+                timer0_resp_delay_cycles <= random_delay(resp_delay_cfg0[30:24]);
+            end
+        end
     endtask
 
     // -------------------------------------------------------------------------
@@ -314,8 +391,8 @@ module tb_rv32i_soc;
     wire [core_pkg::XLEN-1:0] current_sp = u_soc.u_core.u_regfile.gpr_q[2];
     wire dmem_access_for_stats = rst_n
                               && dmem_access
-                              && (data_re || data_we)
-                              && (data_addr != TEST_STATUS_ADDR);
+                              && data_req_valid
+                              && (data_req_addr != TEST_STATUS_ADDR);
     wire sp_in_dmem_range = (current_sp >= core_pkg::DMEM_BASE) && (current_sp <= STACK_TOP_ADDR);
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -329,11 +406,11 @@ module tb_rv32i_soc;
         end else begin
             if (dmem_access_for_stats) begin
                 dmem_access_seen <= 1'b1;
-                if (!dmem_access_seen || data_addr < dmem_min_addr) begin
-                    dmem_min_addr <= data_addr;
+                if (!dmem_access_seen || data_req_addr < dmem_min_addr) begin
+                    dmem_min_addr <= data_req_addr;
                 end
-                if (!dmem_access_seen || data_addr > dmem_max_addr) begin
-                    dmem_max_addr <= data_addr;
+                if (!dmem_access_seen || data_req_addr > dmem_max_addr) begin
+                    dmem_max_addr <= data_req_addr;
                 end
             end
 
@@ -396,6 +473,18 @@ module tb_rv32i_soc;
             $display("[TRAP_RETURN] trap_redirect_pc:0x%08h", trap_redirect_pc);
         end
 
+        if (data_req_valid && data_req_ready) begin
+            $display("^^^^^^^^^^  this cycle accept data_req   ^^^^^^^^^^");
+        end
+        if (mem_wait) begin
+            $display("^^^^^^^^^^        pipeline pausing       ^^^^^^^^^^");
+            $display("################ [%0d][MEM_WAIT] req_valid=%0b req_ready=%0b resp_valid=%0b addr=0x%08h ################",
+                  cycle_cnt, data_req_valid, data_req_ready, data_resp_valid, data_req_addr);
+        end
+        if (data_resp_valid) begin
+            $display("^^^^^^^^^^  this cycle happen data_resp  ^^^^^^^^^^");
+        end
+
         if (test_done) begin
             if (test_passed) begin
                 $display("PASS after %0d cycles", cycle_cnt);
@@ -422,10 +511,10 @@ module tb_rv32i_soc;
             test_done         <= 1'b0;
             test_passed       <= 1'b0;
             test_status_value <= '0;
-        end else if (dmem_we && data_addr == TEST_STATUS_ADDR) begin
+        end else if (dmem_we && dmem_addr == TEST_STATUS_ADDR) begin
             test_done         <= 1'b1;
-            test_passed       <= (data_wdata == TEST_PASS_VALUE);
-            test_status_value <= data_wdata;
+            test_passed       <= (dmem_wdata == TEST_PASS_VALUE);
+            test_status_value <= dmem_wdata;
         end
     end
 
