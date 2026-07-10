@@ -84,6 +84,7 @@
 | `sim/` | 编译和仿真脚本（按汇编/C 分目录） |
 | `sw/` | 汇编和 C 裸机测试程序 |
 | `tb/` | testbench（当前维护 SoC 级 testbench） |
+| `uvm/` | 按 release/验证对象归档的独立 UVM 工作区；当前 `v6_0/simple_bus` 处于 0835 开发阶段 |
 
 ---
 

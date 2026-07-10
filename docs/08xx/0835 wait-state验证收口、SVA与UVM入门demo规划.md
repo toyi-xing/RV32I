@@ -172,9 +172,12 @@ Verilator 的优势是快。它适合每次 RTL 修改后快速确认“CPU 还�
 0835 新增的验证能力建议放在 VCS 路径：
 
 ```text
-sim/uvm_simple_bus
-tb/uvm/simple_bus
+uvm/v6_0/simple_bus/dut
+uvm/v6_0/simple_bus/sim
+uvm/v6_0/simple_bus/tb
 ```
+
+当前 simple data bus 语义绑定项目 v6.0 release，因此保存最小 DUT RTL/ABI 快照，并让验证源码和仿真脚本使用同一个版本化工作区。不同 release 若接口或协议语义发生变化，应建立独立目录和 verification spec，不应把同名 package/class/module 混入同一个 filelist。
 
 原因：
 
@@ -620,38 +623,44 @@ coverage 的作用是回答：
 
 ### 9.1 目录划分
 
-建议新增验证目录，但不影响现有 SoC directed test：
+建议新增独立验证工作区，但不影响现有 SoC directed test：
 
 ```text
-tb/
-  sv/
-    tb_rv32i_soc.sv
-
-  uvm/
+uvm/
+  readme.md
+  v6_0/
     simple_bus/
-      simple_bus_if.sv
-      simple_bus_assert.sv
-      simple_bus_pkg.sv
-      simple_bus_item.sv
-      simple_bus_sequencer.sv
-      simple_bus_driver.sv
-      simple_bus_monitor.sv
-      simple_bus_agent.sv
-      simple_bus_scoreboard.sv
-      simple_bus_env.sv
-      simple_bus_base_test.sv
-      simple_bus_smoke_test.sv
-      simple_bus_random_wait_test.sv
-      tb_data_subsystem_uvm.sv
-
-sim/
-  uvm_simple_bus/
-    filelist.f
-    run_test.sh
-    run_all.sh
+      spec.md
+      dut/
+        README.md
+        rtl/
+          common/
+          mem/
+          periph/
+          soc/
+        docs/
+      tb/
+        simple_bus_if.sv
+        simple_bus_assert.sv
+        simple_bus_pkg.sv
+        simple_bus_item.sv
+        simple_bus_sequencer.sv
+        simple_bus_driver.sv
+        simple_bus_monitor.sv
+        simple_bus_agent.sv
+        simple_bus_scoreboard.sv
+        simple_bus_env.sv
+        simple_bus_base_test.sv
+        simple_bus_smoke_test.sv
+        simple_bus_random_wait_test.sv
+        tb_data_subsystem_uvm.sv
+      sim/
+        filelist.f
+        run_test.sh
+        run_all.sh
 ```
 
-这只是建议结构，不是强制施工步骤。实际实现时可以先合并文件，等环境稳定后再拆细。
+版本目录应保留独立 spec、DUT 来源说明和最小 RTL/ABI 快照，使本环境不依赖未来主线继续保留 `data_subsystem`。UVM 文件拆分只是建议结构，不是强制施工步骤；实际实现时可以先合并文件，等环境稳定后再拆细。
 
 ### 9.2 filelist 和 package 关系
 
@@ -673,6 +682,7 @@ UVM top
 - DUT RTL 后编译。
 - UVM class package 再编译。
 - top 最后编译。
+- v6.0 filelist 只引用本工作区 `dut/rtl` 快照，不引用根目录主线 `rtl/`。
 
 ### 9.3 VCS 脚本口径
 
@@ -700,7 +710,7 @@ sim/soc_c
 新目录只负责：
 
 ```text
-sim/uvm_simple_bus
+uvm/v6_0/simple_bus/sim
 ```
 
 不要把 UVM 编译选项塞进现有 Verilator 脚本，也不要让现有 directed test 依赖 VCS。

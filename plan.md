@@ -1,1866 +1,1789 @@
-# v5.0 data-side 可变延迟 memory/MMIO、简化内部总线与 backpressure 执行计划
+# v6.0 wait-state 验证收口、SVA 与 UVM 入门 demo 执行计划
 
 当前工程已经完成：
 
 - RV32I 五级流水线主路径。
-- forwarding、load-use stall、CSR-use stall 和 branch/JAL/JALR redirect。
 - 最小 M-mode CSR/trap、`ECALL/EBREAK/MRET` 和 Zicsr。
-- SoC 地址图、DMEM/MMIO 译码、GPIO0、UART0、TIMER0。
-- machine timer interrupt 与 machine external interrupt。
-- SoC 级汇编/C directed tests 和 TB mailbox 外部激励协议。
+- SoC 地址图、GPIO0、UART0、TIMER0、machine timer/external interrupt。
+- data-side simple data bus、single outstanding、MEM backpressure。
+- DMEM/MMIO response delay wrapper 和 TB mailbox delay 配置。
+- SoC 级 Verilator ASM/C 自检回归。
 
-本计划根据 `docs/08xx/0830 RV32I教学核后续完善路线：从v2.0到最小完整裸机核心.md` 和 `docs/08xx/0834 可变延迟memory与MMIO、简化内部总线与backpressure规划.md` 编写，目标是把当前 LSU/data subsystem 的固定一拍响应，升级为单 outstanding 的 request/response 简化 data bus，并让 MEM wait 对流水线形成 backpressure。
+本计划根据 `docs/08xx/0830 RV32I教学核后续完善路线：从v2.0到最小完整裸机核心.md` 和 `docs/08xx/0835 wait-state验证收口、SVA与UVM入门demo规划.md` 编写，目标是新增一套独立的 VCS/SVA/UVM 验证路径，用最小范围的 simple data bus/peripheral demo 学会并沉淀 UVM 基础验证结构。
 
-本计划是具体执行清单，会覆盖旧的 0833 执行计划。0833 已完成内容以 README、0833 文档和当前 RTL 为准。
+本计划会覆盖旧的 0834 执行计划。0834 已完成内容以 README、0834 文档和当前 RTL 为准。
 
-## 0. 实现边界
+## 0. 本阶段边界
 
 本阶段实现：
 
-- 只改 data side/LSU，不改 IMEM 取指侧固定响应模型。
-- core LSU 侧改为单 outstanding 简化 data bus：
-
-```text
-request:
-  valid, ready, write, addr, wdata, be
-
-response:
-  valid, rdata, error
-```
-
-- 第一版不引入 `resp_ready`，CPU 在等待 response 时默认总是可接收 response。
-- MEM 阶段成为 data transaction owner：
-  - load/store 到 MEM 后发起 request。
-  - request 未被接受或 response 未返回时保持当前 MEM 指令。
-  - response OK 后 load/store 才能进入普通完成路径。
-  - response error 转换为 load/store access fault。
-- MEM wait 期间对 EX/ID/IF/PC 施加 backpressure，年轻指令不能越过 older memory instruction。
-- misaligned 和前级已有 exception 仍在 request 前发现，不发 data request。
-- unknown address / unknown MMIO offset 从固定 `access_fault` 迁移为 response `error`。
-- MMIO write/read 副作用与一次成功 transaction 绑定，不能因为 valid 保持、ready 等待或 response 延迟重复发生。
-- 0 wait-state 下保持现有 directed regression 行为不退化。
-- data_subsystem 改为 simple data bus decoder/interconnect，DMEM/MMIO target 通过 simple slave/wrapper 返回 response。
-- data request/response、busy/wait、dmem/mmio hit 等必要观察信号透出到 SoC/testbench。
-- 提供 TB 可配置 wait-state 注入入口，供本阶段 smoke 和后续验证收口使用。
+- 保留现有 Verilator directed regression：
+  - `sim/soc_asm`
+  - `sim/soc_c`
+  - `tb/sv/tb_rv32i_soc.sv`
+  - `sw/asm`
+  - `sw/c`
+- 新增独立、可复现的 VCS/UVM 工作区：
+  - `uvm/v6_0/simple_bus/dut`：v6.0 最小 DUT RTL 与 ABI 快照。
+  - `uvm/v6_0/simple_bus/tb`：UVM interface、class、assertion 和 harness。
+  - `uvm/v6_0/simple_bus/sim`：本版本独立 filelist 和 VCS 脚本。
+- 第一版 UVM 不实例化整颗 `rv32i_soc`，而是实例化 simple data bus harness。
+- 第一版 UVM master 直接驱动 simple data bus，不使用 `.mem`、crt0、C/ASM 测试程序。
+- 第一版 DUT 优先选择 `data_subsystem` 加必要 memory/peripheral 连接。
+- 第一版先跑通 DMEM 基本 read/write smoke，再扩 MMIO、SVA、coverage。
 
 本阶段不实现：
 
-- AXI-Lite 或 AXI4。
-- IMEM ready/valid、取指 outstanding、取指取消。
-- cache、write buffer/store buffer、store queue。
-- 多 outstanding、transaction ID、乱序 response。
-- bus 仲裁、多 master、DMA。
-- accelerator 本体。
-- UVM/SVA 完整验证平台和完整 wait-state directed 测试矩阵。
-- 外设寄存器 ABI 改动。
-- 真实 UART 串口、多拍串口收发器或异步 FIFO。
+- 新 CPU/SoC 功能。
+- AXI-Lite RTL 或 AXI-Lite UVM agent。
+- SoC/CPU 级完整 UVM。
+- ISS lockstep。
+- random instruction generation。
+- 替换现有 Verilator directed test。
 
-控制优先级口径：
+执行原则：
+
+- Verilator 路径和 VCS/UVM 路径并行存在，互不强制依赖。
+- 新增 UVM 文件默认只进入 `uvm/v6_0/simple_bus/sim/filelist.f`。
+- VCS filelist 只编译本工作区 `dut/rtl` 快照，不引用根目录主线 `rtl/`，保证后续主线切换 AXI-Lite 后本环境仍可运行。
+- 现有 RTL 不为了 UVM 大改接口；若需要 harness 适配，优先在 `uvm/v6_0/simple_bus/tb` 下完成。
+- UVM 若发现真实 RTL bug，先修根目录主线并跑 Verilator directed regression，再同步到开发期 DUT 快照并记录；0835 完成后冻结快照。
+- 每完成一个可运行节点，先跑一次最小 VCS test，再继续扩展。
+- 本计划中的代码块是建议骨架；实现时可以按 VCS 报错、现有代码风格和个人理解微调，但类名、端口语义、连接方向尽量保持一致。
+
+## 1. VCS/UVM 最小工程骨架 `执行中`
+
+目标：先建立一个能被 VCS 编译运行的空 UVM test，确认工具链、目录、filelist、脚本和 UVM 基础入口都可用。
+
+### 1.1 建立独立工作区和 DUT 快照 `已完成`
+
+当前工作区：
 
 ```text
-reset
-> MEM completion 上的同步 exception / delayed access fault
-> MEM completion 上的 MRET+interrupt / CSR写+interrupt / interrupt
-> MEM completion 上的 MRET
-> MEM response OK 后允许的 younger EX redirect
-> MEM wait backpressure
-> 普通 EX redirect
-> load-use/CSR-use stall
-> normal advance
+uvm/
+  readme.md
+  v6_0/
+    simple_bus/
+      spec.md
+      dut/
+        README.md
+        rtl/
+          common/
+          mem/
+          periph/
+          soc/
+        docs/
+      tb/
+      sim/
 ```
 
-关键约束：
+`dut/rtl` 已从 `c2f7d82` / `v6.0-data-side-variable-delay` 复制 `data_subsystem` 的最小编译闭包；`dut/docs/periph_register_abi.md` 保存匹配的外设 ABI。具体文件映射、开发期同步和冻结规则见 `uvm/v6_0/simple_bus/dut/README.md`。
 
-- delayed access fault 是当前 MEM older 指令的同步异常结果，优先于 interrupt 和 younger redirect。
-- MEM wait 期间 younger EX redirect 不能改变 PC。
-- response OK 且无 trap/interrupt 时，younger EX redirect 才能按普通控制流生效。
-- interrupt pending 可以在 memory wait 期间进入 `mip`，但只能在当前 MEM 指令 completion 边界接受。
-- `FENCE` 在当前单 hart、单 outstanding、无 cache、无 write buffer 条件下继续保持 NOP。
+本步骤不改现有 `rtl/`、`tb/sv`、`sim/soc_asm`、`sim/soc_c`。`tb/` 和 `sim/` 当前留空，后续 UVM 源码和脚本由本计划逐步创建。
 
-## 1. 前置整理：ROM/RAM 仿真模型外置 `已完成`
+### 1.2 新增 UVM package 文件
 
-### 1.1 目标和边界 `已完成`
+新增：
 
-0834 正式改 data-side req/resp 前，先把 `simple_rom`、`simple_ram` 从 SoC RTL 内部移到 testbench 实例化。
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_pkg.sv
+```
 
-目标：
+第一版先只 include base test，后续每新增 class 文件就追加 include。
 
-- `rv32i_soc` 更像可综合 SoC shell，不直接实例化带 `$readmemh` 的仿真 memory model。
-- `simple_rom/simple_ram` 仍保留现有 plusarg 加载方式，测试程序和 memory image 生成流程不变。
-- data_subsystem 仍负责 DMEM/MMIO 地址译码，DMEM 本体由外部端口连接。
-- 不在本整理中引入 data bus req/resp、wait-state、AXI-Lite 或外设 ABI 改动。
-
-### 1.2 `rv32i_soc.sv` 外置 IMEM/DMEM 端口 `已完成`
-
-`rv32i_soc` 不再内部实例化 `simple_rom`，而是透出 IMEM 固定响应接口：
+建议骨架：
 
 ```systemverilog
-output logic [core_pkg::XLEN-1:0] imem_addr_o;
-input  logic [core_pkg::ILEN-1:0] imem_rdata_i;
-```
-
-`rv32i_soc` 同时透出 data_subsystem 到外部 DMEM model 的固定响应接口：
-
-```systemverilog
-output logic                      dmem_we_o;
-output logic [3:0]                dmem_be_o;
-output logic [core_pkg::XLEN-1:0] dmem_addr_o;
-output logic [core_pkg::XLEN-1:0] dmem_wdata_o;
-input  logic [core_pkg::XLEN-1:0] dmem_rdata_i;
-```
-
-原有 testbench 观察口 `data_*`、`dmem_access_o/mmio_access_o` 暂时保持当前语义，后续 0834 data bus 改造时再统一调整。
-
-### 1.3 `data_subsystem.sv` 外置 DMEM 端口 `已完成`
-
-`data_subsystem` 不再内部实例化 `simple_ram`，而是输出 DMEM model 访问端口：
-
-```systemverilog
-output logic                      dmem_we_o;
-output logic [3:0]                dmem_be_o;
-output logic [core_pkg::XLEN-1:0] dmem_addr_o;
-output logic [core_pkg::XLEN-1:0] dmem_wdata_o;
-input  logic [core_pkg::XLEN-1:0] dmem_rdata_i;
-```
-
-第一版保持现有固定响应 RAM 语义：
-
-- DMEM write 同步写。
-- DMEM read 组合返回。
-- 地址仍传给 `simple_ram`，由 `simple_ram` 按 `DMEM_BASE` 转换到内部 word index。
-- 未命中 DMEM 时，`dmem_addr_o` 可指向 `DMEM_BASE` 这类无副作用安全地址，避免外部 RAM model 看到无意义索引。
-
-### 1.4 `tb_rv32i_soc.sv` 实例化 memory model `已完成`
-
-testbench 新增两个实例：
-
-```text
-simple_rom u_simple_rom
-simple_ram u_simple_ram
-```
-
-连接到 `rv32i_soc` 新增的 IMEM/DMEM 端口。`+imem=<path>` 和 `+dmem=<path>` 仍由 `simple_rom/simple_ram` 内部处理，不需要改仿真命令或软件构建流程。
-
-TB mailbox 监听仍然可以沿用当前 `data_we && dmem_access && data_addr` 口径；整理后可以把监听条件中的写意图直接改为外置 RAM 写口 `dmem_we`，减少重复逻辑。后续 0834 req/resp 改造时，再迁移到 accepted write request 或 successful write response。
-
-### 1.5 文档同步 `已完成`
-
-本整理完成后至少同步：
-
-- `rv32i_soc.sv`、`data_subsystem.sv` 头注释，不再写 SoC/data_subsystem 内部实例化 simple ROM/RAM。
-- `tb/sv/tb_rv32i_soc.sv` 头注释，说明 testbench 负责实例化 IMEM/DMEM 仿真模型。
-- `README.md` 顶部 ASCII 图，把 `simple_rom/simple_ram` 从 SoC 内部移到 TB/仿真环境侧。
-
-其他文档若只是泛称当前平台有 IMEM/DMEM，不强制在本整理中大改。
-
-## 2. 公共类型和接口命名 `rtl无变动`
-
-### 2.1 新增或扩展 data bus 公共类型 `rtl无变动`
-
-第一版先使用离散端口推进，不新增 data bus 结构体。
-
-若使用结构体，建议定义：
-
-```systemverilog
-typedef struct packed {
-    logic                      valid;
-    logic                      write;
-    logic [XLEN-1:0]           addr;
-    logic [XLEN-1:0]           wdata;
-    logic [3:0]                be;
-} data_req_t;
-
-typedef struct packed {
-    logic                      valid;
-    logic [XLEN-1:0]           rdata;
-    logic                      error;
-} data_resp_t;
-```
-
-结构体后续统一替换时再新增；不建议放在 `core_pkg` 或 `soc_pkg`，后续可考虑新建 `data_bus_pkg`。
-
-执行时可根据现有代码风格选择结构体或离散信号。若选择离散信号，命名口径保持：
-
-```text
-lsu_req_valid_o
-lsu_req_ready_i
-lsu_req_write_o
-lsu_req_addr_o
-lsu_req_wdata_o
-lsu_req_be_o
-lsu_resp_valid_i
-lsu_resp_rdata_i
-lsu_resp_error_i
-```
-
-计划默认后续条目使用离散信号描述，便于逐步替换当前 `lsu_re/lsu_we/lsu_rdata/lsu_access_fault`。
-
-### 2.2 明确 read/write 指令类型保留位置 `无变动`
-
-response error 需要区分 load access fault 和 store access fault，因此 MEM 阶段必须在等待事务期间保留：
-
-```text
-当前指令 valid
-mem_re / mem_we
-mem_size / mem_unsigned
-faulting addr
-pc / instr / next_pc
-已有 exception 信息
-CSR/MRET 控制信息
-```
-
-当前这些字段已经在 `ex_mem_reg_t` 中保存，第一版不额外新增 transaction tag。
-
-### 2.3 保留 byte enable 语义 `无变动`
-
-`be` 继续沿用当前 `mem_stage` 生成的 byte lane 含义：
-
-| 指令 | 对齐要求 | be |
-|---|---|---|
-| `LB/LBU/SB` | 无额外低位要求 | 单 bit |
-| `LH/LHU/SH` | `addr[0] == 0` | 连续 2 bit |
-| `LW/SW` | `addr[1:0] == 0` | `4'b1111` |
-
-本阶段不额外加入 `size` 到 data bus。load 扩展仍由 core/MEM 根据 `mem_size/mem_unsigned/addr[1:0]` 完成。
-
-## 3. `mem_stage` 改造为事务发起与完成判定 `已完成`
-
-### 3.1 修改 `rtl/core/mem_stage.sv` 模块定位 `已完成`
-
-当前 `mem_stage` 是纯组合逻辑，头注释写明固定响应。0834 后需要改成支持时序状态的 MEM transaction controller。
-
-模块职责调整为：
-
-- 组合检测 misaligned。
-- 对有效且无前级 exception 的 load/store 发起 data request。
-- 在 request accepted 后记录 outstanding 状态。
-- 在 response 返回前保持 busy/wait。
-- response OK 时生成最终 load_data 或 store 完成。
-- response error 时生成 load/store access fault。
-- 非访存、misaligned、前级 exception 仍可在当前 MEM 边界直接完成或进入 trap。
-
-### 3.2 新增时钟/复位端口 `已完成`
-
-`mem_stage` 需要保存 outstanding 状态，因此端口新增：
-
-```systemverilog
-input logic clk_i;
-input logic rst_n_i;
-```
-
-头注释同步更新，不再写“纯组合逻辑”。
-
-### 3.3 替换 LSU 固定响应端口 `已完成`
-
-移除或不再使用当前固定响应端口：
-
-```systemverilog
-input  logic [XLEN-1:0] lsu_rdata_i;
-input  logic            lsu_access_fault_i;
-output logic            lsu_re_o;
-output logic            lsu_we_o;
-```
-
-改为 request/response：
-
-```systemverilog
-output logic            lsu_req_valid_o;
-input  logic            lsu_req_ready_i;
-output logic            lsu_req_write_o;
-output logic [3:0]      lsu_req_be_o;
-output logic [XLEN-1:0] lsu_req_addr_o;
-output logic [XLEN-1:0] lsu_req_wdata_o;
-
-input  logic            lsu_resp_valid_i;
-input  logic [XLEN-1:0] lsu_resp_rdata_i;
-input  logic            lsu_resp_error_i;
-```
-
-`lsu_req_write_o=1` 表示 store/MMIO write，`0` 表示 load/MMIO read。
-
-### 3.4 新增 MEM wait/complete 输出 `已完成`
-
-新增输出给 core 控制网络：
-
-```systemverilog
-output logic mem_wait_o;      // 当前 MEM 指令因为 data transaction 未完成而必须 hold。
-output logic mem_complete_o;  // 当前 MEM 边界本拍可完成；主要用于调试/观察，可选。
-output logic transaction_complete_o; // 当前 data transaction 本拍返回 response，OK/error 均表示事务完成。
-```
-
-推荐语义：
-
-```text
-transaction_complete_o = data transaction 本拍完成；支持 accepted 与 response 同拍的 0 wait-state。
-mem_wait_o = 有效 load/store 且尚未到达 completion 边界
-mem_complete_o = 非访存直接完成，或访存 response 返回，或 request 前 exception 直接完成
-```
-
-若后续发现 `mem_complete_o` 在 core 中不需要，可只保留 `mem_wait_o`，但建议至少保留一个观察口方便 TB/wave debug。
-
-### 3.5 misaligned 和前级 exception 不发 request `已完成`
-
-保持现有优先级：
-
-```text
-前级 exception
-> load/store misaligned
-> data request / response error
-```
-
-当 `exception_valid_i=1` 或 `mem_misaligned_o=1` 时：
-
-- `lsu_req_valid_o=0`
-- 不建立 outstanding
-- 不等待 response
-- 当前 MEM 指令可在本边界进入 trap
-
-### 3.6 request payload 生成 `已完成`
-
-当前 `mem_stage` 已有 `lsu_be_o/lsu_addr_o/lsu_wdata_o` 生成逻辑，0834 保持基本算法。
-
-请求条件建议定义为：
-
-```text
-mem_access = valid_i && !exception_valid_i && !mem_misaligned_o && (mem_re_i || mem_we_i)
-```
-
-request payload：
-
-```text
-write = mem_we_i
-addr  = alu_result_i
-wdata = store_data_i << {alu_result_i[1:0], 3'b000}
-be    = 当前 byte enable 生成结果
-```
-
-在 `lsu_req_valid_o=1 && lsu_req_ready_i=0` 时，payload 必须保持稳定。因为 EX/MEM 会被 `mem_wait_o` hold，payload 通常自然稳定；仍建议在代码注释中明确这一点。
-
-### 3.7 outstanding 状态机 `已完成`
-
-为保证副作用最多一次，第一版可使用一个简单状态：
-
-```text
-req_outstanding_q
-```
-
-语义：
-
-- `0`：当前 MEM 指令尚未有 accepted request。
-- `1`：已有 request accepted，等待 response。
-
-状态更新：
-
-```text
-reset -> 0
-request accepted 且本拍未完成 -> 1
-transaction complete -> 0
-request accepted 与 response valid 同拍 -> 0
-当前 MEM 指令被 request 前 exception/trap 处理 -> 0
-```
-
-因为第一版只允许 single outstanding，`req_outstanding_q=1` 时不允许再次拉起新的 accepted request。
-
-实现上可以用两个独立 `if` 让 `transaction_complete` 覆盖 `request_accepted` 的置位结果，从而支持类似同步单级 FIFO 的空直通语义。
-
-### 3.8 request valid/ready 与 wait 关系 `已完成`
-
-推荐语义：
-
-```text
-lsu_req_valid_o = mem_access && !req_outstanding_q
-request_accepted = lsu_req_valid_o && lsu_req_ready_i
-transaction_complete = lsu_resp_valid_i && (req_outstanding_q || request_accepted)
-```
-
-`mem_wait_o` 应覆盖 request 等待接受和 accepted 后等待 response 两段，本质上可以写成：
-
-```text
-mem_wait_o = mem_access && !transaction_complete
-```
-
-若 data subsystem 支持 0 wait-state，可以出现 request accepted 和 response valid 同拍。该情况需要在实现中明确是否允许：
-
-- 建议第一版允许 `ready=1` 且同拍 `resp_valid=1`，便于 0 wait-state 回归。
-- 若实现上先简化为“accepted 后至少下一拍 response”，则 0 wait-state 行为会多一拍，需明确并更新验证期望；当前不推荐，因为会不必要地改变现有回归时序。
-- 若支持同拍 response，状态更新应在 `request_accepted && lsu_resp_valid_i` 时保持 `req_outstanding_q=0`，不要先置 outstanding 再多等一拍。
-
-### 3.9 load data 生成改为 response 驱动 `已完成`
-
-`load_raw` 的输入从 `lsu_rdata_i` 改为完成 response 的 `lsu_resp_rdata_i`。
-
-只有 `transaction_complete && !lsu_resp_error_i && mem_re_i` 时，load_data 对后续 WB 有意义。
-
-response 未到时：
-
-- `valid_o` 不应让该 load 进入 MEM/WB。
-- `load_data_o` 可给默认值，但不应被使用。
-
-### 3.10 delayed access fault 生成 `已完成`
-
-response error 转换为：
-
-```text
-load  -> EXCEPTION_CAUSE_LOAD_ACCESS_FAULT
-store -> EXCEPTION_CAUSE_STORE_ACCESS_FAULT
-tval  -> alu_result_i
-```
-
-`exception_valid_o` 需要覆盖：
-
-```text
-前级 exception
-| mem_misaligned
-| (transaction_complete && lsu_resp_error_i)
+package simple_bus_pkg;
+    import uvm_pkg::*;
+    `include "uvm_macros.svh"
+
+    import core_pkg::*;
+    import soc_pkg::*;
+    import data_bus_pkg::*;
+
+    `include "simple_bus_base_test.sv"
+endpackage
 ```
 
 注意：
 
-- response error 只在 completion 边界产生。
-- request wait 或 outstanding wait 期间不要提前产生 access fault。
-- error response 不允许写 rd。
-- 当前 RTL 中 access fault 由 `lsu_resp_valid_i && lsu_resp_error_i` 门控生成；data-side 协议要求 `lsu_resp_valid_i` 只对应当前已接受事务，因此在协议约束下等价于 `transaction_complete && lsu_resp_error_i`。后续 SVA 应检查 response 必须对应 accepted/outstanding request。
+- `uvm_macros.svh` 必须在使用 `` `uvm_component_utils`` 等宏之前 include。
+- class 文件通过 package include，不在 `filelist.f` 里重复列。
+- 后续 include 顺序按“被依赖者在前”维护，例如 item 在 driver/monitor 前，base test 在 smoke test 前。
 
-### 3.11 `valid_o` 口径 `已完成`
+### 1.3 新增空 base test
 
-`valid_o` 送入 MEM/WB，应表示“当前 MEM 指令本拍可以进入下一阶段的普通 WB 生命周期”。
-
-建议：
+新增：
 
 ```text
-valid_o = valid_i && !mem_wait_o
+uvm/v6_0/simple_bus/tb/simple_bus_base_test.sv
 ```
 
-但 trap/MRET 的 `kill_mem_wb` 仍由 `trap_ctrl` 最终决定是否阻止写入 MEM/WB。
+第一版只验证 UVM test 能启动。
 
-对于 response error，`valid_o` 可以为 1，让 trap_ctrl 在同拍看见 exception 并用 `kill_mem_wb` 阻止普通 WB；也可以由 core 用 trap kill 清掉。关键是不要让 error load 写 rd。
-
-### 3.12 观察信号更新 `无变动`
-
-当前 `mem_access_fault_o/load_access_fault_o/store_access_fault_o` 是固定响应观察口。0834 后语义改为：
-
-- `mem_access_fault_o`：completion 边界 response error。
-- `load_access_fault_o`：load response error。
-- `store_access_fault_o`：store response error。
-
-若保留这些端口，注释必须同步为 delayed response error，不再写“地址未定义或权限不对同拍返回”。
-
-## 4. core 顶层接线与流水线 backpressure `已完成`
-
-### 4.1 修改 `rtl/core/core.sv` LSU 顶层端口 `已完成`
-
-替换当前 LSU 固定响应接口：
+建议骨架：
 
 ```systemverilog
-output logic            lsu_re_o;
-output logic            lsu_we_o;
-output logic [3:0]      lsu_be_o;
-output logic [XLEN-1:0] lsu_addr_o;
-output logic [XLEN-1:0] lsu_wdata_o;
-input  logic [XLEN-1:0] lsu_rdata_i;
-input  logic            lsu_access_fault_i;
+class simple_bus_base_test extends uvm_test;
+    `uvm_component_utils(simple_bus_base_test)
+
+    function new(string name = "simple_bus_base_test", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        `uvm_info(get_type_name(), "build_phase entered", UVM_LOW)
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        phase.raise_objection(this);
+        `uvm_info(get_type_name(), "empty UVM base test is running", UVM_LOW)
+        #100ns;
+        phase.drop_objection(this);
+    endtask
+endclass
 ```
 
-改为：
-
-```systemverilog
-output logic            lsu_req_valid_o;
-input  logic            lsu_req_ready_i;
-output logic            lsu_req_write_o;
-output logic [3:0]      lsu_req_be_o;
-output logic [XLEN-1:0] lsu_req_addr_o;
-output logic [XLEN-1:0] lsu_req_wdata_o;
-input  logic            lsu_resp_valid_i;
-input  logic [XLEN-1:0] lsu_resp_rdata_i;
-input  logic            lsu_resp_error_i;
-```
-
-注释同步说明：IMEM 仍固定响应，LSU data side 为 simple request/response。
-
-### 4.2 接入 `mem_stage` 的 clk/rst 和新接口 `已完成`
-
-`u_mem_stage` 实例新增：
+后续第 7 章会在本类中增加：
 
 ```systemverilog
-.clk_i  (clk_i),
-.rst_n_i(rst_n_i),
+simple_bus_env env;
 ```
 
-并连接新 request/response 信号。
+### 1.4 新增最小 UVM top
 
-### 4.3 新增 `mem_wait` 控制信号 `已完成`
+新增：
 
-core 内部新增：
+```text
+uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+```
+
+第一版只提供 clock/reset、全局 timeout 和 `run_test()`。
+
+建议骨架：
 
 ```systemverilog
-wire mem_wait;
-wire mem_complete; // 可选
+`timescale 1ns/1ps
+`default_nettype none
+
+module tb_data_subsystem_uvm;
+    import uvm_pkg::*;
+    import simple_bus_pkg::*;
+
+    logic clk;
+    logic rst_n;
+
+    initial begin
+        clk = 1'b0;
+        forever #5ns clk = ~clk;
+    end
+
+    initial begin
+        rst_n = 1'b0;
+        repeat (5) @(posedge clk);
+        rst_n = 1'b1;
+    end
+
+    initial begin
+        uvm_top.set_timeout(1ms, 1'b0);
+        run_test();
+    end
+endmodule
+
+`default_nettype wire
 ```
 
-`mem_wait` 来自 `mem_stage.mem_wait_o`。
+后续第 2 章会在这里例化 `simple_bus_if`，第 8 章会在这里例化 `data_subsystem` 和 `simple_ram`。
 
-### 4.4 新增 `pipeline_ctrl.sv` 统一整合 stall/flush/backpressure `已完成`
+### 1.5 新增 VCS filelist
 
-memory wait 时需要保持：
+新增：
 
 ```text
-PC
-IF/ID
-ID/EX
-EX/MEM
+uvm/v6_0/simple_bus/sim/filelist.f
 ```
 
-不建议在 `core.sv` 顶层分散 OR 各级 stall。新增 `rtl/core/pipeline_ctrl.sv`，作为流水线控制整合层：
+第一版按顺序加入：
 
 ```text
-pipeline_ctrl
-  - 内部实例化 hazard_unit
-  - 复用现有 late-result-use stall 与 EX redirect flush 逻辑
-  - 接收 MEM wait 形成的 backpressure
-  - 汇总非 trap 类 PC redirect 来源
-  - 统一输出最终 PC/IF_ID/ID_EX/EX_MEM stall 和 IF_ID/ID_EX flush
+../dut/rtl/common/core_pkg.sv
+../dut/rtl/common/soc_pkg.sv
+../dut/rtl/common/data_bus_pkg.sv
+
+../tb/simple_bus_pkg.sv
+../tb/tb_data_subsystem_uvm.sv
 ```
 
-`hazard_unit` 保持局部 hazard 检测定位，主要负责：
+注意：
+
+- 这里假设脚本从 `uvm/v6_0/simple_bus/sim` 目录执行；DUT 快照和 UVM testbench 分别使用 `../dut`、`../tb` 相对路径。
+- `soc_pkg.sv`、`data_bus_pkg.sv` 都依赖 `core_pkg.sv`，因此 `core_pkg.sv` 放最前。
+- 后续第 2 章新增 interface 后，`simple_bus_if.sv` 应放在 `simple_bus_pkg.sv` 前，因为 driver/monitor class 会声明 `virtual simple_bus_if vif`。
+
+### 1.6 新增 VCS 单测脚本
+
+新增：
 
 ```text
-load-use / CSR-use late-result stall
-允许后的 EX redirect flush
+uvm/v6_0/simple_bus/sim/run_test.sh
 ```
 
-`pipeline_ctrl` 新增或整合输入：
+脚本第一版建议支持：
 
 ```text
-mem_wait_i = mem_wait
-ex_redirect_valid_i
-ex_redirect_pc_i
+./run_test.sh [test_name] [seed] [extra_plusargs...]
 ```
 
-第一版非 trap redirect 来源只有 EX 阶段 branch/JAL/JALR。后续如果出现 ID 阶段 redirect、预测修正或其他非 trap 类 PC redirect，可以继续收敛到 `pipeline_ctrl` 内部仲裁。
+建议骨架：
 
-并统一输出：
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+TEST_NAME=${1:-simple_bus_base_test}
+SEED=${2:-1}
+shift || true
+shift || true
+EXTRA_ARGS="$*"
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR"
+
+BUILD_DIR="build/${TEST_NAME}_${SEED}"
+LOG_DIR="logs"
+mkdir -p "$BUILD_DIR" "$LOG_DIR"
+
+vcs -full64 -sverilog -ntb_opts uvm \
+    -timescale=1ns/1ps \
+    +incdir+../tb \
+    -f filelist.f \
+    -l "${LOG_DIR}/${TEST_NAME}_${SEED}_compile.log" \
+    -o "${BUILD_DIR}/simv"
+
+"${BUILD_DIR}/simv" \
+    +UVM_TESTNAME="${TEST_NAME}" \
+    +ntb_random_seed="${SEED}" \
+    ${EXTRA_ARGS} \
+    -l "${LOG_DIR}/${TEST_NAME}_${SEED}.log"
+```
+
+注意：
+
+- 如果你的 VCS 需要先 source 环境变量，不要写死在仓库脚本里；可以在 shell 环境里提前配置。
+- `EXTRA_ARGS` 只用于传 `+DMEM_DELAY=3` 这类运行期 plusarg。
+- `+define+ASSERT_ON` 是 VCS 编译期选项，不能通过 simv 的运行期 `EXTRA_ARGS` 传入；第 10.3 节会把它加入 VCS 编译命令。
+- 如果 VCS 对 `-ntb_opts uvm` 版本口径不同，按本机 VCS 报错调整。
+
+上述 top 骨架从第一版开始设置全局 timeout，避免 DUT 不返回 response 时仿真永久挂住。该 timeout 是整场 test 的最后保护，不替代 driver 后续对单笔 transaction 的超时诊断。进入第 5 章实现 driver 时，应按最大配置 delay 加裕量设置 request/response 等待上限，超时后用 `uvm_fatal` 打印当前 transaction。
+
+### 1.7 新增 VCS 回归脚本
+
+新增：
 
 ```text
-stall_pc_o
-stall_if_id_o
-stall_id_ex_o
-stall_ex_mem_o
-stall_mem_wb_o
-flush_if_id_o
-flush_id_ex_o
-nontrap_redirect_valid_o
-nontrap_redirect_pc_o
+uvm/v6_0/simple_bus/sim/run_all.sh
 ```
 
-第一版输出语义：
+第一版只调用一次 base test。
+
+建议骨架：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR"
+
+./run_test.sh simple_bus_base_test 1
+```
+
+后续每新增一个 test，就在这里加一行。
+
+### 1.8 更新 `.gitignore`
+
+检查并补充 VCS/UVM 运行产物忽略规则。
+
+至少覆盖：
 
 ```text
-stall_mem_backpressure = mem_wait_i
-
-stall_pc_o     = stall_late_result_use | stall_mem_backpressure
-stall_if_id_o  = stall_late_result_use | stall_mem_backpressure
-stall_id_ex_o  = stall_mem_backpressure
-stall_ex_mem_o = stall_mem_backpressure
-stall_mem_wb_o = stall_mem_backpressure
-
-nontrap_redirect_valid_o = ex_redirect_valid_i && !mem_wait_i
-nontrap_redirect_pc_o    = ex_redirect_pc_i
-flush_if_id_o            = ex_redirect_valid_i && !mem_wait_i
-flush_id_ex_o            = ex_redirect_valid_i && !mem_wait_i
+uvm/v6_0/simple_bus/sim/build/
+uvm/v6_0/simple_bus/sim/logs/
+uvm/v6_0/simple_bus/sim/csrc/
+uvm/v6_0/simple_bus/sim/simv
+uvm/v6_0/simple_bus/sim/simv.daidir/
+uvm/v6_0/simple_bus/sim/ucli.key
+uvm/v6_0/simple_bus/sim/vcs.log
+uvm/v6_0/simple_bus/sim/*.vpd
+uvm/v6_0/simple_bus/sim/*.fsdb
 ```
 
-`core.sv` 只连接 `pipeline_ctrl` 的最终控制输出，不在顶层重复组合这些 stall 条件。
+如果本仓库已有更通用 VCS 忽略规则，优先沿用已有风格。
 
-`pipe_reg_mem_wb` 当前也接入 `stall_mem_wb_o`。它的作用不是阻止当前 MEM 指令进入 WB，而是在 MEM wait 期间保留已有 MEM/WB 槽作为 forwarding source。为避免被 hold 的 MEM/WB 重复提交，MEM/WB 需要额外输出 `commit_valid_o` 或等效信号：
+### 1.9 验证节点
+
+本章完成标准：
+
+- `uvm/v6_0/simple_bus/sim/run_test.sh simple_bus_base_test` 可以编译并运行。
+- log 中能看到 `UVM_INFO`。
+- 全局 UVM timeout 已启用，test 不会因永久等待而无限运行。
+- 没有引入 Verilator directed regression 依赖。
+- `git status` 中只出现预期新增文件和 `.gitignore` 修改。
+
+## 2. simple data bus interface
+
+目标：把 simple data bus 信号集中到一个 SystemVerilog interface 中，供 driver、monitor、assertion 和 DUT harness 共用。
+
+### 2.1 新增 interface 文件
+
+新增：
 
 ```text
-mem_wb_valid        = MEM/WB 槽内容有效，可作为 forwarding source。
-mem_wb_commit_valid = 本拍允许 WB/commit trace 使用该槽，只提交一次。
+uvm/v6_0/simple_bus/tb/simple_bus_if.sv
 ```
 
-`wb_stage.valid_i` 应接 `mem_wb_commit_valid` 或等效提交 valid；forwarding_unit 仍使用 `mem_wb_valid` 判断 MEM/WB 是否可作为旁路来源。
-
-### 4.5 load-use/CSR-use 与 memory wait 的关系 `无需改动`
-
-`hazard_unit` 仍负责：
-
-```text
-ID 阶段 consumer vs ID/EX late-result producer
-```
-
-memory wait 负责：
-
-```text
-producer 已到 MEM 且 response 未完成时，冻结整条前端/EX 路径
-```
-
-实现时不要用固定数量 bubble 处理可变延迟 load-use；load-use 只需要阻止 consumer 过早进入 EX，后续等待由 `mem_wait` 接管。
-
-### 4.6 非 trap redirect 与 memory wait 的屏蔽 `已完成`
-
-当前：
+建议骨架：
 
 ```systemverilog
-redirect_valid = trap_redirect_valid | ex_redirect_valid;
-```
-
-0834 后需要防止 memory wait 期间 younger 非 trap redirect 越过 older MEM 指令。当前非 trap redirect 来源只有 EX 阶段 branch/JAL/JALR，后续可以在 `pipeline_ctrl` 内继续扩展其他非 trap redirect 来源。
-
-`pipeline_ctrl` 第一版形成：
-
-```text
-nontrap_redirect_valid = ex_redirect_valid && !mem_wait
-nontrap_redirect_pc    = ex_redirect_pc
-```
-
-`pipeline_ctrl` 应使用 `mem_wait` 屏蔽 EX 边界 non-trap redirect 对 PC 和 flush 的影响。这样 memory wait 期间 younger EX redirect 不会产生 flush，也不会越过 older MEM 指令改变前端状态。
-
-core 顶层最终 PC redirect 仍保持 trap/MRET 优先：
-
-```text
-redirect_valid = trap_redirect_valid | nontrap_redirect_valid
-redirect_pc    = trap_redirect_valid ? trap_redirect_pc : nontrap_redirect_pc
-```
-
-`pipeline_ctrl` 不决定 trap/MRET redirect，也不产生 trap kill；这些仍由 `trap_ctrl` 负责。
-
-注意 response OK 同拍：
-
-- 如果 `mem_wait` 在 response valid 当拍降为 0，则 younger EX redirect 可以在该拍生效。
-- 如果同拍 trap/interrupt 被接受，trap redirect 优先，younger redirect 被 kill。
-
-### 4.7 trap_ctrl 只在 MEM completion 边界工作 `已完成`
-
-`trap_ctrl.mem_valid_i` 当前接 `ex_mem_valid`。0834 后如果 memory wait 期间 `ex_mem_valid=1`，但 response 未完成，不能接受 interrupt，也不能让 MRET/CSR 同拍 interrupt提前发生。
-
-需要新增或使用一个 completion-gated valid：
-
-```text
-mem_commit_valid = ex_mem_valid && !mem_wait
-```
-
-`trap_ctrl.mem_valid_i` 应接 `mem_commit_valid` 或等效信号。
-
-这样：
-
-- 非访存指令 `mem_wait=0`，trap_ctrl 行为不变。
-- misaligned/前级 exception `mem_wait=0`，trap_ctrl 立即处理。
-- load/store 等 response 时 `mem_wait=1`，trap_ctrl 不接受 interrupt/MRET/trap。
-- response error/OK 当拍 `mem_wait=0`，trap_ctrl 在 completion 边界处理。
-
-### 4.8 CSR 写提交语义保持 `防御性改动完成`
-
-`mem_csr_valid` 当前为：
-
-```systemverilog
-ex_mem_valid & ex_mem_data_q.csr & ~mem_exception_valid
-```
-
-0834 后建议改为 completion-gated：
-
-```text
-mem_csr_valid = mem_commit_valid && ex_mem_data_q.csr && !mem_exception_valid
-```
-
-CSR 写不应在 MEM 前面有 outstanding memory wait 时提前提交。
-
-### 4.9 MEM/WB valid 口径 `无需改动`
-
-`pipe_reg_mem_wb.valid_i` 当前接 `mem_valid`。0834 后 `mem_valid` 应已经由 `mem_stage` 在 completion 边界给出。
-
-需要检查：
-
-- memory wait 期间 MEM/WB 不接收当前 load/store。
-- response OK 后 load/store 进入 MEM/WB。
-- response error / exception / MRET 由 `kill_mem_wb` 阻止普通 WB。
-- interrupt 不 kill 当前已完成旧指令写回，保持 0833 口径。
-
-### 4.10 MEM/WB forwarding source 与 commit valid 分离 `已完成`
-
-可变延迟后，ID/EX 可能被 memory wait hold 多拍。ID/EX 中保存的是 decode 时采样的 `rs*_rdata`，不会在 hold 期间重新读 GPR。
-
-如果 MEM/WB 中的 older producer 在 memory wait 期间自然流走，而 ID/EX 中的 younger consumer 仍然等待，那么 wait 解除后 forwarding_unit 可能看不到 MEM/WB producer，只能使用 ID/EX 里保存的旧操作数。
-
-当前实现采用：
-
-```text
-MEM/WB 在 memory wait 期间 hold，继续作为 forwarding source。
-MEM/WB 额外给出 commit_valid，避免 hold 期间重复写回/重复提交。
-```
-
-具体口径：
-
-- `pipeline_ctrl` 输出 `stall_mem_wb_o = stall_mem_backpressure`。
-- `pipe_reg_mem_wb.valid_o` 保留槽有效性，供 forwarding_unit 使用。
-- `pipe_reg_mem_wb.commit_valid_o` 表示本拍是否真正进入 WB/commit。
-- `wb_stage.valid_i` 使用 `mem_wb_commit_valid`。
-- forwarding_unit 仍使用 `mem_wb_valid`。
-
-这个实现把“旁路来源仍有效”和“本拍执行架构提交”分开，既解决 memory wait 下 forwarding 来源过早消失的问题，也避免 MEM/WB 被 hold 时重复写 rd。
-
-### 4.11 forwarding 的 EX/MEM load 可前递口径 `无需改动`
-
-当前 forwarding_unit 会避免从 EX/MEM 前递 load/CSR 晚结果，转而依赖 MEM/WB。
-
-0834 下 load 在 response OK 后才进入 MEM/WB，因此原口径基本保持。
-
-需要检查：
-
-- memory wait 期间 ID/EX 被 hold，consumer 不会继续执行。
-- response OK 后下一拍进入 MEM/WB，consumer 解除 hold 后可从 MEM/WB forwarding 或 GPR bypass 得到 load 值。
-- 不要新增从 EX/MEM 对 load response 的组合前递，除非有明确必要。
-
-## 5. `hazard_unit` 控制语义同步 `已由4.4/4.6吸收`
-
-0834 原计划中，这一章准备继续让 `hazard_unit` 同时处理 late-result-use stall 和已允许的 EX redirect flush。
-
-实际实现采用了更清晰的分层：
-
-```text
-hazard_unit
-  只检测 load-use / CSR-use late-result-use RAW hazard。
-
-pipeline_ctrl
-  内部实例化 hazard_unit。
-  统一整合 late-result-use stall、MEM wait backpressure、non-trap redirect 和 flush。
-  memory wait 期间屏蔽 younger non-trap redirect。
-```
-
-因此，第 5 章不再作为独立 RTL 步骤执行；相关设计已经并入第 4.4 和第 4.6。
-
-已完成内容：
-
-- `hazard_unit` 保留 late-result-use 检测主体，输出 `stall_late_result_use_o`。
-- `pipeline_ctrl` 根据 `stall_late_result_use_o` 生成 PC/IF_ID stall 和 ID_EX bubble。
-- `pipeline_ctrl` 根据 `mem_wait_i` 生成 PC/IF_ID/ID_EX/EX_MEM backpressure。
-- `pipeline_ctrl` 根据 `ex_redirect_valid_i && !mem_wait_i` 生成当前 EX 边界 non-trap redirect 和 IF_ID/ID_EX flush。
-
-该实现比原计划更好，因为 `hazard_unit` 保持局部 hazard 检测职责，`pipeline_ctrl` 承担流水线控制整合职责，后续新增 ID redirect、预测修正或其他 non-trap redirect 来源时，可以继续收敛到 `pipeline_ctrl`。
-
-## 6. `pipe_reg` 注释和 stall 优先级确认 `已完成`
-
-### 6.1 确认现有优先级是否适配 memory wait `无需改动`
-
-当前优先级：
-
-```text
-IF/ID:  reset > kill > flush > stall > normal
-ID/EX:  reset > kill > flush > stall > bubble > normal
-EX/MEM: reset > kill > stall > normal
-MEM/WB: reset > kill > stall > normal
-```
-
-该优先级对 0834 基本可用。
-
-重点确认：
-
-- kill 优先于 stall：trap/interrupt/MRET 接受时，年轻指令不能因 stall 被保留。
-- flush 优先于 stall：被允许的 EX redirect 需要清掉错误路径。
-- stall 优先于 bubble：memory wait 时不要插入 bubble 丢失当前年轻指令状态。
-
-### 6.2 更新注释 `已完成`
-
-`rtl/core/pipe_reg.sv` 中 stall 相关注释已按 0834 实际用途同步：
-
-- `ID/EX.stall_i` 用于 memory wait backpressure。
-- `EX/MEM.stall_i` 用于保持 outstanding transaction 对应的 MEM 指令。
-- `MEM/WB.stall_i` 用于 memory wait 期间保持已有 MEM/WB forwarding source。
-- `MEM/WB.commit_valid_o` 或等效提交 valid 用于避免被 hold 的 MEM/WB 重复 WB/commit。
-
-## 7. data_subsystem simple data bus 骨架与最小 wait-state `已完成`
-
-本章按当前实际实现路径推进：先在 `data_subsystem` 内完成 0 wait-state 的 simple bus 骨架，再只给 DMEM 加最小可变延迟；DMEM 跑通后，再把同一模式推广到 MMIO wrapper。这样每一步都可仿真验证，不要求一开始就拆出完整 target slave 模块。
-
-### 7.1 修改 `rtl/soc/data_subsystem.sv` core 侧端口 `已完成`
-
-替换当前固定响应 core 接口：
-
-```systemverilog
-input  logic                      core_re_i;
-input  logic                      core_we_i;
-input  logic [3:0]                core_be_i;
-input  logic [XLEN-1:0]           core_addr_i;
-input  logic [XLEN-1:0]           core_wdata_i;
-output logic [XLEN-1:0]           core_rdata_o;
-output logic                      core_access_fault_o;
-```
-
-改为：
-
-```systemverilog
-input  logic                      core_req_valid_i;
-output logic                      core_req_ready_o;
-input  logic                      core_req_write_i;
-input  logic [3:0]                core_req_be_i;
-input  logic [XLEN-1:0]           core_req_addr_i;
-input  logic [XLEN-1:0]           core_req_wdata_i;
-output logic                      core_resp_valid_o;
-output logic [XLEN-1:0]           core_resp_rdata_o;
-output logic                      core_resp_error_o;
-```
-
-旧端口不再作为真实接口使用，后续统一清理注释和顶层连接。
-
-### 7.2 建立 accepted request 脉冲 `已完成`
-
-使用 `core_req_valid_i && core_req_ready_o` 表示 data_subsystem 真正接受了一次 core request：
-
-```systemverilog
-req_accept_fire = core_req_valid_i & core_req_ready_o;
-req_re_accept   = req_accept_fire  & !core_req_write_i;
-req_we_accept   = req_accept_fire  &  core_req_write_i;
-```
-
-`req_accept_fire` 是脉冲，不是可保持 valid。后续 DMEM 写、外设访问脉冲、观察口和 response target 锁存都基于它。
-
-### 7.3 完成 0 wait-state response mux 骨架 `已完成`
-
-当前先保持所有 target 0 wait-state，同拍接受 request、同拍返回 response。该步骤已经完成并通过既有仿真。
-
-已建立的关键口径：
-
-- 组合译码 `target`，区分 `TARGET_DMEM/GPIO0/UART0/TIMER0/UNDEFINED`。
-- `req_dmem_valid/req_gpio0_valid/req_uart0_valid/req_timer0_valid/req_undefined_valid` 表示各 target 的 accepted pulse。
-- `resp_pending_q/resp_target_q` 用于多拍 response 时记住 response 来源。
-- `resp_target = resp_pending_q ? resp_target_q : target`，支持 0 wait-state 空直通。
-- 各 target 当前先用 `resp_*_valid = req_*_valid` 形成同拍 response。
-- `core_resp_valid_o/core_resp_rdata_o/core_resp_error_o` 统一通过 `resp_target` mux 返回。
-
-这个中间态的目标是让 simple bus 语义先与原固定响应行为等价，后续再逐个 target 加延迟。
-
-### 7.4 给 DMEM 增加最小可变延迟 `已完成`
-
-下一步只改 DMEM target，先不要同时改 GPIO/UART/TIMER。目标是验证 core 的 MEM wait/backpressure 能处理真正多拍 data response。
-
-先在 `data_subsystem.sv` 内部实现 DMEM 小状态机即可，不急着拆文件：
-
-```text
-req_dmem_valid 当拍：
-  - write：仍在 accepted 当拍写 simple_ram 一次。
-  - read：锁存 dmem_rdata_i。
-  - 采样 DMEM delay。
-  - 若 delay=0，同拍 resp_dmem_valid。
-  - 若 delay>0，进入 dmem_pending_q，counter 到期后拉高 resp_dmem_valid 一拍。
-```
-
-建议先用局部常量或 parameter 验证：
-
-```systemverilog
-localparam int unsigned DMEM_RESP_DELAY_CYCLES = 0;
-```
-
-跑通后再改成 TB/SoC 输入。
-
-本步骤完成标准：
-
-- `DMEM_RESP_DELAY_CYCLES=0` 时，既有仿真继续 PASS。
-- `DMEM_RESP_DELAY_CYCLES>0` 时，load 能等待 response 后写回。
-- store 不因为等待 response 重复写。
-- `resp_pending_q` 在 DMEM 多拍等待期间保持为 1，`core_req_ready_o=0`。
-- `core_resp_valid_o` 在延迟结束时只拉高一拍。
-
-### 7.5 修正 request/response 观察口口径 `已完成`
-
-DMEM 多拍后，request accepted 与 response valid 不再等价。观察口需要明确：
-
-```text
-dmem_access_o = req_dmem_valid
-mmio_access_o = req_gpio0_valid | req_uart0_valid | req_timer0_valid
-```
-
-也就是说，`dmem_access_o/mmio_access_o` 先表示 accepted request 命中，而不是 response 返回。TB mailbox 第一版也按 accepted DMEM write request 监听。
-
-若后续需要 response 观察，再新增或复用：
-
-```text
-data_req_fire_o
-data_resp_valid_o
-data_resp_error_o
-```
-
-### 7.6 增加 TB 可配置 DMEM delay 输入 `已完成`
-
-DMEM 常量版本跑通后，把 DMEM delay 改成由 SoC/TB 驱动的输入，默认 0。
-
-建议接口：
-
-```systemverilog
-input logic [6:0] dmem_resp_delay_cycles_i;
-```
-
-采样规则：
-
-- `req_dmem_valid` 当拍采样当前 delay。
-- 已经 pending 的 DMEM response 使用锁存的 counter，不受后续修改影响。
-- TB mailbox 后续修改 delay 只影响之后的新 DMEM request。
-
-### 7.7 处理 unknown address response `已完成`
-
-未映射地址先保持 0 wait-state error response：
-
-```text
-resp_undefined_valid = req_undefined_valid
-resp_undefined_rdata = 0
-resp_undefined_error = 1
-```
-
-该路径不产生 DMEM/MMIO 副作用。后续若要验证 delayed unknown address fault，可以按 DMEM delay 状态机复制一个 `undefined_pending_q`。
-
-### 7.8 给 MMIO 增加最小 wrapper/delay `已完成`
-
-DMEM 多拍跑通后，再处理 MMIO。当前 GPIO/UART/TIMER32 本体接口不改，仍是固定响应 register block；先在 `data_subsystem.sv` 内部为 MMIO target 加 wrapper 逻辑：
-
-```text
-req_gpio0_valid/req_uart0_valid/req_timer0_valid 当拍：
-  - 对固定响应外设打一拍 valid/re/we。
-  - 同拍锁存 rdata/access_fault。
-  - 根据该 target 对应的 resp_delay_cycles_i 决定同拍 response 或延迟 response。
-```
-
-重点保证：
-
-- request valid 保持多拍时，外设访问脉冲只发生在 accepted 当拍。
-- response 延迟期间不重复触发 UART TX、UART RXDATA 读清、GPIO W1C、TIMER32 写寄存器。
-- unknown offset 的 `access_fault_o` 被锁存为 delayed `resp_error`。
-
-实际实现采用每个 data target 独立 delay 配置：
-
-```text
-dmem_resp_delay_cycles_i
-gpio0_resp_delay_cycles_i
-uart0_resp_delay_cycles_i
-timer0_resp_delay_cycles_i
-```
-
-这样可以分别覆盖 DMEM、GPIO0、UART0、TIMER0 的 wait-state 行为，同时保持固定响应外设本体接口不变。
-
-### 7.9 后续是否拆出独立 simple slave 模块 `不拆分`
-
-上述逻辑都可先内嵌在 `data_subsystem.sv` 中，便于逐步调试。等 DMEM/MMIO delay 都跑通后，再决定是否拆出：
-
-```text
-rtl/mem/simple_data_ram_slave.sv
-rtl/soc/simple_mmio_slave_wrapper.sv
-```
-
-拆分目标是让 `data_subsystem` 最终更像 decoder/interconnect：
-
-```text
-core simple bus
--> data_subsystem decoder/interconnect
--> dmem/mmio simple slave
--> 固定响应 RAM 或外设本体
-```
-
-后续 FPGA BRAM、外部 SRAM controller、真实慢外设或 accelerator 可以直接实现 simple slave 接口，CPU 和 `data_subsystem` 主体不需要重写。
-
-## 8. 外设寄存器块的事务副作用整理 `已完成`
-
-### 8.1 保持外设 ABI 不变 `无需改动`
-
-`rtl/periph/mmio_gpio.sv`、`rtl/periph/mmio_uart.sv`、`rtl/periph/mmio_timer32.sv` 的软件可见寄存器地址、位定义和读写属性不变。
-
-本阶段只调整外设访问时序口径，不改变寄存器地址、位定义、读写属性和中断行为。
-
-### 8.2 固定采用 wrapper 路线：外设本体仍是固定响应 register block `无需改动`
-
-第一版不改 `mmio_gpio/mmio_uart/mmio_timer32` register block 本体接口，而是在每个外设外层加 simple slave wrapper：
-
-```text
-core simple bus
--> data_subsystem decoder/interconnect
--> periph_simple_slave wrapper
--> 固定响应外设 register block
-```
-
-wrapper 负责 request/ready/response、wait-state、rdata/error 锁存和 accepted pulse 生成。外设 register block 只在 wrapper accepted request 的一个脉冲上被访问一次。
-
-这样既能先把 CPU backpressure 和 data bus 语义跑通，也能让后续真实慢外设或 accelerator 直接实现 simple slave 接口，而不必改变 CPU/data_subsystem 主体。
-
-### 8.3 外设访问脉冲连接规则 `已完成`
-
-外设 wrapper 给固定响应 register block 的 `valid_i/re_i/we_i` 必须来自该 wrapper 的 accepted pulse：
-
-```systemverilog
-periph_req_fire = req_valid_i && req_ready_o;
-
-periph_valid = periph_req_fire;
-periph_re    = periph_req_fire && !req_write_i;
-periph_we    = periph_req_fire &&  req_write_i;
-```
-
-这能保证：
-
-- ready=0 时不触发副作用。
-- request valid 保持多拍时不重复触发副作用。
-- response 延迟期间不重复触发副作用。
-
-外设 wrapper 头注释需要说明：固定响应外设本体的 `valid_i` 是一次 accepted MMIO transaction 的访问脉冲，而不是可保持的 bus valid。
-
-### 8.4 unknown offset 不产生副作用 `已完成`
-
-当前外设一般先写寄存器，再由 `offset_illegal` 输出 access_fault。0834 需要检查所有外设：
-
-- unknown offset 时 `access_fault_o=1`。
-- unknown offset 时不写 RW/RW1C/WO。
-- unknown offset read 不触发读副作用。
-- unknown offset write 不触发 TX event、W1C clear 等副作用。
-
-若现有代码已经通过 `rw_hit/wo_hit/rw1c_hit` 门控写副作用，需要确认读副作用是否也只在合法 offset 下触发。
-
-### 8.5 UART RXDATA 读副作用采样点 `已完成`
-
-第一版采用：
-
-```text
-request accepted 时采样读数据；
-response OK 时软件认为 read 完成；
-读副作用最多触发一次。
-```
-
-若外设仍固定响应、wrapper 在 accepted 当拍访问外设，则 UART RXDATA 的读清会发生在 accepted 当拍，而 response 可能稍后返回。
-
-这种实现可以接受，但必须在文档/注释中明确为：
-
-```text
-外设寄存器访问在 wrapper accepted request 时发生；response 延迟只表示 CPU completion 延迟。
-```
-
-本阶段不做 response OK 时才清 pending 的 delayed commit 版本，避免把固定响应外设改成完整事务外设。
-
-### 8.6 UART TX event `已完成`
-
-写 UART TXDATA 应只在 accepted pulse 且 offset 合法时产生一个 `tx_valid_o` 脉冲。
-
-需要重点检查：
-
-- `tx_valid_o` 不因 response 延迟重复拉高。
-- `tx_valid_o` 不因 request valid 等 ready 重复拉高。
-- unknown offset 或 `be_i[0]=0` 不产生 TX event。
-
-### 8.7 GPIO W1C 和 pending set `已完成`
-
-GPIO 的中断 pending 硬件 set 仍按同步输入每拍运行，不受 bus wait 影响。
-
-软件 W1C clear 只在 accepted pulse 且 offset 为 IRQ_PENDING 时执行一次。
-
-同拍 set/clear 优先级保持当前实现：硬件 set 优先。
-
-### 8.8 TIMER32 计数 `无需修改`
-
-TIMER32 自增仍按 `clk_i` 运行，不因为 CPU bus wait 暂停。
-
-写 MTIME 的“本拍不自增”、写非 MTIME 时允许自增的语义保持。
-
-### 8.9 外设注释和手册同步 `已完成`
-
-三个外设头注释需要统一说明：
-
-- `valid_i` 是外设 wrapper 在 request accepted 当拍产生的一拍访问脉冲。
-- 外设寄存器访问和读写副作用发生在 accepted 当拍。
-- wrapper 的 response 延迟只影响 CPU 看到 completion 的时间，不会让外设重复访问。
-
-`rtl/periph/readme.md` 若已有“外设寄存器访问为固定响应”表述，需要改为更通用的说法：
-
-- 软件 ABI 不变。
-- 在 0834 simple data bus 平台中，寄存器访问由外设 simple slave wrapper 在 accepted request 当拍提交给外设本体。
-- 未知 offset 仍由各外设 `access_fault_o` 上报，并在 data_subsystem 中转换为 bus response error。
-
-若采用 accepted pulse 访问外设，则“本拍”指 request accepted 那一拍，而不是 response 返回那一拍。
-
-## 9. SoC 顶层接口和观察口 `已完成`
-
-### 9.1 修改 `rtl/soc/rv32i_soc.sv` core/data_subsystem 连接 `已完成`
-
-SoC 顶层需要连接新的 simple data bus：
-
-```text
-core.lsu_req_* <-> data_subsystem.core_req_*
-core.lsu_resp_* <-> data_subsystem.core_resp_*
-```
-
-IMEM 仍保持固定响应接口，`simple_rom` 继续由 testbench 实例化并连接到 `rv32i_soc` 的 IMEM 端口。
-
-SoC 顶层同时透出四个 data target response delay 配置输入，并连接到 `data_subsystem`：
-
-```text
-dmem_resp_delay_cycles_i
-gpio0_resp_delay_cycles_i
-uart0_resp_delay_cycles_i
-timer0_resp_delay_cycles_i
-```
-
-四个输入分别控制 DMEM、GPIO0、UART0、TIMER0 的 response delay，默认由 testbench 置 0 时保持 0 wait-state 行为。该实现比原先单一 `mmio_resp_delay_cycles_i` 更便于定向测试分别覆盖 DMEM 与不同 MMIO target 的 backpressure 行为。
-
-### 9.2 更新 data 观察输出 `已完成`
-
-当前 SoC 输出：
-
-```text
-data_re_o
-data_we_o
-data_be_o
-data_addr_o
-data_wdata_o
-data_rdata_o
-data_access_fault_o
-dmem_access_o
-mmio_access_o
-```
-
-0834 后调整为兼容 testbench 的 simple data bus 观察口：
-
-```text
-data_req_valid_o
-data_req_ready_o
-data_req_write_o
-data_req_be_o
-data_req_addr_o
-data_req_wdata_o
-data_resp_valid_o
-data_resp_rdata_o
-data_resp_error_o
-dmem_access_o
-mmio_access_o
-```
-
-新观察口不再沿用 `data_re_o/data_we_o/data_access_fault_o` 等旧固定响应命名，避免把 request 意图、response completion 和 response error 混在一起。
-
-### 9.3 中断连接保持不变 `无需改动`
-
-GPIO/UART/TIMER0 中断汇总：
-
-```text
-MEIP = gpio0_irq_o | uart0_irq_o
-MTIP = timer0_irq_o
-```
-
-保持不变。
-
-memory wait 期间中断 pending 可继续进入 CSR `mip`，core 只在 MEM completion 边界接受。
-
-### 9.4 头注释同步 `已完成`
-
-`rv32i_soc.sv` 头注释需要从“固定响应平台集成”改为：
-
-- IMEM 固定响应。
-- data side 使用 simple request/response。
-- data_subsystem 支持可配置 wait-state/backpressure。
-- SoC 顶层透出 DMEM/GPIO0/UART0/TIMER0 四个 response delay 配置输入。
-- data 观察口按 request/response 分组命名。
-- 外设寄存器 ABI 不变。
-
-## 10. trap/interrupt 精确语义检查点 `检查无误`
-
-### 10.1 delayed access fault
-
-在 `mem_stage`、`core`、`trap_ctrl` 组合后，需要确认：
-
-```text
-response error load:
-  mcause = load access fault
-  mepc   = faulting load PC
-  mtval  = faulting address
-  rd 不写
-
-response error store:
-  mcause = store access fault
-  mepc   = faulting store PC
-  mtval  = faulting address
-  store 不产生成功副作用
-```
-
-### 10.2 interrupt 等待 completion
-
-memory wait 期间：
-
-- `mip` 可以反映 pending。
-- `trap_ctrl` 不应接受 interrupt。
-- `trap_valid_o` 不应因为 pending interrupt 拉高。
-
-response OK 当拍：
-
-- 若 interrupt enable/pending 满足，按 0833 规则接受 interrupt。
-- 当前 load/store 已完成后再进入 interrupt。
-- interrupt 不 kill 当前旧指令普通 WB。
-
-response error 当拍：
-
-- access fault exception 优先。
-- interrupt 保持 pending，不能同拍抢先进入 handler。
-
-### 10.3 MRET/CSR 写同拍 interrupt
-
-0833 语义保持：
-
-```text
-CSR 写+interrupt：先提交 CSR 写，用 commit view 判断并跳到可能更新后的 mtvec。
-MRET+interrupt：先恢复 mstatus，interrupt mepc 使用 MRET 原本要返回的 mepc。
-```
-
-0834 只新增一个约束：
-
-```text
-若它们前面有 older memory wait，则这些 younger 指令不能越过 older memory 指令。
-```
-
-### 10.4 younger redirect
-
-需要在波形中能看到：
-
-- MEM wait 时 EX 阶段 younger branch 结果可存在，但不会更新 PC。
-- response OK 且无 trap/interrupt 时，younger redirect 才能生效。
-- response error 或 interrupt accepted 时，younger redirect 被 kill。
-
-## 11. simple_ram 和 memory 模型处理 `已完成`
-
-### 11.1 `simple_ram.sv` 行为保持不变 `无需改动`
-
-当前 `simple_ram` 是仿真 RAM 模型：
-
-- 写同步。
-- 读组合。
-- 地址按 `DMEM_BASE` 映射到内部 word index。
-
-0834 第一版不改 `simple_ram`，仍由 testbench 实例化。`simple_ram` 继续作为固定响应 DMEM model，response wait-state 由 `data_subsystem` 内部 wrapper 注入。
-
-### 11.2 DMEM simple slave wrapper 实现方式 `已完成`
-
-原计划建议新增：
-
-```text
-rtl/mem/simple_data_ram_slave.sv
-```
-
-职责：
-
-- 接 simple data bus 子集。
-- 连接外置 simple_ram 或后续可替换 memory model。
-- 支持 TB 配置的 wait-state。
-- 保存 pending response 的 rdata/error/counter。
-- 后续 FPGA BRAM 同步读或外部 SRAM controller 可以收敛在该 wrapper 内替换。
-
-实际实现没有新增独立 `rtl/mem/simple_data_ram_slave.sv`，而是在 `data_subsystem.sv` 中内嵌统一 response delay wrapper：
-
-```text
-core simple bus
--> data_subsystem 地址译码
--> 固定响应 DMEM/MMIO target accepted pulse
--> 统一 response delay wrapper
--> core response
-```
-
-该实现同时覆盖 DMEM、GPIO0、UART0、TIMER0 四个 target，并通过四个独立 delay 输入控制：
-
-```text
-dmem_resp_delay_cycles_i
-gpio0_resp_delay_cycles_i
-uart0_resp_delay_cycles_i
-timer0_resp_delay_cycles_i
-```
-
-当前阶段不拆独立 slave 文件更适合逐步调试，也避免在 AXI-Lite、FPGA BRAM、外部 SRAM controller 或 accelerator 接入前过早固化 wrapper 接口。后续如果需要独立 SVA、随机 wait-state slave、真实同步 RAM wrapper 或 AXI-Lite bridge，再拆出 `simple_data_ram_slave` 或通用 simple slave wrapper。
-
-### 11.3 DMEM write 副作用时机 `已完成`
-
-当前 DMEM store 在 request accepted 当拍通过外置 `simple_ram` 写入，但 response 可以延迟返回，软件可见 completion 在 response OK。
-
-这对单 master、单 outstanding、无异常 DMEM 命中场景可接受。
-
-但需要保证：
-
-- 未映射地址不会写。
-- MMIO unknown offset 不会写。
-- accepted 只发生一次。
-
-当前实现满足：
-
-- 未映射地址不会产生 DMEM 写。
-- MMIO unknown offset 由外设 offset decode 和 wrapper response error 处理，不产生对应寄存器副作用。
-- `req_accept_fire` 只打一拍，DMEM/MMIO accepted 副作用不会因 response delay 重复发生。
-
-## 12. 注释和文档同步 `已完成`
-
-### 12.1 RTL 头注释必须同步的文件 `已完成`
-
-已同步：
-
-- `rtl/core/core.sv`
-- `rtl/core/mem_stage.sv`
-- `rtl/core/hazard_unit.sv`
-- `rtl/core/pipe_reg.sv`
-- `rtl/soc/data_subsystem.sv`
-- `rtl/soc/rv32i_soc.sv`
-- `rtl/periph/mmio_gpio.sv`
-- `rtl/periph/mmio_uart.sv`
-- `rtl/periph/mmio_timer32.sv`
-
-本阶段没有新增 `rtl/mem/simple_data_ram_slave.sv` 或独立外设 simple slave wrapper，因此无对应文件头注释需要同步。
-
-重点删除或改写以下过时口径：
-
-```text
-固定响应
-没有 ready/valid backpressure
-mem_stage 是纯组合逻辑
-access_fault 同拍返回
-valid_i 是保持的访问信号
-```
-
-### 12.2 `rtl/periph/readme.md` `已完成`
-
-外设寄存器 ABI 不变，因此手册主体不应大改。
-
-需要补充或检查：
-
-- 外设手册面向软件，不写 RTL 事务实现细节。
-- 说明在支持 wait-state 的平台上，寄存器读写可能不是固定周期。
-- 若采用 wrapper accepted 时触发外设访问，读副作用/写副作用的软件语义仍是“一次成功访问最多一次”，不要求软件关心 accepted/response 内部时序。
-- unknown offset 仍表现为 load/store access fault。
-
-### 12.3 README 当前特性 `已完成`
-
-0834 完成后更新 README：
-
-- 当前特性新增 data-side variable-latency / simple data bus / MEM backpressure。
-- 系统架构图中 `data_subsystem: fixed DMEM/MMIO decoder` 改为 simple data bus decoder/interconnect，并体现 DMEM/MMIO simple slave wrapper。
-- 项目时间戳由提交前统一决定。
-
-README 已同步 0834 当前特性、系统架构图、验证能力、08xx/085x wait-state 测试列表和 directed test 数量。项目时间戳不在计划中写死，由提交前统一补充。
-
-### 12.4 0834 文档 `已完成`
-
-若实现与 `docs/08xx/0834 ...` 有差异，需要在完成后说明：
-
-- 差异点。
-- 为什么实现方案更适合当前代码。
-- 经确认后同步 0834 文档或在 README/plan 中记录最终口径。
-
-当前实现与 0834 文档口径一致：wait-state 建模可以放在 `data_subsystem` 或 responder/wrapper 层，不要求每个固定响应外设本体改成多拍状态机。实际采用 `data_subsystem` 内嵌统一 wrapper，是当前阶段更小、更易调试的实现方式。
-
-## 13. 验证平台前提性准备 `已完成`
-
-本阶段 RTL 写完后，具体功能验证方案另行规划。这里仅列验证平台必须先具备的基础能力，保证后续能继续沿用当前软件自检方式做 0 wait-state 回归和最小固定 wait-state smoke。
-
-阶段5 再把这些基础能力扩展为更完整的 wait-state directed test、SVA、monitor/scoreboard 和 UVM simple-bus/peripheral demo。本阶段不展开具体测试矩阵。
-
-### 13.1 SoC testbench 端口适配 `已完成`
-
-`tb/sv/tb_rv32i_soc.sv` 需要先适配 `rv32i_soc` 的新版端口，保证平台能编译并跑 0 wait-state 回归。
-
-SoC data 观察口从旧固定响应命名迁移到 request/response 分组命名：
-
-```text
-data_req_valid_o
-data_req_ready_o
-data_req_write_o
-data_req_be_o
-data_req_addr_o
-data_req_wdata_o
-data_resp_valid_o
-data_resp_rdata_o
-data_resp_error_o
-dmem_access
-mmio_access
-```
-
-TB 内部信号建议同步改名，避免继续使用 `data_re/data_we/data_access_fault` 表达 req/resp 语义。
-
-SoC 顶层新增四个 response delay 输入，TB 必须驱动默认值：
-
-```text
-dmem_resp_delay_cycles_i   = 0
-gpio0_resp_delay_cycles_i  = 0
-uart0_resp_delay_cycles_i  = 0
-timer0_resp_delay_cycles_i = 0
-```
-
-默认 0 wait-state 是回归基线。未接这些输入时不应让仿真依赖 X/隐式默认值。
-
-### 13.2 trace/monitor 最低观察能力 `已完成`
-
-TB 至少能观察并在必要时打印 request/response 边界、MEM wait 冻结和既有 commit/trap 信息。当前实现通过 SoC 暴露的 `mem_wait_o` 直接观察流水线因 data transaction 未完成而暂停的状态，不在 TB 中反推 wait 条件。
-
-当前最低 trace 口径：
-
-```text
-REQ accepted: data_req_valid && data_req_ready
-MEM_WAIT    : mem_wait_o，并打印 req_valid/req_ready/resp_valid/addr
-RESP event  : data_resp_valid
-commit_valid
-trap_valid
-trap_cause_code
-trap_tval
-```
-
-`data_resp_error` 和 `data_resp_rdata` 当前不作为默认打印项。response error 会进入 trap 路径，默认由 trap trace 观察；只有后续调试需要定位数据返回值时，再临时打开更详细的 response 打印。
-
-data access 打印需要区分：
-
-```text
-REQ accepted
-MEM_WAIT
-RESP event
-COMMIT
-TRAP
-```
-
-不要再把 request 发出或 accepted 当成 load/store 指令提交。
-
-### 13.3 TB mailbox 监听点迁移 `使用 dmem 输入，无需修改`
-
-当前 TB mailbox 通过：
-
-```text
-data_we && dmem_access
-```
-
-监听测试程序写 DMEM 命令地址。
-
-0834 后要改为基于“被接受的 DMEM write request”或“成功完成的 DMEM write response”。
-
-推荐：
-
-```text
-data_req_valid && data_req_ready && data_req_write && dmem_access
-```
-
-因为 TB mailbox 本身是 testbench 侧的外部激励命令，监听 request accepted 更直观，也不会受 response 延迟重复触发。
-
-若后续要验证 store access fault 不产生 TB 命令副作用，则需要改为 successful response completion，并保存 accepted request 地址/数据。当前 mailbox 地址位于 DMEM 已实现区域，不会 fault，因此第一版用 accepted request 即可。
-
-实现时需要用 accepted request 当拍的 `data_req_addr/data_req_wdata` 判断命令，不要用 response 当拍的地址数据组合信号，除非 TB 额外锁存 accepted request payload。
-
-### 13.4 wait-state 注入入口 `已完成`
-
-testbench 需要能配置 wait-state，并支持软件通过现有 TB mailbox 在运行中切换延迟。
-
-最低要求：
-
-- SoC/data_subsystem 透出由 TB 驱动的 delay 配置输入，默认值为 0，并分发到对应 target wrapper。
-- TB 通过 `RESET_RESP_DELAY_CFG` 设置四个 target 的复位默认 delay 配置。默认值为 `32'h0000_0000`，即 DMEM/GPIO0/UART0/TIMER0 全部 0 wait-state；需要临时做非 0 初始 smoke 时，可以改该 localparam。
-- TB mailbox 新增或扩展命令，软件写 mailbox 后，TB 动态更新一个或多个 target 的 delay 配置。
-- delay 新值只影响后续新 accepted request；已经 pending 的 response 使用 target slave `req_fire` 当拍锁存的 delay/counter，不受后续修改影响。
-- DUT 侧 delay 输入保持 7 bit 具体周期数，取值范围为 0..127；TB mailbox 协议使用每 target 8 bit 配置字段，其中 bit[6:0] 是周期参数，bit[7] 是随机模式使能。
-
-TB mailbox 的 32-bit delay 配置字定义为：
-
-```text
-bits [ 7: 0] : DMEM   delay_cfg
-bits [15: 8] : GPIO0  delay_cfg
-bits [23:16] : UART0  delay_cfg
-bits [31:24] : TIMER0 delay_cfg
-
-delay_cfg[7]   = 0: 固定延迟模式，DUT delay = delay_cfg[6:0]
-delay_cfg[7]   = 1: 随机延迟模式，TB 为后续 transaction 生成具体 7-bit delay
-delay_cfg[6:0] = 固定延迟值，或随机模式下的随机上限
-```
-
-随机模式只属于 TB 激励协议。`rv32i_soc/data_subsystem` 不直接接收 bit7，也不把 `8'hff` 当成特殊值；它们只接收 TB 已经生成好的 7-bit 具体 delay。
-
-随机延迟建议按 transaction 更新：某 target 的 request accepted 后，若该 target 处于随机模式，TB 生成下一次该 target request 使用的 delay。这样 DUT 在 accepted 当拍采样到的是稳定值，已经 pending 的 response 不会被随机刷新影响。
-
-随机生成应可复现并受上限约束。后续若需要更灵活的命令行控制，可以再支持：
-
-```text
-+delay_rand_seed=<n>
-+delay_rand_max=<n>
-```
-
-当前阶段不强制实现 plusarg；directed test 通过 `RESET_RESP_DELAY_CFG` 和 mailbox/helper 控制 wait-state。随机模式应使用小上限，避免 directed test 偶发 timeout。
-
-推荐 mailbox 命令语义：
-
-```text
-set_resp_delay_cfg_0({timer0_cfg, uart0_cfg, gpio0_cfg, dmem_cfg})
-```
-
-这些命令只属于 TB 验证协议，不属于 SoC 软件 ABI，也不写入 `rtl/periph/readme.md` 的通用外设手册。
-
-本阶段不要求完整随机验证矩阵，只要求 RTL/TB 具备 directed test 可控插入固定延迟和简单随机延迟的入口。更系统的随机/组合 wait-state 覆盖应放到 0835 的验证环境中展开。
-
-### 13.5 保留现有 PASS/FAIL 自检机制 `已完成`
-
-现有 `TEST_STATUS_ADDR` PASS/FAIL 机制保持。
-
-memory wait 后，测试程序仍通过写 DMEM 状态字结束仿真。testbench 只需确保对该地址的监听不会因为 request valid 保持或 response 延迟重复触发。
-
-### 13.6 0 wait-state 兼容优先 `已完成`
-
-验证平台前提性准备的第一目标不是新增复杂测试，而是让当前全部 0 wait-state directed regression 可以重新编译并执行。
-
-执行顺序建议：
-
-1. 先完成 SoC/TB 端口适配，所有 delay 输入固定为 0。
-2. 再迁移 TB mailbox 监听到 accepted DMEM write request。
-3. 再增加四个 delay 配置寄存变量、`RESET_RESP_DELAY_CFG` 复位默认配置和 mailbox 控制入口。
-4. 最后再写最小 wait-state smoke。
-
-### 13.7 `tb_rv32i_soc_test.h` delay 配置 helper `已完成`
-
-`sw/include/tb_rv32i_soc_test.h` 已补充当前 TB mailbox 的 wait-state 配置协议，供 C directed test 直接调用。
-
-新增 mailbox 地址：
-
-```c
-#define TB_RESP_DELAY_CFG0_ADDR (TB_CMD_BASE + RV32I_U32_C(0x10))
-```
-
-delay 配置字段与 TB 保持一致：
-
-```text
-bits [ 7: 0] : DMEM   delay_cfg
-bits [15: 8] : GPIO0  delay_cfg
-bits [23:16] : UART0  delay_cfg
-bits [31:24] : TIMER0 delay_cfg
-
-delay_cfg[7]   = 0: 固定延迟模式，DUT delay = delay_cfg[6:0]
-delay_cfg[7]   = 1: 随机延迟模式，TB 为后续 transaction 生成 0..delay_cfg[6:0] 的具体 7-bit delay
-delay_cfg[6:0] = 固定延迟值，或随机模式下的最大值
-```
-
-C helper 建议提供 5 个面向语义的函数。函数参数不直接暴露 packed `delay_cfg`，而是拆成随机模式开关和 7-bit 周期参数：
-
-```c
-tb_set_dmem_resp_delay(bool random_en, uint8_t cycles_or_max);
-tb_set_gpio0_resp_delay(bool random_en, uint8_t cycles_or_max);
-tb_set_uart0_resp_delay(bool random_en, uint8_t cycles_or_max);
-tb_set_timer0_resp_delay(bool random_en, uint8_t cycles_or_max);
-
-tb_set_resp_delay(bool dmem_random_en,   uint8_t dmem_cycles_or_max,
-                  bool gpio0_random_en,  uint8_t gpio0_cycles_or_max,
-                  bool uart0_random_en,  uint8_t uart0_cycles_or_max,
-                  bool timer0_random_en, uint8_t timer0_cycles_or_max);
-```
-
-其中 `random_en=false` 表示固定延迟，`cycles_or_max[6:0]` 是固定周期数；`random_en=true` 表示随机延迟，`cycles_or_max[6:0]` 是随机上限，TB 生成 `0..cycles_or_max` 的具体 delay。
-
-内部可以提供一个打包 helper，统一生成 TB mailbox 使用的 8-bit 字段：
-
-```c
-static inline uint8_t tb_pack_resp_delay_cfg(bool random_en, uint8_t cycles_or_max)
-{
-    return (uint8_t)((random_en ? 0x80u : 0x00u) | (cycles_or_max & 0x7fu));
-}
-```
-
-四个单 target helper 需要在软件侧保存当前 32-bit 配置影子值，只更新目标 byte，不改变其他 target 配置，然后把完整 32-bit 配置写到 `TB_RESP_DELAY_CFG0_ADDR`。同时配置四个 target 的 helper 直接打包并写完整配置。
-
-这些 helper 只属于 `tb_rv32i_soc.sv` directed-test 协议，不属于真实 SoC ABI；汇编测试若需要使用，可以直接写 `TB_RESP_DELAY_CFG0_ADDR` 和 packed config，不强制提供汇编函数。
-
-## 14. 回归与验收顺序 `已完成`
-
-### 14.1 0 wait-state 等价回归 `已通过`
-
-RTL 完成后第一步只跑默认 0 wait-state。
-
-目标：
-
-- 现有汇编/C directed tests 继续 PASS。
-- commit/trap 关键 trace 不出现明显乱序。
-- UART TX、GPIO IRQ、TIMER IRQ 不重复触发。
-
-### 14.2 更多定向测试集验证 `已完成`
-
-本节开始为 0834 wait-state 功能补充专用 directed tests。测试仍沿用当前“软件自检 + TB mailbox 激励”的方式；测试程序内部可以用错误位图/计分板式汇总失败项，但本阶段不展开 TB/UVM scoreboard。
-
-测试程序集建议按下列顺序增加：
-
-| 程序 | 类型 | 主要覆盖点 |
-| --- | --- | --- |
-| `0801_dmem_wait_basic` | ASM | 通过 `TB_RESP_DELAY_CFG0_ADDR` 配置 DMEM 固定小延迟，覆盖 `LB/LH/LW/LBU/LHU/SB/SH/SW` 的基本读写、byte enable、符号/零扩展和连续 load/store。 |
-| `0802_dmem_wait_forwarding` | ASM | 覆盖 delayed load 后立即被 ALU、branch、store data 使用；确认 load-use stall + MEM wait 能让 consumer 取到正确数据。额外覆盖 MEM/WB 在 wait 期间作为 forwarding source 被保留，且 WB/commit 不重复。 |
-| `0853_mmio_wait_basic` | C | 分别配置 GPIO0/UART0/TIMER0 固定小延迟，复用当前平台 helper 做寄存器读写。重点检查 MMIO read/write 在 wait 下仍只产生一次副作用：GPIO W1C 不重复清、UART TX store 不重复发送、UART RXDATA 读清只发生一次、TIMER32 写 MTIME/MTIMECMP/CTRL 语义不变。 |
-| `0804_mmio_wait_access_fault` | ASM | 对 GPIO0/UART0/TIMER0 窗口内未定义 offset 做 load/store，配置对应 target 延迟，验证 delayed response error 在 MEM completion 边界转成精确 load/store access fault；faulting store 不产生副作用，fault 后 wrong-path store 被 kill。 |
-| `0805_wait_interrupt_boundary` | ASM | 在 older memory transaction 等 response 期间制造 timer/GPIO/UART interrupt pending，验证 interrupt 不越过 older MEM 指令提前进入 trap；response completion 后再按 0833 精确提交语义接受中断，检查 older store/load 结果、`mepc` 和 pending 清除行为。 |
-| `0856_wait_mixed_random_smoke` | C | 使用 `tb_rv32i_soc_test.h` 的随机 delay helper，给 DMEM/GPIO0/UART0/TIMER0 配置较小随机上限，执行混合 DMEM、GPIO、UART、TIMER 操作。只检查语义正确和最终 PASS，不检查固定周期统计。 |
-
-补充原则：
-
-- 固定延迟优先使用小值，例如 1、2、3、7，先覆盖边界再扩大；随机模式上限保持较小，避免 timeout。
-- 不要求所有旧测试都在非 0 wait-state 下通过固定周期断言。尤其是 timer/GPIO 周期统计类测试，wait-state 会改变 handler 吞吐和观测窗口，只应检查语义，不应沿用 0 wait-state 的严格周期阈值。
-- 访问 fault 测试优先使用“命中外设窗口但 offset 未定义”的地址，因为这类 error 会经过对应 target wrapper 延迟返回；完全未映射地址当前仍保持同拍 error response，可作为 0 wait-state error 路径补充。
-- 每个测试程序应在头注释中写明使用的 delay 配置、期望覆盖的 wait-state 场景，以及哪些现象不作为 PASS/FAIL 标准。
-
-## 15. 完成标准 `已满足`
-
-本阶段完成时应满足：
-
-- core LSU data side 已从固定响应改为 simple request/response。
-- data_subsystem 能完成 simple data bus 地址译码、request 分发和 response 汇总。
-- DMEM/MMIO target simple slave/wrapper 能接受 request、插入 0/N 拍等待并返回 response。
-- MEM wait 能正确冻结 PC/IF/ID/EX/MEM，年轻指令不能越过 older memory instruction。
-- MEM wait 期间必要的 MEM/WB forwarding source 不丢失，同时 WB/commit 不重复发生。
-- 0 wait-state 下现有 regression 不退化。
-- delayed response error 能产生精确 load/store access fault。
-- MMIO write/read 副作用不因 wait 或 valid 保持重复发生。
-- interrupt pending 在 memory wait 期间不被提前接受，只在 completion 边界按 0833 语义处理。
-- 注释不再保留“固定响应/无 backpressure”的过时描述。
-- testbench 已具备后续 wait-state directed tests 所需的 data bus 观察和延迟注入入口。
-
-## 16. data bus 结构体化整理 `已完成`
-
-本章是在 0834 功能已经完成后的代码整理项。目标是把当前为了逐步改造而使用的 `lsu_req_*`、`lsu_resp_*`、`data_req_*`、`data_resp_*`、`core_req_*`、`core_resp_*` 离散信号，收拢为 request/response 结构体连线。该整理不改变协议、状态机、wait-state、trap/interrupt 语义和外设 ABI。
-
-整理原则：
-
-- 只做接口和连线形态整理，不重写 MEM transaction、data_subsystem wrapper 或 TB mailbox 逻辑。
-- `ready` 不是 request payload，建议继续作为离散握手信号保留；`valid` 是否放入结构体按当前 2.1 的 `data_req_t/data_resp_t` 定义执行。
-- `data_resp_t.error` 继续表示 response error，不改变 load/store access fault 生成条件。
-- delay 配置输入 `dmem_resp_delay_cycles_i/gpio0_resp_delay_cycles_i/uart0_resp_delay_cycles_i/timer0_resp_delay_cycles_i` 不属于 data bus 事务结构体，仍保持离散 target 配置输入。
-- TB 顶层观察口可以使用结构体端口，但 trace/monitor 内部仍可拆成局部 wire，便于打印和命中判断。
-- 每改完一层先跑 0 wait-state smoke，再继续下一层，避免把纯连线错误和协议错误混在一起。
-
-### 16.1 新增 data bus 公共类型 `已完成`
-
-建议新建 `rtl/common/data_bus_pkg.sv`，而不是放入 `core_pkg` 或 `soc_pkg`：
-
-```systemverilog
-package data_bus_pkg;
+`default_nettype none
+
+interface simple_bus_if (
+    input logic clk,
+    input logic rst_n
+);
     import core_pkg::*;
+    import data_bus_pkg::*;
 
-    typedef struct packed {
-        logic                      valid;
-        logic                      write;
-        logic [3:0]                be;
-        logic [core_pkg::XLEN-1:0] addr;
-        logic [core_pkg::XLEN-1:0] wdata;
-    } data_req_t;
+    data_req_t  req;
+    logic       req_ready;
+    data_resp_t resp;
 
-    typedef struct packed {
-        logic                      valid;
-        logic [core_pkg::XLEN-1:0] rdata;
-        logic                      error;
-    } data_resp_t;
-endpackage
+    modport master (
+        input  clk,
+        input  rst_n,
+        output req,
+        input  req_ready,
+        input  resp
+    );
+
+    modport slave (
+        input  clk,
+        input  rst_n,
+        input  req,
+        output req_ready,
+        output resp
+    );
+
+    modport monitor (
+        input clk,
+        input rst_n,
+        input req,
+        input req_ready,
+        input resp
+    );
+
+    task automatic drive_idle();
+        req.valid = 1'b0;
+        req.write = 1'b0;
+        req.be    = 4'b0000;
+        req.addr  = '0;
+        req.wdata = '0;
+    endtask
+endinterface
+
+`default_nettype wire
 ```
 
-若工具对 `import core_pkg::*;` 后在 packed struct 内直接写 `XLEN` 支持稳定，也可以把 `core_pkg::XLEN` 简化为 `XLEN`；建议第一版保持显式 `core_pkg::XLEN`，降低包依赖歧义。
+注意：
 
-所有使用 data bus 结构体的 RTL/TB 文件需要增加：
+- 第一版为了降低 race 风险，driver 后续统一在 `negedge clk` 驱动 request，monitor 在 `posedge clk` 采样 request/response。
+- 本阶段暂时不强制使用 clocking block；等基本 UVM 跑通后，如有 race 再引入 clocking block。
+- `req_ready` 不是 request payload，因此独立放在 interface 中。
 
-```systemverilog
-import data_bus_pkg::*;
-```
+### 2.2 更新 filelist 顺序
 
-编译脚本当前使用 `rtl/common/*.sv`，新增 common 包后通常无需修改文件列表；若后续改为显式 filelist，需要保证 `core_pkg.sv` 在 `data_bus_pkg.sv` 前编译。
-
-### 16.2 整理 `rtl/core/mem_stage.sv` 端口 `已完成`
-
-把 MEM 阶段 LSU 端口从离散信号收拢为：
-
-```systemverilog
-input  logic                lsu_req_ready_i;
-output data_bus_pkg::data_req_t  lsu_req_o;
-input  data_bus_pkg::data_resp_t lsu_resp_i;
-```
-
-替换关系：
-
-| 当前离散信号 | 结构体字段 |
-| --- | --- |
-| `lsu_req_valid_o` | `lsu_req_o.valid` |
-| `lsu_req_write_o` | `lsu_req_o.write` |
-| `lsu_req_be_o` | `lsu_req_o.be` |
-| `lsu_req_addr_o` | `lsu_req_o.addr` |
-| `lsu_req_wdata_o` | `lsu_req_o.wdata` |
-| `lsu_resp_valid_i` | `lsu_resp_i.valid` |
-| `lsu_resp_rdata_i` | `lsu_resp_i.rdata` |
-| `lsu_resp_error_i` | `lsu_resp_i.error` |
-
-内部逻辑保持等价：
-
-- `request_accepted = lsu_req_o.valid & lsu_req_ready_i`
-- `transaction_complete_o = lsu_resp_i.valid & (req_outstanding_q | request_accepted)`
-- load 原始数据从 `lsu_resp_i.rdata` 取得。
-- load/store access fault 仍由 `lsu_resp_i.valid && lsu_resp_i.error` 门控。
-
-注意继续保证无效 request 时 payload 不被下游使用；若为了波形可读性，可以在 `always_comb` 中给整个 `lsu_req_o = '0` 后再逐字段赋值。
-
-### 16.3 整理 `rtl/core/core.sv` 端口和 MEM 实例连线 `已完成`
-
-把 core 顶层 data-side 端口整理为：
-
-```systemverilog
-input  logic                lsu_req_ready_i;
-output data_bus_pkg::data_req_t  lsu_req_o;
-input  data_bus_pkg::data_resp_t lsu_resp_i;
-```
-
-需要同步修改：
-
-- core 模块端口列表。
-- `u_mem_stage` 实例端口连接。
-- 顶部头注释中对 LSU request/response 的说明。
-
-不应修改：
-
-- `mem_wait_o` 观察口。
-- trap/CSR/interrupt 相关端口。
-- pipeline register、forwarding、hazard 控制逻辑。
-
-### 16.4 整理 `rtl/soc/rv32i_soc.sv` core 与 data_subsystem 连线 `已完成`
-
-SoC 顶层直接使用结构体观察口作为 core 与 data_subsystem 的连接信号：
-
-```systemverilog
-output data_bus_pkg::data_req_t  data_req_o;
-output logic                     data_req_ready_o;
-output data_bus_pkg::data_resp_t data_resp_o;
-```
-
-core 侧：
-
-```systemverilog
-.lsu_req_ready_i (data_req_ready_o),
-.lsu_req_o       (data_req_o),
-.lsu_resp_i      (data_resp_o)
-```
-
-data_subsystem 侧：
-
-```systemverilog
-.core_req_ready_o (data_req_ready_o),
-.core_req_i       (data_req_o),
-.core_resp_o      (data_resp_o)
-```
-
-该实现把当前：
+修改：
 
 ```text
-data_req_valid_o/data_req_write_o/data_req_be_o/data_req_addr_o/data_req_wdata_o
-data_resp_valid_o/data_resp_rdata_o/data_resp_error_o
+uvm/v6_0/simple_bus/sim/filelist.f
 ```
 
-统一替换为：
+把 interface 放在 package 前：
 
 ```text
-data_req_o.valid/write/be/addr/wdata
-data_resp_o.valid/rdata/error
+../dut/rtl/common/core_pkg.sv
+../dut/rtl/common/soc_pkg.sv
+../dut/rtl/common/data_bus_pkg.sv
+
+../tb/simple_bus_if.sv
+../tb/simple_bus_pkg.sv
+../tb/tb_data_subsystem_uvm.sv
 ```
 
-`data_req_ready_o` 建议保留离散输出。
+原因：后续 package 里的 driver/monitor 会声明 `virtual simple_bus_if vif`，所以 interface 类型要先被编译。
 
-### 16.5 整理 `rtl/soc/data_subsystem.sv` core 侧接口 `已完成`
+### 2.3 UVM top 例化 interface
 
-把 data_subsystem core 侧端口整理为：
-
-```systemverilog
-output logic                     core_req_ready_o;
-input  data_bus_pkg::data_req_t  core_req_i;
-output data_bus_pkg::data_resp_t core_resp_o;
-```
-
-替换关系：
-
-| 当前离散信号 | 结构体字段 |
-| --- | --- |
-| `core_req_valid_i` | `core_req_i.valid` |
-| `core_req_write_i` | `core_req_i.write` |
-| `core_req_be_i` | `core_req_i.be` |
-| `core_req_addr_i` | `core_req_i.addr` |
-| `core_req_wdata_i` | `core_req_i.wdata` |
-| `core_resp_valid_o` | `core_resp_o.valid` |
-| `core_resp_rdata_o` | `core_resp_o.rdata` |
-| `core_resp_error_o` | `core_resp_o.error` |
-
-需要同步检查的位置：
-
-- `req_accept_fire = core_req_i.valid & core_req_ready_o`
-- `req_re_accept/req_we_accept`
-- 地址命中判断使用 `core_req_i.addr`
-- DMEM 外置端口使用 `core_req_i.be/addr/wdata`
-- GPIO/UART/TIMER32 实例端口使用 `core_req_i.be/addr/wdata`
-- `core_resp` mux 先给 `core_resp_o = '0`，再按 target 赋值字段。
-
-子模块实例化附近保留的“后续移除 wrapper、固定响应直连”注释也需要同步成结构体字段口径，例如：
-
-```systemverilog
-// core_resp_o.valid = req_gpio0_valid;
-// core_resp_o.rdata = gpio0_rdata;
-// core_resp_o.error = gpio0_access_fault;
-```
-
-或改写成更抽象的注释，避免恢复时误用旧离散信号名。
-
-### 16.6 整理 `tb/sv/tb_rv32i_soc.sv` 观察口和 trace `已完成`
-
-若 SoC 顶层观察口改为结构体，TB 中对应声明改为：
-
-```systemverilog
-data_bus_pkg::data_req_t  data_req;
-data_bus_pkg::data_resp_t data_resp;
-logic                    data_req_ready;
-```
-
-替换关系：
-
-| 当前 TB 信号 | 新字段 |
-| --- | --- |
-| `data_req_valid` | `data_req.valid` |
-| `data_req_write` | `data_req.write` |
-| `data_req_be` | `data_req.be` |
-| `data_req_addr` | `data_req.addr` |
-| `data_req_wdata` | `data_req.wdata` |
-| `data_resp_valid` | `data_resp.valid` |
-| `data_resp_rdata` | `data_resp.rdata` |
-| `data_resp_error` | `data_resp.error` |
-
-需要重点检查：
-
-- `data_req_fire = data_req.valid & data_req_ready`
-- dmem/gpio/uart/timer hit 判断使用 `data_req.addr`
-- TB mailbox 监听使用 accepted request 当拍的 `data_req.addr/data_req.wdata`
-- DMEM access 地址范围统计使用 `data_req.addr`
-- REQ/MEM_WAIT/RESP trace 打印字段名更新。
-- 随机 delay 更新仍以 `data_req_fire` 和 target hit 为触发条件。
-
-TB 内部若觉得字段写法太长，可以定义只读别名 wire，例如：
-
-```systemverilog
-wire data_req_fire = data_req.valid & data_req_ready;
-wire [core_pkg::XLEN-1:0] data_req_addr = data_req.addr;
-```
-
-但不建议重新建立完整一套离散寄存器，否则整理收益会被抵消。
-
-### 16.7 文档和注释同步 `已完成`
-
-需要同步的位置：
-
-- `plan.md` 中 2.1 按当前要求保持不变，继续记录第一版使用离散端口推进的历史口径；本章记录后续结构体化整理结果。
-- `rtl/core/mem_stage.sv` 头注释：LSU request/response 使用 `data_req_t/data_resp_t`。
-- `rtl/core/core.sv` 头注释：data-side 端口使用结构体 request/response，`ready` 仍为离散握手。
-- `rtl/soc/data_subsystem.sv` 头注释：core 侧 simple data bus 使用结构体接口。
-- `rtl/soc/rv32i_soc.sv` 头注释和端口注释：SoC 观察口若改为结构体，需要说明字段含义。
-- `tb/sv/tb_rv32i_soc.sv` 头注释：trace/monitor 观察的是结构体 data bus。
-- `README.md` ASCII 图一般不需要大改；若正文出现离散端口名示例，需要同步为结构体口径。
-
-`rtl/periph/readme.md` 不需要因本整理修改，因为外设寄存器 ABI 没变。
-
-### 16.8 验证顺序 `已完成`
-
-建议按下列顺序验收：
-
-1. 只新增 `data_bus_pkg.sv`，不改端口，确认编译脚本能找到新包。
-2. 改 `mem_stage.sv` 与 `core.sv`，保持 SoC 外部观察口暂时不变；跑一个 ASM smoke。
-3. 改 `rv32i_soc.sv` 与 `data_subsystem.sv` 内部连接；跑 0 wait-state smoke。
-4. 改 TB 观察口和 trace；跑 `0601_soc_smoke` 与一个 wait-state 测试。
-5. 跑 0 wait-state 全量回归。
-6. 跑 0834 新增 wait-state 测试集。
-
-推荐最小 smoke：
+修改：
 
 ```text
-0601_soc_smoke
-0801_dmem_wait_basic
-0853_mmio_wait_basic
-0856_wait_mixed_random_smoke
+uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
 ```
 
-如果某一步出错，优先检查字段方向和字段名：
+在 clock/reset 后增加：
 
-- `req.valid` 是否仍是 request 发起方驱动。
-- `req_ready` 是否仍是 responder 驱动的离散信号。
-- `resp.valid/rdata/error` 是否仍是 responder 驱动。
-- 0 wait-state 下 `req.valid && req_ready && resp.valid` 同拍是否仍可成立。
+```systemverilog
+simple_bus_if simple_bus_vif (
+    .clk   (clk),
+    .rst_n (rst_n)
+);
+
+initial begin
+    simple_bus_vif.drive_idle();
+end
+```
+
+暂时不设置 `uvm_config_db`，第 7 章接 driver/monitor 时再设置。
+
+### 2.4 验证节点
+
+本章完成标准：
+
+- VCS 能编译 `simple_bus_if.sv`。
+- `simple_bus_base_test` 仍能运行。
+- 没有真实 bus transaction。
+
+## 3. transaction item
+
+目标：定义一笔 simple data bus transaction 的 UVM item。
+
+### 3.1 新增 item 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_item.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_item extends uvm_sequence_item;
+    rand bit                      write;
+    rand logic [core_pkg::XLEN-1:0] addr;
+    rand logic [core_pkg::XLEN-1:0] wdata;
+    rand logic [3:0]              be;
+
+    logic [core_pkg::XLEN-1:0]    rdata;
+    bit                           error;
+    int unsigned                  resp_delay;
+
+    `uvm_object_utils_begin(simple_bus_item)
+        `uvm_field_int(write,      UVM_ALL_ON)
+        `uvm_field_int(addr,       UVM_ALL_ON)
+        `uvm_field_int(wdata,      UVM_ALL_ON)
+        `uvm_field_int(be,         UVM_ALL_ON)
+        `uvm_field_int(rdata,      UVM_ALL_ON)
+        `uvm_field_int(error,      UVM_ALL_ON)
+        `uvm_field_int(resp_delay, UVM_ALL_ON)
+    `uvm_object_utils_end
+
+    constraint c_nonzero_be {
+        be != 4'b0000;
+    }
+
+    function new(string name = "simple_bus_item");
+        super.new(name);
+    endfunction
+
+    function bit is_read();
+        return !write;
+    endfunction
+
+    function bit is_write();
+        return write;
+    endfunction
+
+    function soc_pkg::target_e decode_target();
+        if ((addr >= core_pkg::DMEM_BASE) &&
+            (addr <  core_pkg::DMEM_BASE + core_pkg::DMEM_SIZE_BYTES)) begin
+            return soc_pkg::TARGET_DMEM;
+        end
+        if ((addr >= soc_pkg::GPIO0_BASE) &&
+            (addr <  soc_pkg::GPIO0_BASE + soc_pkg::GPIO0_SIZE_BYTES)) begin
+            return soc_pkg::TARGET_GPIO0;
+        end
+        if ((addr >= soc_pkg::UART0_BASE) &&
+            (addr <  soc_pkg::UART0_BASE + soc_pkg::UART0_SIZE_BYTES)) begin
+            return soc_pkg::TARGET_UART0;
+        end
+        if ((addr >= soc_pkg::TIMER0_BASE) &&
+            (addr <  soc_pkg::TIMER0_BASE + soc_pkg::TIMER0_SIZE_BYTES)) begin
+            return soc_pkg::TARGET_TIMER0;
+        end
+        return soc_pkg::TARGET_UNDEFINED;
+    endfunction
+
+    function string target_name();
+        case (decode_target())
+            soc_pkg::TARGET_DMEM:      return "DMEM";
+            soc_pkg::TARGET_GPIO0:     return "GPIO0";
+            soc_pkg::TARGET_UART0:     return "UART0";
+            soc_pkg::TARGET_TIMER0:    return "TIMER0";
+            default:                   return "UNDEFINED";
+        endcase
+    endfunction
+
+    function string convert2string();
+        return $sformatf("write=%0d addr=0x%08x target=%s be=0x%0x wdata=0x%08x rdata=0x%08x error=%0d delay=%0d",
+                         write, addr, target_name(), be, wdata, rdata, error, resp_delay);
+    endfunction
+endclass
+```
+
+注意：
+
+- 字段宽度使用 `core_pkg::XLEN`，避免后续 XLEN 变化时到处改。
+- 第一版只需要 `be != 0`，更细的 strobe 合法性放到后续 byte enable 测试。
+- target 名称由地址和当前 v6.0 地址图推导，不作为 sequence 随机字段，便于 monitor、timeout 和 log 使用统一口径。
+- `resp_delay` 由 monitor 填，driver 可以不填。
+
+### 3.2 接入 package
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_pkg.sv
+```
+
+include 顺序改为：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_base_test.sv"
+```
+
+### 3.3 在 base test 中临时打印 item
+
+临时修改 `simple_bus_base_test.run_phase`：
+
+```systemverilog
+simple_bus_item tr;
+
+phase.raise_objection(this);
+tr = simple_bus_item::type_id::create("tr");
+tr.write = 1'b1;
+tr.addr  = core_pkg::DMEM_BASE + 32'h40;
+tr.wdata = 32'h1234_5678;
+tr.be    = 4'hf;
+`uvm_info(get_type_name(), tr.convert2string(), UVM_LOW)
+#100ns;
+phase.drop_objection(this);
+```
+
+本临时代码只用于确认 item/package 编译和打印正常；第 7 章引入 env 后可以删掉。
+
+### 3.4 验证节点
+
+本章完成标准：
+
+- VCS 能编译 item。
+- base test 仍能运行。
+- log 中能看到 item 字段打印。
+
+## 4. sequencer 和最小 sequence
+
+目标：让 UVM 能生成一笔或多笔 simple bus transaction。
+
+### 4.1 新增 sequencer 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_sequencer.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_sequencer extends uvm_sequencer #(simple_bus_item);
+    `uvm_component_utils(simple_bus_sequencer)
+
+    function new(string name = "simple_bus_sequencer", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+endclass
+```
+
+### 4.2 新增 smoke sequence 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_smoke_seq.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_smoke_seq extends uvm_sequence #(simple_bus_item);
+    `uvm_object_utils(simple_bus_smoke_seq)
+
+    function new(string name = "simple_bus_smoke_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        simple_bus_item tr;
+
+        send_write(core_pkg::DMEM_BASE + 32'h0000_0040, 32'h1122_3344);
+        send_read (core_pkg::DMEM_BASE + 32'h0000_0040);
+        send_write(core_pkg::DMEM_BASE + 32'h0000_0044, 32'ha5a5_5a5a);
+        send_read (core_pkg::DMEM_BASE + 32'h0000_0044);
+    endtask
+
+    task automatic send_write(logic [core_pkg::XLEN-1:0] addr,
+                              logic [core_pkg::XLEN-1:0] data);
+        simple_bus_item tr;
+
+        tr = simple_bus_item::type_id::create("write_tr");
+        start_item(tr);
+        tr.write = 1'b1;
+        tr.addr  = addr;
+        tr.wdata = data;
+        tr.be    = 4'hf;
+        finish_item(tr);
+    endtask
+
+    task automatic send_read(logic [core_pkg::XLEN-1:0] addr);
+        simple_bus_item tr;
+
+        tr = simple_bus_item::type_id::create("read_tr");
+        start_item(tr);
+        tr.write = 1'b0;
+        tr.addr  = addr;
+        tr.wdata = '0;
+        tr.be    = 4'hf;
+        finish_item(tr);
+    endtask
+endclass
+```
+
+注意：
+
+- sequence 只负责产生“想访问什么”，不直接碰 DUT 信号。
+- read 的 `be` 当前填 `4'hf` 只是为了字段完整；DUT 读路径主要看 `write=0` 和 addr。
+
+### 4.3 接入 package
+
+修改 `simple_bus_pkg.sv`：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_base_test.sv"
+```
+
+### 4.4 base test 临时启动 sequence
+
+在没有 driver 前，不建议真的启动 sequence，因为 sequence 会等 driver 取 item。
+
+本章只要求能编译 sequencer/sequence。若要临时测试 sequence 创建，可以只做：
+
+```systemverilog
+simple_bus_smoke_seq seq;
+seq = simple_bus_smoke_seq::type_id::create("seq");
+`uvm_info(get_type_name(), "smoke sequence object created", UVM_LOW)
+```
+
+### 4.5 验证节点
+
+本章完成标准：
+
+- VCS 能编译 sequencer 和 sequence。
+- base test 仍能运行。
+- 暂时不要求 transaction 被 driver 消费。
+
+## 5. driver
+
+目标：实现一个能按 simple data bus 协议发 request、等待 ready、等待 response 的 UVM driver。
+
+### 5.1 新增 driver 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_driver.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_driver extends uvm_driver #(simple_bus_item);
+    `uvm_component_utils(simple_bus_driver)
+
+    virtual simple_bus_if vif;
+    localparam int unsigned MAX_TRANSACTION_WAIT_CYCLES = 256;
+
+    function new(string name = "simple_bus_driver", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        if (!uvm_config_db #(virtual simple_bus_if)::get(this, "", "vif", vif)) begin
+            `uvm_fatal(get_type_name(), "failed to get virtual simple_bus_if")
+        end
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        simple_bus_item tr;
+
+        drive_idle();
+        wait (vif.rst_n === 1'b1);
+        @(posedge vif.clk);
+
+        forever begin
+            seq_item_port.get_next_item(tr);
+            drive_one(tr);
+            seq_item_port.item_done();
+        end
+    endtask
+
+    task automatic drive_idle();
+        vif.req.valid = 1'b0;
+        vif.req.write = 1'b0;
+        vif.req.be    = 4'b0000;
+        vif.req.addr  = '0;
+        vif.req.wdata = '0;
+    endtask
+
+    task automatic drive_one(simple_bus_item tr);
+        bit accepted;
+        bit got_resp;
+        int unsigned wait_cycles;
+
+        `uvm_info(get_type_name(), {"drive ", tr.convert2string()}, UVM_MEDIUM)
+
+        // 第一版固定在 negedge 驱动，posedge 采样，避免 0 wait-state 组合响应 race。
+        @(negedge vif.clk);
+        vif.req.valid = 1'b1;
+        vif.req.write = tr.write;
+        vif.req.be    = tr.be;
+        vif.req.addr  = tr.addr;
+        vif.req.wdata = tr.wdata;
+
+        accepted = 1'b0;
+        got_resp = 1'b0;
+        wait_cycles = 0;
+
+        while (!accepted) begin
+            @(posedge vif.clk);
+            accepted = vif.req.valid && vif.req_ready;
+            got_resp = vif.resp.valid;
+            wait_cycles++;
+            if (!accepted && wait_cycles >= MAX_TRANSACTION_WAIT_CYCLES) begin
+                `uvm_fatal(get_type_name(),
+                    $sformatf("timeout after %0d cycles waiting for request acceptance: %s",
+                              wait_cycles, tr.convert2string()))
+            end
+        end
+
+        // accepted 后在下一个 negedge 撤销 valid，保证不会跨到下一个 posedge 再次 accepted。
+        @(negedge vif.clk);
+        drive_idle();
+
+        if (!got_resp) begin
+            wait_cycles = 0;
+            do begin
+                @(posedge vif.clk);
+                got_resp = vif.resp.valid;
+                wait_cycles++;
+                if (!got_resp && wait_cycles >= MAX_TRANSACTION_WAIT_CYCLES) begin
+                    `uvm_fatal(get_type_name(),
+                        $sformatf("timeout after %0d cycles waiting for response: %s",
+                                  wait_cycles, tr.convert2string()))
+                end
+            end while (!got_resp);
+        end
+
+        tr.rdata = vif.resp.rdata;
+        tr.error = vif.resp.error;
+        `uvm_info(get_type_name(), {"done  ", tr.convert2string()}, UVM_MEDIUM)
+    endtask
+endclass
+```
+
+注意：
+
+- 当前 simple bus 是 single outstanding，driver 必须等 response 后再取下一笔 item。
+- 0 wait-state 时，accepted 和 response 可能在同一个 posedge 被采样到。
+- `MAX_TRANSACTION_WAIT_CYCLES` 必须大于 test 允许配置的最大 target delay，并留出少量调度裕量；当前 delay 输入为 7 bit，第一版取 256 拍。
+- driver 回填 item 只是方便 sequence/debug；最终检查以 monitor/scoreboard 为准。
+
+### 5.2 接入 package
+
+修改 `simple_bus_pkg.sv`：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_driver.sv"
+`include "simple_bus_base_test.sv"
+```
+
+### 5.3 验证节点
+
+本章完成标准：
+
+- driver 可以编译。
+- 如果后续 env 没有设置 vif，driver 应报清楚 `uvm_fatal`。
+- 还未接 agent/env 前，不要求产生真实 transaction。
+
+## 6. monitor
+
+目标：实现被动 monitor，把 DUT 引脚上真实发生的 request/response 重建成 transaction。
+
+### 6.1 新增 monitor 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_monitor.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_monitor extends uvm_component;
+    `uvm_component_utils(simple_bus_monitor)
+
+    virtual simple_bus_if vif;
+    uvm_analysis_port #(simple_bus_item) item_ap;
+
+    function new(string name = "simple_bus_monitor", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        item_ap = new("item_ap", this);
+        if (!uvm_config_db #(virtual simple_bus_if)::get(this, "", "vif", vif)) begin
+            `uvm_fatal(get_type_name(), "failed to get virtual simple_bus_if")
+        end
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        simple_bus_item pending_tr;
+        bit pending;
+        int unsigned accept_cycle;
+        int unsigned cycle_cnt;
+
+        pending      = 1'b0;
+        accept_cycle = 0;
+        cycle_cnt    = 0;
+
+        forever begin
+            @(posedge vif.clk);
+            cycle_cnt++;
+
+            if (!vif.rst_n) begin
+                pending = 1'b0;
+                continue;
+            end
+
+            // request accepted
+            if (vif.req.valid && vif.req_ready) begin
+                if (pending) begin
+                    `uvm_error(get_type_name(), "second request accepted before previous response")
+                end
+
+                pending_tr = simple_bus_item::type_id::create("pending_tr", this);
+                pending_tr.write = vif.req.write;
+                pending_tr.addr  = vif.req.addr;
+                pending_tr.wdata = vif.req.wdata;
+                pending_tr.be    = vif.req.be;
+
+                pending      = 1'b1;
+                accept_cycle = cycle_cnt;
+            end
+
+            // response valid
+            if (vif.resp.valid) begin
+                if (!pending) begin
+                    `uvm_error(get_type_name(), "orphan response without pending request")
+                end
+                else begin
+                    pending_tr.rdata      = vif.resp.rdata;
+                    pending_tr.error      = vif.resp.error;
+                    pending_tr.resp_delay = cycle_cnt - accept_cycle;
+                    item_ap.write(pending_tr);
+                    `uvm_info(get_type_name(), {"mon   ", pending_tr.convert2string()}, UVM_MEDIUM)
+                    pending = 1'b0;
+                end
+            end
+        end
+    endtask
+endclass
+```
+
+注意：
+
+- monitor 必须只读 interface，不能驱动任何 bus 信号。
+- 同拍 accepted+response 时，本代码先创建 `pending_tr`，再填 response，因此能输出完整 item。
+- monitor 输出的是“DUT 引脚真实发生的 transaction”，scoreboard 后续只看 monitor，不直接信任 driver。
+
+### 6.2 接入 package
+
+修改 `simple_bus_pkg.sv`：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_driver.sv"
+`include "simple_bus_monitor.sv"
+`include "simple_bus_base_test.sv"
+```
+
+### 6.3 验证节点
+
+本章完成标准：
+
+- monitor 可以编译。
+- monitor 不驱动任何 DUT 信号。
+- 后续接入 DUT 后，monitor 输出的 item 应以真实引脚为准，而不是 driver item 为准。
+
+## 7. agent 和 env
+
+目标：把 sequencer、driver、monitor 封装成 agent，并把 agent 接入 env。
+
+### 7.1 新增 agent 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_agent.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_agent extends uvm_agent;
+    `uvm_component_utils(simple_bus_agent)
+
+    simple_bus_sequencer sequencer;
+    simple_bus_driver    driver;
+    simple_bus_monitor   monitor;
+
+    function new(string name = "simple_bus_agent", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+
+        sequencer = simple_bus_sequencer::type_id::create("sequencer", this);
+        driver    = simple_bus_driver   ::type_id::create("driver",    this);
+        monitor   = simple_bus_monitor  ::type_id::create("monitor",   this);
+    endfunction
+
+    function void connect_phase(uvm_phase phase);
+        super.connect_phase(phase);
+        driver.seq_item_port.connect(sequencer.seq_item_export);
+    endfunction
+endclass
+```
+
+第一版只支持 active agent；后续若需要 passive agent 再加 `is_active` 配置。
+
+### 7.2 新增 env 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_env.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_env extends uvm_env;
+    `uvm_component_utils(simple_bus_env)
+
+    simple_bus_agent agent;
+
+    function new(string name = "simple_bus_env", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        agent = simple_bus_agent::type_id::create("agent", this);
+    endfunction
+endclass
+```
+
+第 9 章会在 env 中增加 scoreboard，并连接：
+
+```systemverilog
+agent.monitor.item_ap.connect(scoreboard.item_export);
+```
+
+### 7.3 修改 base test 例化 env
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_base_test.sv
+```
+
+建议更新为：
+
+```systemverilog
+class simple_bus_base_test extends uvm_test;
+    `uvm_component_utils(simple_bus_base_test)
+
+    simple_bus_env env;
+
+    function new(string name = "simple_bus_base_test", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        env = simple_bus_env::type_id::create("env", this);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        phase.raise_objection(this);
+        `uvm_info(get_type_name(), "base test created env only", UVM_LOW)
+        #100ns;
+        phase.drop_objection(this);
+    endtask
+endclass
+```
+
+### 7.4 修改 top 设置 virtual interface
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+```
+
+在 `run_test()` 前设置 virtual interface：
+
+```systemverilog
+initial begin
+    uvm_config_db #(virtual simple_bus_if)::set(
+        null,
+        "uvm_test_top.env.agent*",
+        "vif",
+        simple_bus_vif
+    );
+    run_test();
+end
+```
+
+如果 driver 或 monitor 报拿不到 vif，先把路径放宽为：
+
+```systemverilog
+uvm_config_db #(virtual simple_bus_if)::set(null, "*", "vif", simple_bus_vif);
+```
+
+跑通后再收紧路径。
+
+### 7.5 接入 package
+
+修改 `simple_bus_pkg.sv` include 顺序：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_driver.sv"
+`include "simple_bus_monitor.sv"
+`include "simple_bus_agent.sv"
+`include "simple_bus_env.sv"
+`include "simple_bus_base_test.sv"
+```
+
+### 7.6 验证节点
+
+本章完成标准：
+
+- base test 能创建 env/agent/driver/monitor。
+- driver/monitor 都能拿到 vif。
+- 因为还没有 DUT 和 sequence，允许没有真实 bus transaction。
+
+## 8. DUT harness 和 DMEM smoke
+
+目标：把 `data_subsystem` 接进 UVM top，用 UVM driver 访问 DMEM，完成第一条真正的 UVM smoke。
+
+### 8.1 更新 filelist，接入归档 DUT RTL
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/sim/filelist.f
+```
+
+建议顺序：
+
+```text
+../dut/rtl/common/core_pkg.sv
+../dut/rtl/common/soc_pkg.sv
+../dut/rtl/common/data_bus_pkg.sv
+
+../dut/rtl/periph/mmio_gpio.sv
+../dut/rtl/periph/mmio_uart.sv
+../dut/rtl/periph/mmio_timer32.sv
+../dut/rtl/mem/simple_ram.sv
+../dut/rtl/soc/data_subsystem.sv
+
+../tb/simple_bus_if.sv
+../tb/simple_bus_pkg.sv
+../tb/tb_data_subsystem_uvm.sv
+```
+
+### 8.2 UVM top 增加 DUT 连接信号
+
+在 `tb_data_subsystem_uvm.sv` 中声明：
+
+```systemverilog
+logic                      dmem_we;
+logic [3:0]                dmem_be;
+logic [core_pkg::XLEN-1:0] dmem_addr;
+logic [core_pkg::XLEN-1:0] dmem_wdata;
+logic [core_pkg::XLEN-1:0] dmem_rdata;
+
+logic [31:0] gpio0_in;
+logic [31:0] gpio0_out;
+logic [31:0] gpio0_oe;
+
+logic       uart0_tx_valid;
+logic [7:0] uart0_tx_data;
+logic       uart0_rx_valid;
+logic [7:0] uart0_rx_data;
+
+logic gpio0_irq;
+logic uart0_irq;
+logic timer0_irq;
+
+logic [6:0] dmem_resp_delay_cycles;
+logic [6:0] gpio0_resp_delay_cycles;
+logic [6:0] uart0_resp_delay_cycles;
+logic [6:0] timer0_resp_delay_cycles;
+
+logic dmem_access;
+logic mmio_access;
+```
+
+并给外部输入默认值：
+
+```systemverilog
+initial begin
+    gpio0_in       = 32'h0;
+    uart0_rx_valid = 1'b0;
+    uart0_rx_data  = 8'h00;
+
+    dmem_resp_delay_cycles   = 7'd0;
+    gpio0_resp_delay_cycles  = 7'd0;
+    uart0_resp_delay_cycles  = 7'd0;
+    timer0_resp_delay_cycles = 7'd0;
+end
+```
+
+### 8.3 UVM top 例化 `data_subsystem`
+
+建议骨架：
+
+```systemverilog
+data_subsystem u_data_subsystem (
+    .clk_i       (clk),
+    .rst_n_i     (rst_n),
+
+    .core_req_ready_o (simple_bus_vif.req_ready),
+    .core_req_i       (simple_bus_vif.req),
+    .core_resp_o      (simple_bus_vif.resp),
+
+    .dmem_we_o    (dmem_we),
+    .dmem_be_o    (dmem_be),
+    .dmem_addr_o  (dmem_addr),
+    .dmem_wdata_o (dmem_wdata),
+    .dmem_rdata_i (dmem_rdata),
+
+    .gpio0_in_i  (gpio0_in),
+    .gpio0_out_o (gpio0_out),
+    .gpio0_oe_o  (gpio0_oe),
+
+    .uart0_tx_valid_o (uart0_tx_valid),
+    .uart0_tx_data_o  (uart0_tx_data),
+    .uart0_rx_valid_i (uart0_rx_valid),
+    .uart0_rx_data_i  (uart0_rx_data),
+
+    .gpio0_irq_o  (gpio0_irq),
+    .uart0_irq_o  (uart0_irq),
+    .timer0_irq_o (timer0_irq),
+
+    .dmem_resp_delay_cycles_i   (dmem_resp_delay_cycles),
+    .gpio0_resp_delay_cycles_i  (gpio0_resp_delay_cycles),
+    .uart0_resp_delay_cycles_i  (uart0_resp_delay_cycles),
+    .timer0_resp_delay_cycles_i (timer0_resp_delay_cycles),
+
+    .dmem_access_o (dmem_access),
+    .mmio_access_o (mmio_access)
+);
+```
+
+### 8.4 UVM top 例化 `simple_ram`
+
+建议骨架：
+
+```systemverilog
+simple_ram u_simple_ram (
+    .clk_i   (clk),
+    .we_i    (dmem_we),
+    .be_i    (dmem_be),
+    .addr_i  (dmem_addr),
+    .wdata_i (dmem_wdata),
+    .rdata_o (dmem_rdata)
+);
+```
+
+第一版不需要加 `+dmem=<path>`，RAM 初始值默认 0。
+
+### 8.5 新增 smoke test 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_smoke_test.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_smoke_test extends simple_bus_base_test;
+    `uvm_component_utils(simple_bus_smoke_test)
+
+    function new(string name = "simple_bus_smoke_test", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        simple_bus_smoke_seq seq;
+
+        phase.raise_objection(this);
+        seq = simple_bus_smoke_seq::type_id::create("seq");
+        seq.start(env.agent.sequencer);
+        phase.drop_objection(this);
+    endtask
+endclass
+```
+
+### 8.6 接入 package
+
+修改 `simple_bus_pkg.sv` include 顺序：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_driver.sv"
+`include "simple_bus_monitor.sv"
+`include "simple_bus_agent.sv"
+`include "simple_bus_env.sv"
+`include "simple_bus_base_test.sv"
+`include "simple_bus_smoke_test.sv"
+```
+
+### 8.7 更新 run_all
+
+`uvm/v6_0/simple_bus/sim/run_all.sh` 增加：
+
+```bash
+./run_test.sh simple_bus_smoke_test 1
+```
+
+### 8.8 验证节点
+
+本章完成标准：
+
+- VCS 能跑 `simple_bus_smoke_test`。
+- driver 发出 DMEM write/read。
+- monitor 能观察到 request/response。
+- 暂时允许不检查 read data，但 log 中要能看出事务发生。
+
+## 9. 最小 scoreboard
+
+目标：让 UVM smoke 不只是“跑完”，而是能自动判断 DMEM 基本 read/write 是否正确。
+
+### 9.1 新增 scoreboard 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_scoreboard.sv
+```
+
+建议骨架：
+
+```systemverilog
+class simple_bus_scoreboard extends uvm_component;
+    `uvm_component_utils(simple_bus_scoreboard)
+
+    uvm_analysis_imp #(simple_bus_item, simple_bus_scoreboard) item_export;
+
+    bit [31:0] ref_mem [logic [31:0]];
+    bit        ref_valid [logic [31:0]];
+
+    function new(string name = "simple_bus_scoreboard", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        item_export = new("item_export", this);
+    endfunction
+
+    function void write(simple_bus_item item);
+        if (is_dmem_addr(item.addr)) begin
+            check_dmem(item);
+        end
+        else begin
+            `uvm_info(get_type_name(), {"skip non-DMEM item: ", item.convert2string()}, UVM_MEDIUM)
+        end
+    endfunction
+
+    function bit is_dmem_addr(logic [31:0] addr);
+        return (addr >= core_pkg::DMEM_BASE) &&
+               (addr <  core_pkg::DMEM_BASE + core_pkg::DMEM_SIZE_BYTES);
+    endfunction
+
+    function logic [31:0] word_addr(logic [31:0] addr);
+        return {addr[31:2], 2'b00};
+    endfunction
+
+    function void check_dmem(simple_bus_item item);
+        logic [31:0] wa;
+
+        wa = word_addr(item.addr);
+
+        if (item.error) begin
+            `uvm_error(get_type_name(), {"DMEM access returned error: ", item.convert2string()})
+            return;
+        end
+
+        if (item.write) begin
+            if (item.be != 4'hf) begin
+                `uvm_error(get_type_name(), {"first scoreboard only supports word write: ", item.convert2string()})
+                return;
+            end
+
+            ref_mem[wa]   = item.wdata;
+            ref_valid[wa] = 1'b1;
+        end
+        else begin
+            if (ref_valid.exists(wa) && ref_valid[wa]) begin
+                if (item.rdata !== ref_mem[wa]) begin
+                    `uvm_error(get_type_name(),
+                        $sformatf("DMEM read mismatch addr=0x%08x expected=0x%08x actual=0x%08x",
+                                  wa, ref_mem[wa], item.rdata))
+                end
+            end
+        end
+    endfunction
+endclass
+```
+
+注意：
+
+- 第一版只检查 word write/read，byte enable 后续单独扩。
+- 未写过的地址先不检查初值，避免和 RAM 初始化策略耦合。
+- 如果 VCS 对 `ref_valid.exists(wa)` 写法有类型报错，可把 key 类型统一成 `int unsigned` 或 `logic [31:0]` 后调整。
+
+### 9.2 env 接入 scoreboard
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_env.sv
+```
+
+建议更新：
+
+```systemverilog
+class simple_bus_env extends uvm_env;
+    `uvm_component_utils(simple_bus_env)
+
+    simple_bus_agent      agent;
+    simple_bus_scoreboard scoreboard;
+
+    function new(string name = "simple_bus_env", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        agent      = simple_bus_agent     ::type_id::create("agent",      this);
+        scoreboard = simple_bus_scoreboard::type_id::create("scoreboard", this);
+    endfunction
+
+    function void connect_phase(uvm_phase phase);
+        super.connect_phase(phase);
+        agent.monitor.item_ap.connect(scoreboard.item_export);
+    endfunction
+endclass
+```
+
+### 9.3 接入 package
+
+修改 `simple_bus_pkg.sv` include 顺序：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_driver.sv"
+`include "simple_bus_monitor.sv"
+`include "simple_bus_agent.sv"
+`include "simple_bus_scoreboard.sv"
+`include "simple_bus_env.sv"
+`include "simple_bus_base_test.sv"
+`include "simple_bus_smoke_test.sv"
+```
+
+### 9.4 验证节点
+
+本章完成标准：
+
+- `simple_bus_smoke_test` 能自动 PASS/FAIL。
+- 错误时 scoreboard 打印 addr、expected、actual。
+- DMEM 基本 word write/read 通过。
+
+## 10. 第一批 SVA
+
+目标：接入最少量、价值最高的 simple bus 协议断言。
+
+### 10.1 新增 assertion 文件
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_assert.sv
+```
+
+为了第一版接入简单，建议本文件不单独成 module，而是写成 interface 内可 include 的代码片段，由 `simple_bus_if.sv` include。
+
+建议骨架：
+
+```systemverilog
+`ifdef ASSERT_ON
+    logic assert_outstanding_q;
+    wire  assert_accept_fire = req.valid && req_ready;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            assert_outstanding_q <= 1'b0;
+        end
+        else begin
+            if (assert_accept_fire && !resp.valid) begin
+                assert_outstanding_q <= 1'b1;
+            end
+            if (resp.valid) begin
+                assert_outstanding_q <= 1'b0;
+            end
+        end
+    end
+
+    property p_payload_stable_when_wait;
+        @(posedge clk) disable iff (!rst_n)
+            (req.valid && !req_ready)
+            |=> req.valid && $stable(req.write) && $stable(req.be) &&
+                $stable(req.addr) && $stable(req.wdata);
+    endproperty
+
+    property p_no_second_accept_when_outstanding;
+        @(posedge clk) disable iff (!rst_n)
+            assert_outstanding_q |-> !assert_accept_fire;
+    endproperty
+
+    property p_no_orphan_response;
+        @(posedge clk) disable iff (!rst_n)
+            resp.valid |-> (assert_outstanding_q || assert_accept_fire);
+    endproperty
+
+    property p_reset_quiet;
+        @(posedge clk)
+            !rst_n |-> (!req.valid && !resp.valid);
+    endproperty
+
+    a_payload_stable_when_wait:
+        assert property (p_payload_stable_when_wait);
+
+    a_no_second_accept_when_outstanding:
+        assert property (p_no_second_accept_when_outstanding);
+
+    a_no_orphan_response:
+        assert property (p_no_orphan_response);
+
+    a_reset_quiet:
+        assert property (p_reset_quiet);
+`endif
+```
+
+### 10.2 interface 中 include assertion
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_if.sv
+```
+
+在 `endinterface` 前加入：
+
+```systemverilog
+`include "simple_bus_assert.sv"
+```
+
+注意：
+
+- 该 include 必须在 interface 内部。
+- `simple_bus_assert.sv` 使用 interface 内已有的 `clk/rst_n/req/req_ready/resp`。
+
+### 10.3 run_test 支持 ASSERT_ON
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/sim/run_test.sh
+```
+
+第一版可以默认打开：
+
+```bash
+ASSERT_DEFINE="+define+ASSERT_ON"
+
+vcs -full64 -sverilog -ntb_opts uvm \
+    ${ASSERT_DEFINE} \
+    ...
+```
+
+如果希望可选：
+
+```bash
+ASSERT_DEFINE=${ASSERT_DEFINE:-+define+ASSERT_ON}
+```
+
+然后允许命令行环境覆盖。
+
+### 10.4 验证节点
+
+本章完成标准：
+
+- `simple_bus_smoke_test` 在 SVA 打开时通过。
+- 人为制造一个简单协议错误时，至少一条断言能报错。
+- 断言错误不会混在 scoreboard 错误里看不清，log 中能看出 assertion 名称。
+
+## 11. wait-state smoke
+
+目标：让 UVM 环境覆盖 0 wait-state 和非 0 wait-state。
+
+### 11.1 UVM top 支持 plusarg 配置 delay
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+```
+
+把第 8 章的 delay 默认值改成 plusarg 可配置：
+
+```systemverilog
+int unsigned delay_arg;
+
+initial begin
+    dmem_resp_delay_cycles   = 7'd0;
+    gpio0_resp_delay_cycles  = 7'd0;
+    uart0_resp_delay_cycles  = 7'd0;
+    timer0_resp_delay_cycles = 7'd0;
+
+    if ($value$plusargs("DMEM_DELAY=%d", delay_arg)) begin
+        dmem_resp_delay_cycles = delay_arg[6:0];
+    end
+    if ($value$plusargs("GPIO0_DELAY=%d", delay_arg)) begin
+        gpio0_resp_delay_cycles = delay_arg[6:0];
+    end
+    if ($value$plusargs("UART0_DELAY=%d", delay_arg)) begin
+        uart0_resp_delay_cycles = delay_arg[6:0];
+    end
+    if ($value$plusargs("TIMER0_DELAY=%d", delay_arg)) begin
+        timer0_resp_delay_cycles = delay_arg[6:0];
+    end
+end
+```
+
+第一版只用 `DMEM_DELAY`。
+
+### 11.2 新增 wait-state test
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/simple_bus_wait_test.sv
+```
+
+第一版可以直接继承 smoke test，不改 sequence：
+
+```systemverilog
+class simple_bus_wait_test extends simple_bus_smoke_test;
+    `uvm_component_utils(simple_bus_wait_test)
+
+    function new(string name = "simple_bus_wait_test", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+endclass
+```
+
+原因：
+
+- wait-state 由 top plusarg 控制，不需要 test class 先参与配置。
+- 先保持 UVM class 简单，确认 driver/monitor/scoreboard 能跨 delay 工作。
+
+### 11.3 接入 package
+
+修改 `simple_bus_pkg.sv`，最后加入：
+
+```systemverilog
+`include "simple_bus_wait_test.sv"
+```
+
+完整顺序应类似：
+
+```systemverilog
+`include "simple_bus_item.sv"
+`include "simple_bus_sequencer.sv"
+`include "simple_bus_smoke_seq.sv"
+`include "simple_bus_driver.sv"
+`include "simple_bus_monitor.sv"
+`include "simple_bus_agent.sv"
+`include "simple_bus_scoreboard.sv"
+`include "simple_bus_env.sv"
+`include "simple_bus_base_test.sv"
+`include "simple_bus_smoke_test.sv"
+`include "simple_bus_wait_test.sv"
+```
+
+### 11.4 更新 run_all
+
+修改：
+
+```text
+uvm/v6_0/simple_bus/sim/run_all.sh
+```
+
+加入固定 delay 组合：
+
+```bash
+./run_test.sh simple_bus_smoke_test 1
+./run_test.sh simple_bus_wait_test  1 +DMEM_DELAY=0
+./run_test.sh simple_bus_wait_test  2 +DMEM_DELAY=1
+./run_test.sh simple_bus_wait_test  3 +DMEM_DELAY=3
+./run_test.sh simple_bus_wait_test  4 +DMEM_DELAY=7
+```
+
+### 11.5 monitor 日志检查 delay
+
+确认 monitor 输出的 `resp_delay`：
+
+- `+DMEM_DELAY=0` 时，读写事务应看到 `delay=0`。
+- `+DMEM_DELAY=1` 时，读写事务应看到 `delay=1`。
+- `+DMEM_DELAY=3` 时，读写事务应看到 `delay=3`。
+- 如果实际差 1 拍，优先检查 monitor 计数方式，再检查 `data_subsystem` delay 定义，最后统一计划和实现口径。
+
+### 11.6 验证节点
+
+本章完成标准：
+
+- 0/1/3/7 delay 下 DMEM smoke 都通过。
+- monitor log 能显示不同 response delay。
+- scoreboard 仍能检查 read data。
+- SVA 不误报。
+
+## 12. 后续章节占位：MMIO register smoke
+
+后续根据实际 UVM MVP 完成情况展开。
+
+计划方向：
+
+- GPIO OUT/OE 基本读写。
+- UART TXDATA write event。
+- TIMER32 MTIME/MTIMECMP/CTRL/STATUS 基本读写。
+- unknown offset error。
+
+## 13. 后续章节占位：byte enable 和 error
+
+后续根据实际 UVM MVP 完成情况展开。
+
+计划方向：
+
+- DMEM byte/half/word write strobe。
+- unaligned 地址是否由当前 DUT 定义处理。
+- 未映射地址 error。
+- 外设 unknown offset error。
+
+## 14. 后续章节占位：side effect scoreboard
+
+后续根据实际 UVM MVP 完成情况展开。
+
+计划方向：
+
+- GPIO W1C。
+- UART RXDATA read-clear。
+- UART IRQ_PENDING W1C。
+- TIMER32 compare/pending。
+- wait-state 下副作用只发生一次。
+
+## 15. 后续章节占位：random sequence 和 coverage
+
+后续根据实际 UVM MVP 完成情况展开。
+
+计划方向：
+
+- random target。
+- random read/write。
+- random delay。
+- random legal/illegal offset。
+- target x access type。
+- target x delay。
+- target x response。
+- side effect x delay。
+
+## 16. 后续章节占位：SoC directed 回归保持
+
+后续根据实际 UVM MVP 完成情况展开。
+
+计划方向：
+
+- Verilator `sim/soc_asm/run_all.sh` 保持可运行。
+- Verilator `sim/soc_c/run_all.sh` 保持可运行。
+- UVM 文件不进入 Verilator 默认编译路径。
+- README 说明 Verilator/VCS 分工。
+
+## 17. 后续章节占位：文档与阶段收口
+
+后续根据实际 UVM MVP 完成情况展开。
+
+计划方向：
+
+- README 当前特性同步。
+- `docs/08xx/0835` 若实现口径变化再补充。
+- `uvm/v6_0/simple_bus/tb` 使用说明。
+- `uvm/v6_0/simple_bus/sim` 脚本说明。
+- 阶段完成标准检查。
