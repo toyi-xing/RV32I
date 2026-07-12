@@ -51,7 +51,7 @@
 - 每完成一个可运行节点，先跑一次最小 VCS test，再继续扩展。
 - 本计划中的代码块是建议骨架；实现时可以按 VCS 报错、现有代码风格和个人理解微调，但类名、端口语义、连接方向尽量保持一致。
 
-## 1. VCS/UVM 最小工程骨架 `执行中`
+## 1. VCS/UVM 最小工程骨架 `已完成`
 
 目标：先建立一个能被 VCS 编译运行的空 UVM test，确认工具链、目录、filelist、脚本和 UVM 基础入口都可用。
 
@@ -79,14 +79,14 @@ uvm/
 
 `dut/rtl` 已从 `c2f7d82` / `v6.0-data-side-variable-delay` 复制 `data_subsystem` 的最小编译闭包；`dut/docs/periph_register_abi.md` 保存匹配的外设 ABI。具体文件映射、开发期同步和冻结规则见 `uvm/v6_0/simple_bus/dut/README.md`。
 
-本步骤不改现有 `rtl/`、`tb/sv`、`sim/soc_asm`、`sim/soc_c`。`tb/` 和 `sim/` 当前留空，后续 UVM 源码和脚本由本计划逐步创建。
+本步骤不改现有 `rtl/`、`tb/sv`、`sim/soc_asm`、`sim/soc_c`。工作区建立时 `tb/` 和 `sim/` 留空，后续 UVM 源码和脚本由本计划逐步创建。
 
-### 1.2 新增 UVM package 文件
+### 1.2 新增 UVM package 文件 `已完成`
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_pkg.sv
+uvm/v6_0/simple_bus/tb/pkg/simple_bus_pkg.sv
 ```
 
 第一版先只 include base test，后续每新增 class 文件就追加 include。
@@ -112,12 +112,12 @@ endpackage
 - class 文件通过 package include，不在 `filelist.f` 里重复列。
 - 后续 include 顺序按“被依赖者在前”维护，例如 item 在 driver/monitor 前，base test 在 smoke test 前。
 
-### 1.3 新增空 base test
+### 1.3 新增空 base test `已完成`
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_base_test.sv
+uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.sv
 ```
 
 第一版只验证 UVM test 能启动。
@@ -152,12 +152,12 @@ endclass
 simple_bus_env env;
 ```
 
-### 1.4 新增最小 UVM top
+### 1.4 新增最小 UVM top `已完成`
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 第一版只提供 clock/reset、全局 timeout 和 `run_test()`。
@@ -168,7 +168,7 @@ uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
 `timescale 1ns/1ps
 `default_nettype none
 
-module tb_data_subsystem_uvm;
+module tb_simple_bus_uvm_top;
     import uvm_pkg::*;
     import simple_bus_pkg::*;
 
@@ -197,7 +197,7 @@ endmodule
 
 后续第 2 章会在这里例化 `simple_bus_if`，第 8 章会在这里例化 `data_subsystem` 和 `simple_ram`。
 
-### 1.5 新增 VCS filelist
+### 1.5 新增 VCS filelist `已完成`
 
 新增：
 
@@ -208,12 +208,14 @@ uvm/v6_0/simple_bus/sim/filelist.f
 第一版按顺序加入：
 
 ```text
++incdir+../tb/tests
+
 ../dut/rtl/common/core_pkg.sv
 ../dut/rtl/common/soc_pkg.sv
 ../dut/rtl/common/data_bus_pkg.sv
 
-../tb/simple_bus_pkg.sv
-../tb/tb_data_subsystem_uvm.sv
+../tb/pkg/simple_bus_pkg.sv
+../tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 注意：
@@ -222,7 +224,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 - `soc_pkg.sv`、`data_bus_pkg.sv` 都依赖 `core_pkg.sv`，因此 `core_pkg.sv` 放最前。
 - 后续第 2 章新增 interface 后，`simple_bus_if.sv` 应放在 `simple_bus_pkg.sv` 前，因为 driver/monitor class 会声明 `virtual simple_bus_if vif`。
 
-### 1.6 新增 VCS 单测脚本
+### 1.6 新增 VCS 单测脚本 `已完成`
 
 新增：
 
@@ -242,14 +244,19 @@ uvm/v6_0/simple_bus/sim/run_test.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEST_NAME=${1:-simple_bus_base_test}
-SEED=${2:-1}
-shift || true
-shift || true
-EXTRA_ARGS="$*"
+TEST_NAME="${1:-simple_bus_base_test}"
+SEED="${2:-1}"
 
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-cd "$SCRIPT_DIR"
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+if [ "$#" -gt 0 ]; then
+    shift
+fi
+EXTRA_ARGS=("$@")
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${SCRIPT_DIR}"
 
 BUILD_DIR="build/${TEST_NAME}_${SEED}"
 LOG_DIR="logs"
@@ -257,15 +264,16 @@ mkdir -p "$BUILD_DIR" "$LOG_DIR"
 
 vcs -full64 -sverilog -ntb_opts uvm \
     -timescale=1ns/1ps \
-    +incdir+../tb \
+    -top tb_simple_bus_uvm_top \
     -f filelist.f \
-    -l "${LOG_DIR}/${TEST_NAME}_${SEED}_compile.log" \
-    -o "${BUILD_DIR}/simv"
+    -Mdir="${BUILD_DIR}/csrc" \
+    -o "${BUILD_DIR}/simv" \
+    -l "${LOG_DIR}/${TEST_NAME}_${SEED}_compile.log"
 
 "${BUILD_DIR}/simv" \
     +UVM_TESTNAME="${TEST_NAME}" \
     +ntb_random_seed="${SEED}" \
-    ${EXTRA_ARGS} \
+    "${EXTRA_ARGS[@]}" \
     -l "${LOG_DIR}/${TEST_NAME}_${SEED}.log"
 ```
 
@@ -278,7 +286,7 @@ vcs -full64 -sverilog -ntb_opts uvm \
 
 上述 top 骨架从第一版开始设置全局 timeout，避免 DUT 不返回 response 时仿真永久挂住。该 timeout 是整场 test 的最后保护，不替代 driver 后续对单笔 transaction 的超时诊断。进入第 5 章实现 driver 时，应按最大配置 delay 加裕量设置 request/response 等待上限，超时后用 `uvm_fatal` 打印当前 transaction。
 
-### 1.7 新增 VCS 回归脚本
+### 1.7 新增 VCS 回归脚本 `已完成`
 
 新增：
 
@@ -302,7 +310,7 @@ cd "$SCRIPT_DIR"
 
 后续每新增一个 test，就在这里加一行。
 
-### 1.8 更新 `.gitignore`
+### 1.8 更新 `.gitignore` `已完成`
 
 检查并补充 VCS/UVM 运行产物忽略规则。
 
@@ -322,7 +330,7 @@ uvm/v6_0/simple_bus/sim/*.fsdb
 
 如果本仓库已有更通用 VCS 忽略规则，优先沿用已有风格。
 
-### 1.9 验证节点
+### 1.9 验证节点 `已完成`
 
 本章完成标准：
 
@@ -332,7 +340,7 @@ uvm/v6_0/simple_bus/sim/*.fsdb
 - 没有引入 Verilator directed regression 依赖。
 - `git status` 中只出现预期新增文件和 `.gitignore` 修改。
 
-## 2. simple data bus interface
+## 2. simple data bus interface `执行中`
 
 目标：把 simple data bus 信号集中到一个 SystemVerilog interface 中，供 driver、monitor、assertion 和 DUT harness 共用。
 
@@ -418,8 +426,8 @@ uvm/v6_0/simple_bus/sim/filelist.f
 ../dut/rtl/common/data_bus_pkg.sv
 
 ../tb/simple_bus_if.sv
-../tb/simple_bus_pkg.sv
-../tb/tb_data_subsystem_uvm.sv
+../tb/pkg/simple_bus_pkg.sv
+../tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 原因：后续 package 里的 driver/monitor 会声明 `virtual simple_bus_if vif`，所以 interface 类型要先被编译。
@@ -429,7 +437,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 在 clock/reset 后增加：
@@ -555,7 +563,7 @@ endclass
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_pkg.sv
+uvm/v6_0/simple_bus/tb/pkg/simple_bus_pkg.sv
 ```
 
 include 顺序改为：
@@ -1039,7 +1047,7 @@ agent.monitor.item_ap.connect(scoreboard.item_export);
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_base_test.sv
+uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.sv
 ```
 
 建议更新为：
@@ -1073,7 +1081,7 @@ endclass
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 在 `run_test()` 前设置 virtual interface：
@@ -1147,13 +1155,13 @@ uvm/v6_0/simple_bus/sim/filelist.f
 ../dut/rtl/soc/data_subsystem.sv
 
 ../tb/simple_bus_if.sv
-../tb/simple_bus_pkg.sv
-../tb/tb_data_subsystem_uvm.sv
+../tb/pkg/simple_bus_pkg.sv
+../tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 ### 8.2 UVM top 增加 DUT 连接信号
 
-在 `tb_data_subsystem_uvm.sv` 中声明：
+在 `tb/top/tb_simple_bus_uvm_top.sv` 中声明：
 
 ```systemverilog
 logic                      dmem_we;
@@ -1600,7 +1608,7 @@ ASSERT_DEFINE=${ASSERT_DEFINE:-+define+ASSERT_ON}
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/tb_data_subsystem_uvm.sv
+uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 ```
 
 把第 8 章的 delay 默认值改成 plusarg 可配置：

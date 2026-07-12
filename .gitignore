@@ -14,6 +14,17 @@ obj_dir/
 *.vvp
 *.vcd.*
 
+# VCS/UVM generated outputs
+uvm/v6_0/simple_bus/sim/build/
+uvm/v6_0/simple_bus/sim/logs/
+uvm/v6_0/simple_bus/sim/csrc/
+uvm/v6_0/simple_bus/sim/simv
+uvm/v6_0/simple_bus/sim/simv.daidir/
+uvm/v6_0/simple_bus/sim/ucli.key
+uvm/v6_0/simple_bus/sim/vcs.log
+uvm/v6_0/simple_bus/sim/*.vpd
+uvm/v6_0/simple_bus/sim/*.fsdb
+
 # FPGA/Quartus generated outputs
 fpga/**/project_*_fpga/build/
 fpga/**/project_*_fpga/fpga/quartus/db/
@@ -34,6 +45,7 @@ fpga/**/project_*_fpga/fpga/quartus/*.jic
 fpga/**/project_*_fpga/fpga/quartus/*.cdf
 
 # Tool and temporary files
+.vscode/
 *.tmp
 *.bak
 *.swp
