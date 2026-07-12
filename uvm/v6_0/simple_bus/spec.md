@@ -58,7 +58,16 @@ data_subsystem
         +--> mmio_gpio  GPIO0
         +--> mmio_uart  UART0
         +--> mmio_timer32 TIMER0
+
+UVM delay configuration
+        |
+        v
+data_subsystem_cfg_if
+        |
+        +--> per-target response delay inputs
 ```
+
+`simple_bus_if` 只表达 core-side request/response 协议。`data_subsystem_cfg_if` 是 v6.0 DUT 专用的验证配置通道，用于控制各 target 的 response delay；它不是 simple data bus 的组成部分，也不应进入通用 simple bus agent 的 transaction payload。
 
 `data_subsystem` core 侧接口是验证主接口：
 
@@ -182,11 +191,11 @@ UVM item 应描述一笔完整 simple bus transaction，而不是只描述 reque
 | `rdata` | monitor | response read data。 |
 | `error` | monitor | response error。 |
 | `target` | monitor 或 scoreboard 推导 | DMEM/GPIO0/UART0/TIMER0/undefined。 |
-| `resp_delay` | monitor | accepted request 到 response valid 的间隔拍数。 |
+| `resp_delay` | driver/monitor | accepted request 到 response valid 的间隔拍数；monitor 观察值是 scoreboard/coverage 的主要来源。 |
 
 `resp_delay=0` 表示 request accepted 与 response valid 出现在同一个采样点。
 
-driver 负责发 request 并等待 response；monitor 负责观察总线，把 accepted request 和 response 合成为一笔 transaction 后发给 scoreboard/coverage。
+driver 负责发 request 并等待 response，也可以把本笔实际等待拍数回填到原始 item，供 sequence 做定向自检；monitor 负责独立观察总线，把 accepted request 和 response 合成为一笔 transaction 后发给 scoreboard/coverage。
 
 ## 7. Response Delay 模型
 
@@ -209,7 +218,24 @@ driver 负责发 request 并等待 response；monitor 负责观察总线，把 a
 
 response delay wrapper 是验证配套层，不表示外设本体一定是多拍 slave。GPIO/UART/TIMER32 本体仍是固定响应寄存器块；wrapper 在 request accepted 当拍访问本体并锁存结果，再延迟返回给 core/simple bus master。
 
-UVM 第一版可以通过 plusarg 或 top 内配置常量控制 delay。后续可以扩展为 sequence 随机配置不同 target delay。
+delay 配置通过独立的 `data_subsystem_cfg_if` 连接到上述四个 DUT 输入。该 interface 由 UVM top 实例化，通过 `uvm_config_db` 把 virtual interface 句柄交给需要动态配置的 test/sequence；通用 simple bus driver 仍只负责 `req/req_ready/resp`，不直接拥有 DUT 专用 delay 配置。
+
+delay 配置的生效和切换规则：
+
+- top 在仿真开始时把所有 target delay 初始化为 0，plusarg 可以覆盖本次仿真的固定初值。
+- DUT 在 request accepted 的采样点选择本笔 target delay；配置必须在该采样点前稳定。
+- 动态 test 只在没有 outstanding transaction 时修改 delay。上一笔 response 完成后，才能为下一笔 transaction 设置新值。
+- transaction outstanding 期间不修改配置，避免把“本笔已锁存值”和“下一笔预配置值”混为一谈。
+
+wait-state 验证分三层保留：
+
+| 层次 | delay 行为 | 主要用途 |
+|---|---|---|
+| fixed smoke | 一次 test/run 全程固定为 0、1、3、7 等值 | 基础调试和单一 delay 失败定位。 |
+| deterministic dynamic | 单次 test 按 `0 -> 3 -> 1 -> 7 -> 0` 等序列逐笔切换 | 检查计数器清理、重新锁存和跨 transaction 污染。 |
+| constrained random | 每笔 transaction 随机合法 delay | 扩展组合覆盖，放在确定性动态测试稳定之后。 |
+
+动态 test 应自动比较本笔配置的 expected delay 和 driver/monitor 观察到的 `resp_delay`；日志仍保留 addr、target、configured delay 和 observed delay，便于定位 off-by-one 问题。
 
 ## 8. DMEM 检查边界
 
@@ -401,6 +427,7 @@ UVM 使用本工作区快照中的这些定义：
 - monitor 能把 accepted request 和 response 合成为 transaction。
 - scoreboard 能自动判断 DMEM word write/read PASS/FAIL。
 - 能配置至少 DMEM 的 0 wait 和非 0 wait。
+- 至少一个确定性动态 test 能在单次仿真中逐笔切换多个 delay，并自动检查 configured/observed delay 一致。
 - 至少有一组 simple bus SVA 处于可运行状态。
 - log 中能看出 transaction 的 addr、op、target、delay、error。
 - 全局 timeout 和单 transaction response timeout 能把无响应转换为明确失败，而不是永久挂起。

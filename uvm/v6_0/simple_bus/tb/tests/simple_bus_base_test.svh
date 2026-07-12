@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// 文件      : uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.sv
+// 文件      : uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.svh
 // 用途      : v6.0 simple data bus UVM 环境的最小 base test。
 //
 // 规范：

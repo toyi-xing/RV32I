@@ -280,10 +280,12 @@ simple_bus master agent
 - clock/reset。
 - 连接 DMEM 模型。
 - 连接 GPIO/UART 输入激励。
-- 配置 response delay。
+- 通过独立于 simple bus 协议的 DUT 配置通道控制 response delay。
 - 暴露 GPIO/UART/TIMER event 给 monitor。
 
 这种 harness 属于验证环境，不是 SoC 真实功能。
+
+response delay 配置不应混入通用 simple bus transaction payload。固定 wait-state test 可以在一次仿真中保持单一 delay，便于失败定位；确定性动态 test 应在相邻 transaction 之间切换多个 delay，检查 wrapper 的状态清理和重新锁存；这些场景稳定后，再扩展为逐 transaction constrained-random delay。动态切换只发生在没有 outstanding transaction 时。
 
 ### 4.4 为什么不直接验证 core
 
@@ -564,6 +566,7 @@ scoreboard 不需要模拟 CPU pipeline，也不需要 trap/CSR。
 | mmio register sequence | GPIO/UART/TIMER 已定义寄存器 |
 | error sequence | unknown offset 和未映射地址 |
 | side effect sequence | W1C、读清、UART TX pulse |
+| dynamic delay sequence | 单次 test 在相邻 transaction 之间按确定序列切换 delay |
 
 第二类是 constrained random sequence：
 
@@ -576,6 +579,8 @@ scoreboard 不需要模拟 CPU pipeline，也不需要 trap/CSR。
 | random byte enable | DMEM strobe 组合 |
 
 第一版 random 不追求很大规模。目标是建立方法学和覆盖点，不是替代后续完整 UVM。
+
+固定 delay、确定性动态 delay 和随机 delay 应并行保留，而不是后者替代前者。固定场景适合快速定位单个配置，确定性动态场景适合检查跨 transaction 状态，随机场景用于扩大 target、访问类型和 delay 的组合覆盖。
 
 ## 第8章 coverage 规划
 
@@ -641,18 +646,18 @@ uvm/
         docs/
       tb/
         simple_bus_if.sv
-        simple_bus_assert.sv
+        simple_bus_assert.svh
         simple_bus_pkg.sv
-        simple_bus_item.sv
-        simple_bus_sequencer.sv
-        simple_bus_driver.sv
-        simple_bus_monitor.sv
-        simple_bus_agent.sv
-        simple_bus_scoreboard.sv
-        simple_bus_env.sv
-        simple_bus_base_test.sv
-        simple_bus_smoke_test.sv
-        simple_bus_random_wait_test.sv
+        simple_bus_item.svh
+        simple_bus_sequencer.svh
+        simple_bus_driver.svh
+        simple_bus_monitor.svh
+        simple_bus_agent.svh
+        simple_bus_scoreboard.svh
+        simple_bus_env.svh
+        simple_bus_base_test.svh
+        simple_bus_smoke_test.svh
+        simple_bus_random_wait_test.svh
         tb_data_subsystem_uvm.sv
       sim/
         filelist.f
@@ -849,7 +854,7 @@ UVM log 不应一开始就非常复杂，但应区分：
 | SVA 可运行 | simple data bus 至少有 payload stable、single outstanding、response matched 等关键断言 |
 | UVM smoke | simple-bus/peripheral UVM demo 能发起基本 read/write 并检查 response |
 | scoreboard 基础 | 至少能检查 DMEM 基本读写和一个或多个 MMIO 寄存器语义 |
-| wait-state 覆盖 | UVM 或 directed 能覆盖 0/非 0/random delay |
+| wait-state 覆盖 | UVM 或 directed 能覆盖 0/非 0 固定 delay；UVM 至少有一个单次 test 能逐 transaction 切换多个 delay，后续再扩 random delay |
 | error 覆盖 | unknown offset 或未映射访问能被 checker/scoreboard 检查 |
 | 副作用覆盖 | UART TX、W1C、读清或 TIMER32 语义至少覆盖一类 wait-state 场景 |
 | coverage 有输出 | 能看到 basic covergroup 或 assertion coverage 的结果 |

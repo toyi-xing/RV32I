@@ -9,7 +9,7 @@
 // 功能：
 //   - 产生 100 MHz 时钟和低有效复位。
 //   - 设置 UVM 全局超时并启动命令行指定的 test。
-//   - 后续在本模块中接入 simple_bus_if、DUT 和 virtual interface 配置。
+//   - 已例化 simple_bus_if，后续在本模块中接入 DUT 和 virtual interface 配置。
 //------------------------------------------------------------------------------
 
 `timescale 1ns/1ps
@@ -38,6 +38,13 @@ module tb_simple_bus_uvm_top;
         @(negedge clk);
         rst_n = 1'b1;
     end
+
+    // vif
+    simple_bus_if simple_bus_vif(
+        .clk_i(clk),
+        .rst_n_i(rst_n)
+    );
+
 
     // -------------------------------------------------------------------------
     // UVM test 启动

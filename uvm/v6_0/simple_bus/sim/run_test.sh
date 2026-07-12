@@ -25,6 +25,9 @@ LOG_DIR="logs"
 mkdir -p "${BUILD_DIR}" "${LOG_DIR}"
 
 echo ">>> Compiling ${TEST_NAME} (seed=${SEED})"
+
+# Enable SVA assertions:
+# +define+ASSERT_ON
 vcs -full64 -sverilog -ntb_opts uvm \
     -timescale=1ns/1ps \
     -top tb_simple_bus_uvm_top \

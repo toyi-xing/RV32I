@@ -21,5 +21,5 @@ package simple_bus_pkg;
     import soc_pkg::*;
     import data_bus_pkg::*;
 
-    `include "simple_bus_base_test.sv"
+    `include "simple_bus_base_test.svh"
 endpackage

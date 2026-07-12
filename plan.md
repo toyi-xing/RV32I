@@ -102,7 +102,7 @@ package simple_bus_pkg;
     import soc_pkg::*;
     import data_bus_pkg::*;
 
-    `include "simple_bus_base_test.sv"
+    `include "simple_bus_base_test.svh"
 endpackage
 ```
 
@@ -117,7 +117,7 @@ endpackage
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.sv
+uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.svh
 ```
 
 第一版只验证 UVM test 能启动。
@@ -222,7 +222,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 
 - 这里假设脚本从 `uvm/v6_0/simple_bus/sim` 目录执行；DUT 快照和 UVM testbench 分别使用 `../dut`、`../tb` 相对路径。
 - `soc_pkg.sv`、`data_bus_pkg.sv` 都依赖 `core_pkg.sv`，因此 `core_pkg.sv` 放最前。
-- 后续第 2 章新增 interface 后，`simple_bus_if.sv` 应放在 `simple_bus_pkg.sv` 前，因为 driver/monitor class 会声明 `virtual simple_bus_if vif`。
+- 后续第 2 章新增 interface 后，`simple_bus_if.sv` 应放在 `simple_bus_pkg.sv` 前，因为 driver/monitor class 会声明对应 modport 类型的 virtual interface。
 
 ### 1.6 新增 VCS 单测脚本 `已完成`
 
@@ -340,11 +340,11 @@ uvm/v6_0/simple_bus/sim/*.fsdb
 - 没有引入 Verilator directed regression 依赖。
 - `git status` 中只出现预期新增文件和 `.gitignore` 修改。
 
-## 2. simple data bus interface `执行中`
+## 2. simple data bus interface `已完成`
 
 目标：把 simple data bus 信号集中到一个 SystemVerilog interface 中，供 driver、monitor、assertion 和 DUT harness 共用。
 
-### 2.1 新增 interface 文件
+### 2.1 新增 interface 文件 `已完成`
 
 新增：
 
@@ -368,37 +368,32 @@ interface simple_bus_if (
     logic       req_ready;
     data_resp_t resp;
 
-    modport master (
-        input  clk,
-        input  rst_n,
-        output req,
-        input  req_ready,
-        input  resp
-    );
+    clocking master_drv_cb @(posedge clk);
+        default input #1step output #1ns;
+        input  req_ready;
+        output req;
+        input  resp;
+    endclocking
 
-    modport slave (
-        input  clk,
-        input  rst_n,
-        input  req,
-        output req_ready,
-        output resp
+    clocking mon_cb @(posedge clk);
+        default input #1step;
+        input req;
+        input req_ready;
+        input resp;
+    endclocking
+
+    modport master_drv (
+        clocking master_drv_cb,
+        input    rst_n
     );
 
     modport monitor (
-        input clk,
-        input rst_n,
-        input req,
-        input req_ready,
-        input resp
+        clocking mon_cb,
+        input    rst_n
     );
 
-    task automatic drive_idle();
-        req.valid = 1'b0;
-        req.write = 1'b0;
-        req.be    = 4'b0000;
-        req.addr  = '0;
-        req.wdata = '0;
-    endtask
+    // 当前已加入 reset、X/Z 和 backpressure payload stable 等基础断言。
+    // 第 10 章再补 single outstanding/no orphan response 等状态型断言。
 endinterface
 
 `default_nettype wire
@@ -406,11 +401,13 @@ endinterface
 
 注意：
 
-- 第一版为了降低 race 风险，driver 后续统一在 `negedge clk` 驱动 request，monitor 在 `posedge clk` 采样 request/response。
-- 本阶段暂时不强制使用 clocking block；等基本 UVM 跑通后，如有 race 再引入 clocking block。
+- driver 通过 `master_drv_cb` 驱动 request、采样 ready/response；monitor 通过 `mon_cb` 被动采样，后续 class 不再直接使用裸 `posedge/negedge` 访问 bus 信号。
+- `input #1step` 在时钟沿前采样稳定值，`output #1ns` 在时钟沿后驱动 request，明确避开 DUT 与 testbench 的采样/驱动 race。
+- 当前 UVM 环境只实现 active master，DUT 仍通过普通 module 端口连接，因此不需要 slave modport。保留的 slave clocking block 只作为未来 slave BFM 占位，不参与当前环境。
+- `drive_idle()` 属于 active driver 的行为，放在 `simple_bus_driver` 内，不放在 protocol interface 或 top 中。
 - `req_ready` 不是 request payload，因此独立放在 interface 中。
 
-### 2.2 更新 filelist 顺序
+### 2.2 更新 filelist 顺序 `已完成`
 
 修改：
 
@@ -430,9 +427,9 @@ uvm/v6_0/simple_bus/sim/filelist.f
 ../tb/top/tb_simple_bus_uvm_top.sv
 ```
 
-原因：后续 package 里的 driver/monitor 会声明 `virtual simple_bus_if vif`，所以 interface 类型要先被编译。
+原因：后续 package 里的 driver/monitor 会声明对应 modport 类型的 virtual interface，所以 interface 类型要先被编译。
 
-### 2.3 UVM top 例化 interface
+### 2.3 UVM top 例化 interface `已完成`
 
 修改：
 
@@ -447,23 +444,22 @@ simple_bus_if simple_bus_vif (
     .clk   (clk),
     .rst_n (rst_n)
 );
-
-initial begin
-    simple_bus_vif.drive_idle();
-end
 ```
 
-暂时不设置 `uvm_config_db`，第 7 章接 driver/monitor 时再设置。
+本节不从 top 驱动 request，也暂时不设置 `uvm_config_db`；第 5 章由 driver 实现 idle 驱动，第 7 章接 driver/monitor 时再设置 virtual interface。
 
-### 2.4 验证节点
+当前 interface 已包含基础断言，但第 8 章接入 DUT 前 `req_ready/resp` 还没有真实驱动。因此这些断言应受 `ASSERT_ON` 控制，本阶段保持未定义；第 10 章接入状态型断言后再由 VCS 编译选项统一打开。
+
+### 2.4 验证节点 `已完成`
 
 本章完成标准：
 
 - VCS 能编译 `simple_bus_if.sv`。
 - `simple_bus_base_test` 仍能运行。
+- DUT 尚未接入时不启用 `ASSERT_ON`，不检查悬空的 slave 输出。
 - 没有真实 bus transaction。
 
-## 3. transaction item
+## 3. transaction item `执行中`
 
 目标：定义一笔 simple data bus transaction 的 UVM item。
 
@@ -472,7 +468,7 @@ end
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_item.sv
+uvm/v6_0/simple_bus/tb/simple_bus_item.svh
 ```
 
 建议骨架：
@@ -556,7 +552,7 @@ endclass
 - 字段宽度使用 `core_pkg::XLEN`，避免后续 XLEN 变化时到处改。
 - 第一版只需要 `be != 0`，更细的 strobe 合法性放到后续 byte enable 测试。
 - target 名称由地址和当前 v6.0 地址图推导，不作为 sequence 随机字段，便于 monitor、timeout 和 log 使用统一口径。
-- `resp_delay` 由 monitor 填，driver 可以不填。
+- `resp_delay` 由 monitor 独立观测；driver 也回填原始 sequence item，供定向 dynamic-delay sequence 在 `finish_item()` 返回后自检。
 
 ### 3.2 接入 package
 
@@ -569,8 +565,8 @@ uvm/v6_0/simple_bus/tb/pkg/simple_bus_pkg.sv
 include 顺序改为：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_base_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_base_test.svh"
 ```
 
 ### 3.3 在 base test 中临时打印 item
@@ -610,7 +606,7 @@ phase.drop_objection(this);
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_sequencer.sv
+uvm/v6_0/simple_bus/tb/simple_bus_sequencer.svh
 ```
 
 建议骨架：
@@ -630,7 +626,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_smoke_seq.sv
+uvm/v6_0/simple_bus/tb/simple_bus_smoke_seq.svh
 ```
 
 建议骨架：
@@ -689,10 +685,10 @@ endclass
 修改 `simple_bus_pkg.sv`：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_base_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_base_test.svh"
 ```
 
 ### 4.4 base test 临时启动 sequence
@@ -724,7 +720,7 @@ seq = simple_bus_smoke_seq::type_id::create("seq");
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_driver.sv
+uvm/v6_0/simple_bus/tb/simple_bus_driver.svh
 ```
 
 建议骨架：
@@ -733,7 +729,7 @@ uvm/v6_0/simple_bus/tb/simple_bus_driver.sv
 class simple_bus_driver extends uvm_driver #(simple_bus_item);
     `uvm_component_utils(simple_bus_driver)
 
-    virtual simple_bus_if vif;
+    virtual simple_bus_if.master_drv vif;
     localparam int unsigned MAX_TRANSACTION_WAIT_CYCLES = 256;
 
     function new(string name = "simple_bus_driver", uvm_component parent = null);
@@ -742,8 +738,8 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
-        if (!uvm_config_db #(virtual simple_bus_if)::get(this, "", "vif", vif)) begin
-            `uvm_fatal(get_type_name(), "failed to get virtual simple_bus_if")
+        if (!uvm_config_db #(virtual simple_bus_if.master_drv)::get(this, "", "vif", vif)) begin
+            `uvm_fatal(get_type_name(), "failed to get master driver virtual interface")
         end
     endfunction
 
@@ -752,7 +748,7 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
 
         drive_idle();
         wait (vif.rst_n === 1'b1);
-        @(posedge vif.clk);
+        @(vif.master_drv_cb);
 
         forever begin
             seq_item_port.get_next_item(tr);
@@ -762,11 +758,7 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
     endtask
 
     task automatic drive_idle();
-        vif.req.valid = 1'b0;
-        vif.req.write = 1'b0;
-        vif.req.be    = 4'b0000;
-        vif.req.addr  = '0;
-        vif.req.wdata = '0;
+        vif.master_drv_cb.req <= '0;
     endtask
 
     task automatic drive_one(simple_bus_item tr);
@@ -776,22 +768,23 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
 
         `uvm_info(get_type_name(), {"drive ", tr.convert2string()}, UVM_MEDIUM)
 
-        // 第一版固定在 negedge 驱动，posedge 采样，避免 0 wait-state 组合响应 race。
-        @(negedge vif.clk);
-        vif.req.valid = 1'b1;
-        vif.req.write = tr.write;
-        vif.req.be    = tr.be;
-        vif.req.addr  = tr.addr;
-        vif.req.wdata = tr.wdata;
+        // request 由 clocking block 在采样沿后按 output skew 驱动。
+        @(vif.master_drv_cb);
+        vif.master_drv_cb.req.valid <= 1'b1;
+        vif.master_drv_cb.req.write <= tr.write;
+        vif.master_drv_cb.req.be    <= tr.be;
+        vif.master_drv_cb.req.addr  <= tr.addr;
+        vif.master_drv_cb.req.wdata <= tr.wdata;
 
         accepted = 1'b0;
         got_resp = 1'b0;
         wait_cycles = 0;
+        tr.resp_delay = 0;
 
         while (!accepted) begin
-            @(posedge vif.clk);
-            accepted = vif.req.valid && vif.req_ready;
-            got_resp = vif.resp.valid;
+            @(vif.master_drv_cb);
+            accepted = vif.master_drv_cb.req_ready;
+            got_resp = vif.master_drv_cb.resp.valid;
             wait_cycles++;
             if (!accepted && wait_cycles >= MAX_TRANSACTION_WAIT_CYCLES) begin
                 `uvm_fatal(get_type_name(),
@@ -800,16 +793,16 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
             end
         end
 
-        // accepted 后在下一个 negedge 撤销 valid，保证不会跨到下一个 posedge 再次 accepted。
-        @(negedge vif.clk);
+        // accepted 已在当前 clocking event 被采样；随后按 output skew 撤销 request。
         drive_idle();
 
         if (!got_resp) begin
             wait_cycles = 0;
             do begin
-                @(posedge vif.clk);
-                got_resp = vif.resp.valid;
+                @(vif.master_drv_cb);
+                got_resp = vif.master_drv_cb.resp.valid;
                 wait_cycles++;
+                tr.resp_delay++;
                 if (!got_resp && wait_cycles >= MAX_TRANSACTION_WAIT_CYCLES) begin
                     `uvm_fatal(get_type_name(),
                         $sformatf("timeout after %0d cycles waiting for response: %s",
@@ -818,8 +811,8 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
             end while (!got_resp);
         end
 
-        tr.rdata = vif.resp.rdata;
-        tr.error = vif.resp.error;
+        tr.rdata = vif.master_drv_cb.resp.rdata;
+        tr.error = vif.master_drv_cb.resp.error;
         `uvm_info(get_type_name(), {"done  ", tr.convert2string()}, UVM_MEDIUM)
     endtask
 endclass
@@ -828,7 +821,9 @@ endclass
 注意：
 
 - 当前 simple bus 是 single outstanding，driver 必须等 response 后再取下一笔 item。
-- 0 wait-state 时，accepted 和 response 可能在同一个 posedge 被采样到。
+- `drive_idle()` 由 driver 独占，run phase 开始时先初始化 request，accepted 后再撤销 request。
+- driver 只通过 `master_drv_cb` 驱动/采样 bus，不再混用裸 signal 和 `posedge/negedge`，否则 clocking block 的 race 隔离会失效。
+- 0 wait-state 时，accepted 和 response 可能在同一个 clocking event 被采样到。
 - `MAX_TRANSACTION_WAIT_CYCLES` 必须大于 test 允许配置的最大 target delay，并留出少量调度裕量；当前 delay 输入为 7 bit，第一版取 256 拍。
 - driver 回填 item 只是方便 sequence/debug；最终检查以 monitor/scoreboard 为准。
 
@@ -837,11 +832,11 @@ endclass
 修改 `simple_bus_pkg.sv`：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_driver.sv"
-`include "simple_bus_base_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_driver.svh"
+`include "simple_bus_base_test.svh"
 ```
 
 ### 5.3 验证节点
@@ -861,7 +856,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_monitor.sv
+uvm/v6_0/simple_bus/tb/simple_bus_monitor.svh
 ```
 
 建议骨架：
@@ -870,7 +865,7 @@ uvm/v6_0/simple_bus/tb/simple_bus_monitor.sv
 class simple_bus_monitor extends uvm_component;
     `uvm_component_utils(simple_bus_monitor)
 
-    virtual simple_bus_if vif;
+    virtual simple_bus_if.monitor vif;
     uvm_analysis_port #(simple_bus_item) item_ap;
 
     function new(string name = "simple_bus_monitor", uvm_component parent = null);
@@ -880,8 +875,8 @@ class simple_bus_monitor extends uvm_component;
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
         item_ap = new("item_ap", this);
-        if (!uvm_config_db #(virtual simple_bus_if)::get(this, "", "vif", vif)) begin
-            `uvm_fatal(get_type_name(), "failed to get virtual simple_bus_if")
+        if (!uvm_config_db #(virtual simple_bus_if.monitor)::get(this, "", "vif", vif)) begin
+            `uvm_fatal(get_type_name(), "failed to get monitor virtual interface")
         end
     endfunction
 
@@ -896,7 +891,7 @@ class simple_bus_monitor extends uvm_component;
         cycle_cnt    = 0;
 
         forever begin
-            @(posedge vif.clk);
+            @(vif.mon_cb);
             cycle_cnt++;
 
             if (!vif.rst_n) begin
@@ -905,29 +900,29 @@ class simple_bus_monitor extends uvm_component;
             end
 
             // request accepted
-            if (vif.req.valid && vif.req_ready) begin
+            if (vif.mon_cb.req.valid && vif.mon_cb.req_ready) begin
                 if (pending) begin
                     `uvm_error(get_type_name(), "second request accepted before previous response")
                 end
 
                 pending_tr = simple_bus_item::type_id::create("pending_tr", this);
-                pending_tr.write = vif.req.write;
-                pending_tr.addr  = vif.req.addr;
-                pending_tr.wdata = vif.req.wdata;
-                pending_tr.be    = vif.req.be;
+                pending_tr.write = vif.mon_cb.req.write;
+                pending_tr.addr  = vif.mon_cb.req.addr;
+                pending_tr.wdata = vif.mon_cb.req.wdata;
+                pending_tr.be    = vif.mon_cb.req.be;
 
                 pending      = 1'b1;
                 accept_cycle = cycle_cnt;
             end
 
             // response valid
-            if (vif.resp.valid) begin
+            if (vif.mon_cb.resp.valid) begin
                 if (!pending) begin
                     `uvm_error(get_type_name(), "orphan response without pending request")
                 end
                 else begin
-                    pending_tr.rdata      = vif.resp.rdata;
-                    pending_tr.error      = vif.resp.error;
+                    pending_tr.rdata      = vif.mon_cb.resp.rdata;
+                    pending_tr.error      = vif.mon_cb.resp.error;
                     pending_tr.resp_delay = cycle_cnt - accept_cycle;
                     item_ap.write(pending_tr);
                     `uvm_info(get_type_name(), {"mon   ", pending_tr.convert2string()}, UVM_MEDIUM)
@@ -942,6 +937,7 @@ endclass
 注意：
 
 - monitor 必须只读 interface，不能驱动任何 bus 信号。
+- monitor 只通过 `mon_cb` 采样 request/response，采样时序与 driver clocking block 保持同一口径。
 - 同拍 accepted+response 时，本代码先创建 `pending_tr`，再填 response，因此能输出完整 item。
 - monitor 输出的是“DUT 引脚真实发生的 transaction”，scoreboard 后续只看 monitor，不直接信任 driver。
 
@@ -950,12 +946,12 @@ endclass
 修改 `simple_bus_pkg.sv`：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_driver.sv"
-`include "simple_bus_monitor.sv"
-`include "simple_bus_base_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_driver.svh"
+`include "simple_bus_monitor.svh"
+`include "simple_bus_base_test.svh"
 ```
 
 ### 6.3 验证节点
@@ -975,7 +971,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_agent.sv
+uvm/v6_0/simple_bus/tb/simple_bus_agent.svh
 ```
 
 建议骨架：
@@ -1014,7 +1010,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_env.sv
+uvm/v6_0/simple_bus/tb/simple_bus_env.svh
 ```
 
 建议骨架：
@@ -1047,7 +1043,7 @@ agent.monitor.item_ap.connect(scoreboard.item_export);
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.sv
+uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.svh
 ```
 
 建议更新为：
@@ -1084,13 +1080,19 @@ endclass
 uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 ```
 
-在 `run_test()` 前设置 virtual interface：
+在 `run_test()` 前分别设置 driver 和 monitor 使用的 virtual interface。两者使用不同 modport 类型，因此 `set/get` 的参数化类型必须完全一致：
 
 ```systemverilog
 initial begin
-    uvm_config_db #(virtual simple_bus_if)::set(
+    uvm_config_db #(virtual simple_bus_if.master_drv)::set(
         null,
-        "uvm_test_top.env.agent*",
+        "uvm_test_top.env.agent.driver",
+        "vif",
+        simple_bus_vif
+    );
+    uvm_config_db #(virtual simple_bus_if.monitor)::set(
+        null,
+        "uvm_test_top.env.agent.monitor",
         "vif",
         simple_bus_vif
     );
@@ -1101,24 +1103,25 @@ end
 如果 driver 或 monitor 报拿不到 vif，先把路径放宽为：
 
 ```systemverilog
-uvm_config_db #(virtual simple_bus_if)::set(null, "*", "vif", simple_bus_vif);
+uvm_config_db #(virtual simple_bus_if.master_drv)::set(null, "*", "vif", simple_bus_vif);
+uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus_vif);
 ```
 
-跑通后再收紧路径。
+跑通后再收紧路径。即使 field name 都使用 `"vif"`，两个不同的参数化类型也不会相互替代；driver/monitor 的 `config_db::get()` 必须分别使用对应 modport 类型。
 
 ### 7.5 接入 package
 
 修改 `simple_bus_pkg.sv` include 顺序：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_driver.sv"
-`include "simple_bus_monitor.sv"
-`include "simple_bus_agent.sv"
-`include "simple_bus_env.sv"
-`include "simple_bus_base_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_driver.svh"
+`include "simple_bus_monitor.svh"
+`include "simple_bus_agent.svh"
+`include "simple_bus_env.svh"
+`include "simple_bus_base_test.svh"
 ```
 
 ### 7.6 验证节点
@@ -1144,6 +1147,9 @@ uvm/v6_0/simple_bus/sim/filelist.f
 建议顺序：
 
 ```text
++incdir+../tb/seq
++incdir+../tb/tests
+
 ../dut/rtl/common/core_pkg.sv
 ../dut/rtl/common/soc_pkg.sv
 ../dut/rtl/common/data_bus_pkg.sv
@@ -1154,12 +1160,59 @@ uvm/v6_0/simple_bus/sim/filelist.f
 ../dut/rtl/mem/simple_ram.sv
 ../dut/rtl/soc/data_subsystem.sv
 
-../tb/simple_bus_if.sv
+../tb/interfaces/simple_bus_if.sv
+../tb/interfaces/data_subsystem_cfg_if.sv
 ../tb/pkg/simple_bus_pkg.sv
 ../tb/top/tb_simple_bus_uvm_top.sv
 ```
 
-### 8.2 UVM top 增加 DUT 连接信号
+`simple_bus_if` 是通用 bus 协议 interface；`data_subsystem_cfg_if` 只承载 v6.0 DUT 的 per-target delay 配置。两者分开，避免 simple bus agent 绑定 `data_subsystem` 的验证专用端口。
+
+### 8.2 新增 `data_subsystem_cfg_if`
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/interfaces/data_subsystem_cfg_if.sv
+```
+
+建议骨架：
+
+```systemverilog
+`default_nettype none
+
+interface data_subsystem_cfg_if (
+    input logic clk_i,
+    input logic rst_n_i
+);
+    import soc_pkg::*;
+
+    logic [6:0] dmem_resp_delay_cycles;
+    logic [6:0] gpio0_resp_delay_cycles;
+    logic [6:0] uart0_resp_delay_cycles;
+    logic [6:0] timer0_resp_delay_cycles;
+
+    task automatic set_target_delay(
+        soc_pkg::target_e target_i,
+        logic [6:0]       delay_i
+    );
+        @(negedge clk_i);
+        case (target_i)
+            TARGET_DMEM:   dmem_resp_delay_cycles   = delay_i;
+            TARGET_GPIO0:  gpio0_resp_delay_cycles  = delay_i;
+            TARGET_UART0:  uart0_resp_delay_cycles  = delay_i;
+            TARGET_TIMER0: timer0_resp_delay_cycles = delay_i;
+            default: ;
+        endcase
+    endtask
+endinterface
+
+`default_nettype wire
+```
+
+本 interface 不属于 simple bus 协议。调用者必须保证只在没有 outstanding transaction 时调用 `set_target_delay()`，并让配置在下一笔 request accepted 前稳定。第一版固定 smoke 不调用该 task，只使用 top 设置的默认值。
+
+### 8.3 UVM top 增加 DUT 连接信号和配置 interface
 
 在 `tb/top/tb_simple_bus_uvm_top.sv` 中声明：
 
@@ -1183,16 +1236,20 @@ logic gpio0_irq;
 logic uart0_irq;
 logic timer0_irq;
 
-logic [6:0] dmem_resp_delay_cycles;
-logic [6:0] gpio0_resp_delay_cycles;
-logic [6:0] uart0_resp_delay_cycles;
-logic [6:0] timer0_resp_delay_cycles;
-
 logic dmem_access;
 logic mmio_access;
 ```
 
-并给外部输入默认值：
+例化 DUT 专用配置 interface：
+
+```systemverilog
+data_subsystem_cfg_if data_subsystem_cfg_vif (
+    .clk_i   (clk),
+    .rst_n_i (rst_n)
+);
+```
+
+给外部输入和 delay 配置默认值：
 
 ```systemverilog
 initial begin
@@ -1200,14 +1257,25 @@ initial begin
     uart0_rx_valid = 1'b0;
     uart0_rx_data  = 8'h00;
 
-    dmem_resp_delay_cycles   = 7'd0;
-    gpio0_resp_delay_cycles  = 7'd0;
-    uart0_resp_delay_cycles  = 7'd0;
-    timer0_resp_delay_cycles = 7'd0;
+    data_subsystem_cfg_vif.dmem_resp_delay_cycles   = 7'd0;
+    data_subsystem_cfg_vif.gpio0_resp_delay_cycles  = 7'd0;
+    data_subsystem_cfg_vif.uart0_resp_delay_cycles  = 7'd0;
+    data_subsystem_cfg_vif.timer0_resp_delay_cycles = 7'd0;
 end
 ```
 
-### 8.3 UVM top 例化 `data_subsystem`
+在调用 `run_test()` 的同一个 initial block 中，把配置 interface 句柄交给 test；固定 smoke 可以不读取它：
+
+```systemverilog
+uvm_config_db #(virtual data_subsystem_cfg_if)::set(
+    null,
+    "uvm_test_top",
+    "cfg_vif",
+    data_subsystem_cfg_vif
+);
+```
+
+### 8.4 UVM top 例化 `data_subsystem`
 
 建议骨架：
 
@@ -1239,17 +1307,21 @@ data_subsystem u_data_subsystem (
     .uart0_irq_o  (uart0_irq),
     .timer0_irq_o (timer0_irq),
 
-    .dmem_resp_delay_cycles_i   (dmem_resp_delay_cycles),
-    .gpio0_resp_delay_cycles_i  (gpio0_resp_delay_cycles),
-    .uart0_resp_delay_cycles_i  (uart0_resp_delay_cycles),
-    .timer0_resp_delay_cycles_i (timer0_resp_delay_cycles),
+    .dmem_resp_delay_cycles_i
+        (data_subsystem_cfg_vif.dmem_resp_delay_cycles),
+    .gpio0_resp_delay_cycles_i
+        (data_subsystem_cfg_vif.gpio0_resp_delay_cycles),
+    .uart0_resp_delay_cycles_i
+        (data_subsystem_cfg_vif.uart0_resp_delay_cycles),
+    .timer0_resp_delay_cycles_i
+        (data_subsystem_cfg_vif.timer0_resp_delay_cycles),
 
     .dmem_access_o (dmem_access),
     .mmio_access_o (mmio_access)
 );
 ```
 
-### 8.4 UVM top 例化 `simple_ram`
+### 8.5 UVM top 例化 `simple_ram`
 
 建议骨架：
 
@@ -1266,12 +1338,12 @@ simple_ram u_simple_ram (
 
 第一版不需要加 `+dmem=<path>`，RAM 初始值默认 0。
 
-### 8.5 新增 smoke test 文件
+### 8.6 新增 smoke test 文件
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_smoke_test.sv
+uvm/v6_0/simple_bus/tb/simple_bus_smoke_test.svh
 ```
 
 建议骨架：
@@ -1295,23 +1367,23 @@ class simple_bus_smoke_test extends simple_bus_base_test;
 endclass
 ```
 
-### 8.6 接入 package
+### 8.7 接入 package
 
 修改 `simple_bus_pkg.sv` include 顺序：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_driver.sv"
-`include "simple_bus_monitor.sv"
-`include "simple_bus_agent.sv"
-`include "simple_bus_env.sv"
-`include "simple_bus_base_test.sv"
-`include "simple_bus_smoke_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_driver.svh"
+`include "simple_bus_monitor.svh"
+`include "simple_bus_agent.svh"
+`include "simple_bus_env.svh"
+`include "simple_bus_base_test.svh"
+`include "simple_bus_smoke_test.svh"
 ```
 
-### 8.7 更新 run_all
+### 8.8 更新 run_all
 
 `uvm/v6_0/simple_bus/sim/run_all.sh` 增加：
 
@@ -1319,13 +1391,14 @@ endclass
 ./run_test.sh simple_bus_smoke_test 1
 ```
 
-### 8.8 验证节点
+### 8.9 验证节点
 
 本章完成标准：
 
 - VCS 能跑 `simple_bus_smoke_test`。
 - driver 发出 DMEM write/read。
 - monitor 能观察到 request/response。
+- `data_subsystem_cfg_if` 默认值为 0，普通 smoke 保持 0 wait-state。
 - 暂时允许不检查 read data，但 log 中要能看出事务发生。
 
 ## 9. 最小 scoreboard
@@ -1337,7 +1410,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_scoreboard.sv
+uvm/v6_0/simple_bus/tb/simple_bus_scoreboard.svh
 ```
 
 建议骨架：
@@ -1421,7 +1494,7 @@ endclass
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_env.sv
+uvm/v6_0/simple_bus/tb/simple_bus_env.svh
 ```
 
 建议更新：
@@ -1455,16 +1528,16 @@ endclass
 修改 `simple_bus_pkg.sv` include 顺序：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_driver.sv"
-`include "simple_bus_monitor.sv"
-`include "simple_bus_agent.sv"
-`include "simple_bus_scoreboard.sv"
-`include "simple_bus_env.sv"
-`include "simple_bus_base_test.sv"
-`include "simple_bus_smoke_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_driver.svh"
+`include "simple_bus_monitor.svh"
+`include "simple_bus_agent.svh"
+`include "simple_bus_scoreboard.svh"
+`include "simple_bus_env.svh"
+`include "simple_bus_base_test.svh"
+`include "simple_bus_smoke_test.svh"
 ```
 
 ### 9.4 验证节点
@@ -1475,19 +1548,19 @@ endclass
 - 错误时 scoreboard 打印 addr、expected、actual。
 - DMEM 基本 word write/read 通过。
 
-## 10. 第一批 SVA
+## 10. 第一批状态型 SVA
 
-目标：接入最少量、价值最高的 simple bus 协议断言。
+目标：在 interface 已有 reset、X/Z 和 backpressure payload stable 基础断言之上，补充最少量、价值最高的 single-outstanding 状态型协议断言。
 
 ### 10.1 新增 assertion 文件
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_assert.sv
+uvm/v6_0/simple_bus/tb/simple_bus_assert.svh
 ```
 
-为了第一版接入简单，建议本文件不单独成 module，而是写成 interface 内可 include 的代码片段，由 `simple_bus_if.sv` include。
+为了第一版接入简单，建议本文件不单独成 module，而是写成 interface 内可 include 的代码片段，由 `simple_bus_if.sv` include。当前 interface 已有的基础断言不在这里重复实现；所有基础/状态型断言统一受 `ASSERT_ON` 控制。
 
 建议骨架：
 
@@ -1510,13 +1583,6 @@ uvm/v6_0/simple_bus/tb/simple_bus_assert.sv
         end
     end
 
-    property p_payload_stable_when_wait;
-        @(posedge clk) disable iff (!rst_n)
-            (req.valid && !req_ready)
-            |=> req.valid && $stable(req.write) && $stable(req.be) &&
-                $stable(req.addr) && $stable(req.wdata);
-    endproperty
-
     property p_no_second_accept_when_outstanding;
         @(posedge clk) disable iff (!rst_n)
             assert_outstanding_q |-> !assert_accept_fire;
@@ -1527,22 +1593,11 @@ uvm/v6_0/simple_bus/tb/simple_bus_assert.sv
             resp.valid |-> (assert_outstanding_q || assert_accept_fire);
     endproperty
 
-    property p_reset_quiet;
-        @(posedge clk)
-            !rst_n |-> (!req.valid && !resp.valid);
-    endproperty
-
-    a_payload_stable_when_wait:
-        assert property (p_payload_stable_when_wait);
-
     a_no_second_accept_when_outstanding:
         assert property (p_no_second_accept_when_outstanding);
 
     a_no_orphan_response:
         assert property (p_no_orphan_response);
-
-    a_reset_quiet:
-        assert property (p_reset_quiet);
 `endif
 ```
 
@@ -1557,13 +1612,15 @@ uvm/v6_0/simple_bus/tb/simple_bus_if.sv
 在 `endinterface` 前加入：
 
 ```systemverilog
-`include "simple_bus_assert.sv"
+`include "simple_bus_assert.svh"
 ```
 
 注意：
 
 - 该 include 必须在 interface 内部。
-- `simple_bus_assert.sv` 使用 interface 内已有的 `clk/rst_n/req/req_ready/resp`。
+- `simple_bus_assert.svh` 使用 interface 内已有的 `clk/rst_n/req/req_ready/resp`。
+- interface 内已有的基础断言也必须放在同一个 `ASSERT_ON` 条件下，避免第 2～7 章 DUT 尚未接入时对悬空 slave 输出产生误报。
+- 已实现的 reset、X/Z 和 payload stable 断言不在本文件重复定义；本文件只增加需要 outstanding 状态记录的断言。
 
 ### 10.3 run_test 支持 ASSERT_ON
 
@@ -1573,7 +1630,7 @@ uvm/v6_0/simple_bus/tb/simple_bus_if.sv
 uvm/v6_0/simple_bus/sim/run_test.sh
 ```
 
-第一版可以默认打开：
+第 8、9 章 DUT/driver/monitor/scoreboard 已接通后，第一版可以默认打开：
 
 ```bash
 ASSERT_DEFINE="+define+ASSERT_ON"
@@ -1595,7 +1652,7 @@ ASSERT_DEFINE=${ASSERT_DEFINE:-+define+ASSERT_ON}
 
 本章完成标准：
 
-- `simple_bus_smoke_test` 在 SVA 打开时通过。
+- `simple_bus_smoke_test` 在基础和状态型 SVA 同时打开时通过。
 - 人为制造一个简单协议错误时，至少一条断言能报错。
 - 断言错误不会混在 scoreboard 错误里看不清，log 中能看出 assertion 名称。
 
@@ -1617,34 +1674,34 @@ uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 int unsigned delay_arg;
 
 initial begin
-    dmem_resp_delay_cycles   = 7'd0;
-    gpio0_resp_delay_cycles  = 7'd0;
-    uart0_resp_delay_cycles  = 7'd0;
-    timer0_resp_delay_cycles = 7'd0;
+    data_subsystem_cfg_vif.dmem_resp_delay_cycles   = 7'd0;
+    data_subsystem_cfg_vif.gpio0_resp_delay_cycles  = 7'd0;
+    data_subsystem_cfg_vif.uart0_resp_delay_cycles  = 7'd0;
+    data_subsystem_cfg_vif.timer0_resp_delay_cycles = 7'd0;
 
     if ($value$plusargs("DMEM_DELAY=%d", delay_arg)) begin
-        dmem_resp_delay_cycles = delay_arg[6:0];
+        data_subsystem_cfg_vif.dmem_resp_delay_cycles = delay_arg[6:0];
     end
     if ($value$plusargs("GPIO0_DELAY=%d", delay_arg)) begin
-        gpio0_resp_delay_cycles = delay_arg[6:0];
+        data_subsystem_cfg_vif.gpio0_resp_delay_cycles = delay_arg[6:0];
     end
     if ($value$plusargs("UART0_DELAY=%d", delay_arg)) begin
-        uart0_resp_delay_cycles = delay_arg[6:0];
+        data_subsystem_cfg_vif.uart0_resp_delay_cycles = delay_arg[6:0];
     end
     if ($value$plusargs("TIMER0_DELAY=%d", delay_arg)) begin
-        timer0_resp_delay_cycles = delay_arg[6:0];
+        data_subsystem_cfg_vif.timer0_resp_delay_cycles = delay_arg[6:0];
     end
 end
 ```
 
-第一版只用 `DMEM_DELAY`。
+第一版固定 wait-state smoke 只用 `DMEM_DELAY`。plusarg 负责一次仿真全程固定的初值；后面的 dynamic-delay test 在 reset 后通过 `cfg_vif` 逐笔覆盖该值。普通 `simple_bus_smoke_test` 不传 plusarg，因此保持 delay 0。
 
 ### 11.2 新增 wait-state test
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_wait_test.sv
+uvm/v6_0/simple_bus/tb/simple_bus_wait_test.svh
 ```
 
 第一版可以直接继承 smoke test，不改 sequence：
@@ -1669,23 +1726,23 @@ endclass
 修改 `simple_bus_pkg.sv`，最后加入：
 
 ```systemverilog
-`include "simple_bus_wait_test.sv"
+`include "simple_bus_wait_test.svh"
 ```
 
 完整顺序应类似：
 
 ```systemverilog
-`include "simple_bus_item.sv"
-`include "simple_bus_sequencer.sv"
-`include "simple_bus_smoke_seq.sv"
-`include "simple_bus_driver.sv"
-`include "simple_bus_monitor.sv"
-`include "simple_bus_agent.sv"
-`include "simple_bus_scoreboard.sv"
-`include "simple_bus_env.sv"
-`include "simple_bus_base_test.sv"
-`include "simple_bus_smoke_test.sv"
-`include "simple_bus_wait_test.sv"
+`include "simple_bus_item.svh"
+`include "simple_bus_sequencer.svh"
+`include "simple_bus_smoke_seq.svh"
+`include "simple_bus_driver.svh"
+`include "simple_bus_monitor.svh"
+`include "simple_bus_agent.svh"
+`include "simple_bus_scoreboard.svh"
+`include "simple_bus_env.svh"
+`include "simple_bus_base_test.svh"
+`include "simple_bus_smoke_test.svh"
+`include "simple_bus_wait_test.svh"
 ```
 
 ### 11.4 更新 run_all
@@ -1715,12 +1772,144 @@ uvm/v6_0/simple_bus/sim/run_all.sh
 - `+DMEM_DELAY=3` 时，读写事务应看到 `delay=3`。
 - 如果实际差 1 拍，优先检查 monitor 计数方式，再检查 `data_subsystem` delay 定义，最后统一计划和实现口径。
 
-### 11.6 验证节点
+### 11.6 新增确定性 dynamic-delay sequence
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/seq/simple_bus_dynamic_delay_seq.svh
+```
+
+本 sequence 通过 `data_subsystem_cfg_if` 在相邻 transaction 之间切换 DMEM delay。它不修改通用 simple bus driver 的配置职责；driver 只把实际观察到的 `resp_delay` 回填到原始 item，供 sequence 在 `finish_item()` 返回后比较。
+
+建议骨架：
+
+```systemverilog
+class simple_bus_dynamic_delay_seq extends uvm_sequence #(simple_bus_item);
+    `uvm_object_utils(simple_bus_dynamic_delay_seq)
+
+    virtual data_subsystem_cfg_if cfg_vif;
+
+    function new(string name = "simple_bus_dynamic_delay_seq");
+        super.new(name);
+    endfunction
+
+    task body();
+        if (cfg_vif == null) begin
+            `uvm_fatal(get_type_name(), "cfg_vif is null")
+        end
+
+        wait (cfg_vif.rst_n_i === 1'b1);
+        run_one_delay(7'd0, core_pkg::DMEM_BASE + 32'h40, 32'h1111_0000);
+        run_one_delay(7'd3, core_pkg::DMEM_BASE + 32'h44, 32'h3333_0003);
+        run_one_delay(7'd1, core_pkg::DMEM_BASE + 32'h48, 32'h1111_0001);
+        run_one_delay(7'd7, core_pkg::DMEM_BASE + 32'h4c, 32'h7777_0007);
+        run_one_delay(7'd0, core_pkg::DMEM_BASE + 32'h50, 32'h0000_0000);
+    endtask
+
+    task automatic run_one_delay(
+        logic [6:0]                 delay,
+        logic [core_pkg::XLEN-1:0] addr,
+        logic [core_pkg::XLEN-1:0] data
+    );
+        cfg_vif.set_target_delay(soc_pkg::TARGET_DMEM, delay);
+        send_and_check(1'b1, addr, data, delay);
+        send_and_check(1'b0, addr, '0,   delay);
+    endtask
+
+    task automatic send_and_check(
+        bit                         write,
+        logic [core_pkg::XLEN-1:0] addr,
+        logic [core_pkg::XLEN-1:0] data,
+        logic [6:0]                 expected_delay
+    );
+        simple_bus_item tr;
+
+        tr = simple_bus_item::type_id::create("tr");
+        start_item(tr);
+        tr.write = write;
+        tr.addr  = addr;
+        tr.wdata = data;
+        tr.be    = 4'hf;
+        finish_item(tr);
+
+        if (tr.resp_delay != expected_delay) begin
+            `uvm_error(get_type_name(),
+                $sformatf("delay mismatch expected=%0d actual=%0d: %s",
+                          expected_delay, tr.resp_delay, tr.convert2string()))
+        end
+    endtask
+endclass
+```
+
+`finish_item()` 返回时 driver 已经调用 `item_done()`，按本计划 driver 只有在 response 完成后才调用 `item_done()`，因此下一次 `set_target_delay()` 不会发生在 outstanding transaction 中。
+
+### 11.7 新增 dynamic-delay test
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/tests/simple_bus_dynamic_delay_test.svh
+```
+
+test 在 `build_phase` 获取独立配置 interface，在 `run_phase` 把句柄交给 sequence：
+
+```systemverilog
+class simple_bus_dynamic_delay_test extends simple_bus_base_test;
+    `uvm_component_utils(simple_bus_dynamic_delay_test)
+
+    virtual data_subsystem_cfg_if cfg_vif;
+
+    function new(string name = "simple_bus_dynamic_delay_test",
+                 uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    function void build_phase(uvm_phase phase);
+        super.build_phase(phase);
+        if (!uvm_config_db #(virtual data_subsystem_cfg_if)::get(
+                this, "", "cfg_vif", cfg_vif)) begin
+            `uvm_fatal(get_type_name(), "failed to get data_subsystem cfg_vif")
+        end
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        simple_bus_dynamic_delay_seq seq;
+
+        phase.raise_objection(this);
+        seq = simple_bus_dynamic_delay_seq::type_id::create("seq");
+        seq.cfg_vif = cfg_vif;
+        seq.start(env.agent.sequencer);
+        phase.drop_objection(this);
+    endtask
+endclass
+```
+
+### 11.8 接入 package 和 run_all
+
+package 按依赖顺序加入：
+
+```systemverilog
+`include "simple_bus_dynamic_delay_seq.svh"
+// env/base test 等已有 include
+`include "simple_bus_dynamic_delay_test.svh"
+```
+
+`run_all.sh` 增加：
+
+```bash
+./run_test.sh simple_bus_dynamic_delay_test 5
+```
+
+固定 delay test 继续保留。确定性动态 test 通过后，第 15 章再让每笔 transaction constrained-random delay，并增加 delay coverage。
+
+### 11.9 验证节点
 
 本章完成标准：
 
 - 0/1/3/7 delay 下 DMEM smoke 都通过。
 - monitor log 能显示不同 response delay。
+- 单次 dynamic-delay test 能按 `0 -> 3 -> 1 -> 7 -> 0` 切换，且 sequence 自动比较 configured/observed delay。
 - scoreboard 仍能检查 read data。
 - SVA 不误报。
 
@@ -1766,12 +1955,14 @@ uvm/v6_0/simple_bus/sim/run_all.sh
 
 - random target。
 - random read/write。
-- random delay。
+- 通过 `data_subsystem_cfg_if` 为每笔 transaction 随机合法 delay；只在上一笔 response 完成后切换。
 - random legal/illegal offset。
 - target x access type。
 - target x delay。
 - target x response。
 - side effect x delay。
+
+固定 delay test 和确定性 dynamic-delay test 继续保留，random delay 用于扩大覆盖，不替代可重复的基础回归。
 
 ## 16. 后续章节占位：SoC directed 回归保持
 
