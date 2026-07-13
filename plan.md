@@ -459,11 +459,11 @@ simple_bus_if simple_bus_vif (
 - DUT 尚未接入时不启用 `ASSERT_ON`，不检查悬空的 slave 输出。
 - 没有真实 bus transaction。
 
-## 3. transaction item `执行中`
+## 3. transaction item `已完成`
 
 目标：定义一笔 simple data bus transaction 的 UVM item。
 
-### 3.1 新增 item 文件
+### 3.1 新增 item 文件 `已完成`
 
 新增：
 
@@ -475,20 +475,22 @@ uvm/v6_0/simple_bus/tb/simple_bus_item.svh
 
 ```systemverilog
 class simple_bus_item extends uvm_sequence_item;
-    rand bit                      write;
+    rand bit                        write;
     rand logic [core_pkg::XLEN-1:0] addr;
     rand logic [core_pkg::XLEN-1:0] wdata;
-    rand logic [3:0]              be;
+    rand logic [3:0]                be;
+    rand int unsigned               idle_cycles;
 
-    logic [core_pkg::XLEN-1:0]    rdata;
-    bit                           error;
-    int unsigned                  resp_delay;
+    logic [core_pkg::XLEN-1:0]      rdata;
+    bit                             error;
+    int unsigned                    resp_delay;
 
     `uvm_object_utils_begin(simple_bus_item)
         `uvm_field_int(write,      UVM_ALL_ON)
         `uvm_field_int(addr,       UVM_ALL_ON)
         `uvm_field_int(wdata,      UVM_ALL_ON)
         `uvm_field_int(be,         UVM_ALL_ON)
+        `uvm_field_int(idle_cycles, UVM_ALL_ON)
         `uvm_field_int(rdata,      UVM_ALL_ON)
         `uvm_field_int(error,      UVM_ALL_ON)
         `uvm_field_int(resp_delay, UVM_ALL_ON)
@@ -496,6 +498,10 @@ class simple_bus_item extends uvm_sequence_item;
 
     constraint c_nonzero_be {
         be != 4'b0000;
+    }
+
+    constraint c_idle_cycles {
+        idle_cycles inside {[0:15]};
     }
 
     function new(string name = "simple_bus_item");
@@ -541,8 +547,9 @@ class simple_bus_item extends uvm_sequence_item;
     endfunction
 
     function string convert2string();
-        return $sformatf("write=%0d addr=0x%08x target=%s be=0x%0x wdata=0x%08x rdata=0x%08x error=%0d delay=%0d",
-                         write, addr, target_name(), be, wdata, rdata, error, resp_delay);
+        return $sformatf("write=%0d addr=0x%08x target=%s be=0x%0x wdata=0x%08x idle=%0d rdata=0x%08x error=%0d resp_delay=%0d",
+                         write, addr, target_name(), be, wdata, idle_cycles,
+                         rdata, error, resp_delay);
     endfunction
 endclass
 ```
@@ -551,10 +558,15 @@ endclass
 
 - 字段宽度使用 `core_pkg::XLEN`，避免后续 XLEN 变化时到处改。
 - 第一版只需要 `be != 0`，更细的 strobe 合法性放到后续 byte enable 测试。
+- `simple_bus_item` 只描述总线 transaction，不携带 CPU access size、MMIO 寄存器属性或地址分布策略。因此 item 只保留 `be != 0` 等协议级最小约束；`addr` 与 `be` 的 CPU 关联、target 选择和 offset 合法性由后续专属 sequence 施加。除非 simple bus 协议本身新增字段，否则不新增 item 子类。
+- `idle_cycles` 表示上一笔 response 完成后、发起本笔 request 前额外保持 request idle 的完整拍数；sequence 决定该值，driver 只负责执行，不能自行随机。
+- sequence 不在相邻 item 之间另外等待 bus clock；所有有意的 request gap 都通过 `idle_cycles` 表达，保证 stimulus 可打印、可复现。
+- 第一版把随机范围限制为 `0..15`，避免无约束的 32-bit 随机值把仿真拖入超长等待；定向 sequence 仍可在不调用 randomize 时直接设置其它合理值。
+- 第一笔 transaction 没有上一笔 response，monitor 对其 `idle_cycles` 统一记为 0；idle-gap 定向测试先发送 warm-up transaction，再检查后续间隔。
 - target 名称由地址和当前 v6.0 地址图推导，不作为 sequence 随机字段，便于 monitor、timeout 和 log 使用统一口径。
 - `resp_delay` 由 monitor 独立观测；driver 也回填原始 sequence item，供定向 dynamic-delay sequence 在 `finish_item()` 返回后自检。
 
-### 3.2 接入 package
+### 3.2 接入 package `已完成`
 
 修改：
 
@@ -569,7 +581,7 @@ include 顺序改为：
 `include "simple_bus_base_test.svh"
 ```
 
-### 3.3 在 base test 中临时打印 item
+### 3.3 在 base test 中临时打印 item `已完成`
 
 临时修改 `simple_bus_base_test.run_phase`：
 
@@ -582,6 +594,7 @@ tr.write = 1'b1;
 tr.addr  = core_pkg::DMEM_BASE + 32'h40;
 tr.wdata = 32'h1234_5678;
 tr.be    = 4'hf;
+tr.idle_cycles = 0;
 `uvm_info(get_type_name(), tr.convert2string(), UVM_LOW)
 #100ns;
 phase.drop_objection(this);
@@ -589,7 +602,7 @@ phase.drop_objection(this);
 
 本临时代码只用于确认 item/package 编译和打印正常；第 7 章引入 env 后可以删掉。
 
-### 3.4 验证节点
+### 3.4 验证节点 `已完成`
 
 本章完成标准：
 
@@ -597,7 +610,7 @@ phase.drop_objection(this);
 - base test 仍能运行。
 - log 中能看到 item 字段打印。
 
-## 4. sequencer 和最小 sequence
+## 4. sequencer 和最小 sequence `执行中`
 
 目标：让 UVM 能生成一笔或多笔 simple bus transaction。
 
@@ -658,6 +671,7 @@ class simple_bus_smoke_seq extends uvm_sequence #(simple_bus_item);
         tr.addr  = addr;
         tr.wdata = data;
         tr.be    = 4'hf;
+        tr.idle_cycles = 0;
         finish_item(tr);
     endtask
 
@@ -670,6 +684,7 @@ class simple_bus_smoke_seq extends uvm_sequence #(simple_bus_item);
         tr.addr  = addr;
         tr.wdata = '0;
         tr.be    = 4'hf;
+        tr.idle_cycles = 0;
         finish_item(tr);
     endtask
 endclass
@@ -678,6 +693,7 @@ endclass
 注意：
 
 - sequence 只负责产生“想访问什么”，不直接碰 DUT 信号。
+- 基础 smoke 显式设置 `idle_cycles=0`，保持最小请求间隔；定向和随机 idle gap 由后续独立 sequence 覆盖。
 - read 的 `be` 当前填 `4'hf` 只是为了字段完整；DUT 读路径主要看 `write=0` 和 addr。
 
 ### 4.3 接入 package
@@ -768,8 +784,12 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
 
         `uvm_info(get_type_name(), {"drive ", tr.convert2string()}, UVM_MEDIUM)
 
+        // 上一笔 response 完成后，按 item 要求额外保持 request idle。
+        repeat (tr.idle_cycles) begin
+            @(vif.master_drv_cb);
+        end
+
         // request 由 clocking block 在采样沿后按 output skew 驱动。
-        @(vif.master_drv_cb);
         vif.master_drv_cb.req.valid <= 1'b1;
         vif.master_drv_cb.req.write <= tr.write;
         vif.master_drv_cb.req.be    <= tr.be;
@@ -822,6 +842,8 @@ endclass
 
 - 当前 simple bus 是 single outstanding，driver 必须等 response 后再取下一笔 item。
 - `drive_idle()` 由 driver 独占，run phase 开始时先初始化 request，accepted 后再撤销 request。
+- `idle_cycles` 是 sequence 生成的 master stimulus。driver 在取到本笔 item 后等待对应数量的完整 clocking event，再驱动 request；`idle_cycles=0` 保持现有最小时序，不额外插入空拍。
+- driver 不随机 idle 间隔，否则 sequence 无法描述和复现完整 stimulus。
 - driver 只通过 `master_drv_cb` 驱动/采样 bus，不再混用裸 signal 和 `posedge/negedge`，否则 clocking block 的 race 隔离会失效。
 - 0 wait-state 时，accepted 和 response 可能在同一个 clocking event 被采样到。
 - `MAX_TRANSACTION_WAIT_CYCLES` 必须大于 test 允许配置的最大 target delay，并留出少量调度裕量；当前 delay 输入为 7 bit，第一版取 256 拍。
@@ -883,19 +905,25 @@ class simple_bus_monitor extends uvm_component;
     task run_phase(uvm_phase phase);
         simple_bus_item pending_tr;
         bit pending;
+        bit have_completed;
         int unsigned accept_cycle;
         int unsigned cycle_cnt;
+        int unsigned idle_cycle_cnt;
 
-        pending      = 1'b0;
-        accept_cycle = 0;
-        cycle_cnt    = 0;
+        pending        = 1'b0;
+        have_completed = 1'b0;
+        accept_cycle   = 0;
+        cycle_cnt      = 0;
+        idle_cycle_cnt = 0;
 
         forever begin
             @(vif.mon_cb);
             cycle_cnt++;
 
             if (!vif.rst_n) begin
-                pending = 1'b0;
+                pending        = 1'b0;
+                have_completed = 1'b0;
+                idle_cycle_cnt = 0;
                 continue;
             end
 
@@ -910,6 +938,7 @@ class simple_bus_monitor extends uvm_component;
                 pending_tr.addr  = vif.mon_cb.req.addr;
                 pending_tr.wdata = vif.mon_cb.req.wdata;
                 pending_tr.be    = vif.mon_cb.req.be;
+                pending_tr.idle_cycles = have_completed ? idle_cycle_cnt : 0;
 
                 pending      = 1'b1;
                 accept_cycle = cycle_cnt;
@@ -926,8 +955,16 @@ class simple_bus_monitor extends uvm_component;
                     pending_tr.resp_delay = cycle_cnt - accept_cycle;
                     item_ap.write(pending_tr);
                     `uvm_info(get_type_name(), {"mon   ", pending_tr.convert2string()}, UVM_MEDIUM)
-                    pending = 1'b0;
+                    pending        = 1'b0;
+                    have_completed = 1'b1;
+                    idle_cycle_cnt = 0;
                 end
+            end
+
+            // 只统计上一笔 response 完成后、下一笔 request 发起前的完整 idle 拍。
+            if (have_completed && !pending &&
+                !vif.mon_cb.resp.valid && !vif.mon_cb.req.valid) begin
+                idle_cycle_cnt++;
             end
         end
     endtask
@@ -939,6 +976,7 @@ endclass
 - monitor 必须只读 interface，不能驱动任何 bus 信号。
 - monitor 只通过 `mon_cb` 采样 request/response，采样时序与 driver clocking block 保持同一口径。
 - 同拍 accepted+response 时，本代码先创建 `pending_tr`，再填 response，因此能输出完整 item。
+- monitor 从上一笔 response 完成后开始独立统计 request idle 拍数；首笔 transaction 的 `idle_cycles` 按约定记 0，不把 reset 释放和 driver 启动调度计入 transaction gap。
 - monitor 输出的是“DUT 引脚真实发生的 transaction”，scoreboard 后续只看 monitor，不直接信任 driver。
 
 ### 6.2 接入 package
@@ -1831,6 +1869,7 @@ class simple_bus_dynamic_delay_seq extends uvm_sequence #(simple_bus_item);
         tr.addr  = addr;
         tr.wdata = data;
         tr.be    = 4'hf;
+        tr.idle_cycles = 0;
         finish_item(tr);
 
         if (tr.resp_delay != expected_delay) begin
@@ -1903,13 +1942,36 @@ package 按依赖顺序加入：
 
 固定 delay test 继续保留。确定性动态 test 通过后，第 15 章再让每笔 transaction constrained-random delay，并增加 delay coverage。
 
-### 11.9 验证节点
+### 11.9 新增确定性 idle-gap sequence/test
+
+新增：
+
+```text
+uvm/v6_0/simple_bus/tb/seq/simple_bus_idle_gap_seq.svh
+uvm/v6_0/simple_bus/tb/tests/simple_bus_idle_gap_test.svh
+```
+
+本测试固定 target response delay 为 0，只改变相邻 transaction 的 `idle_cycles`，避免和 DUT response wait 混在一起定位。sequence 先发送一笔 `idle_cycles=0` 的 warm-up transaction，再按 `0 -> 1 -> 3 -> 7 -> 0` 发送 DMEM write/read transaction；每笔访问都显式设置 `idle_cycles`，不依赖 driver 内部随机行为。
+
+monitor 应在 warm-up 后观察到对应的 idle gap，scoreboard 继续检查 DMEM 数据结果，SVA 检查 idle 期间没有 orphan response。`run_all.sh` 增加一个固定 seed 的 `simple_bus_idle_gap_test`。本测试先证明确定性边界，随机 gap 仍放在第 15 章。
+
+### 11.10 新增独立 response-delay checker
+
+新增一个 v6.0 DUT 专用的 `data_subsystem_delay_checker`，与通用 `simple_bus_scoreboard` 并列接入 env。前者验证 response delay wrapper，后者继续检查 DMEM/MMIO 功能结果；不要把 `data_subsystem_cfg_if` 引入通用 simple bus agent 或通用 scoreboard。
+
+checker 被动获取 `simple_bus_if.monitor` 和 `data_subsystem_cfg_if`。每次 request accepted 时按地址译码 target，并快照当拍对应的 delay 配置；对应 response valid 时独立计数并比较 configured delay 与 observed delay。undefined target 固定期望 0。checker 不驱动 request、response 或 delay 配置，也不信任 sequence 传入的 expected 值。
+
+现有 dynamic-delay sequence 保留 `finish_item()` 后的自检，作为定位方便的第一层检查；checker 是独立的第二层检查，覆盖固定 plusarg、dynamic-delay 和后续 random-delay test。具体类名以外的 analysis port/monitor 组织在实现时确定，计划不在此锁死。
+
+### 11.11 验证节点
 
 本章完成标准：
 
 - 0/1/3/7 delay 下 DMEM smoke 都通过。
 - monitor log 能显示不同 response delay。
+- 定向 idle-gap test 能覆盖 `0/1/3/7` 拍 master 空闲间隔，monitor log 能看到这些取值。
 - 单次 dynamic-delay test 能按 `0 -> 3 -> 1 -> 7 -> 0` 切换，且 sequence 自动比较 configured/observed delay。
+- 独立 delay checker 能在 request accepted 时快照 target delay，并在 response valid 时比较实际 delay；固定、dynamic delay 均不出现 mismatch。
 - scoreboard 仍能检查 read data。
 - SVA 不误报。
 
@@ -1923,6 +1985,7 @@ package 按依赖顺序加入：
 - UART TXDATA write event。
 - TIMER32 MTIME/MTIMECMP/CTRL/STATUS 基本读写。
 - unknown offset error。
+- 以 `dut/docs/periph_register_abi.md` 为唯一寄存器 ABI 来源。known-register smoke 和 unknown-offset error 使用不同的定向 sequence；不要依赖无约束随机地址偶然命中寄存器。
 
 ## 13. 后续章节占位：byte enable 和 error
 
@@ -1934,6 +1997,10 @@ package 按依赖顺序加入：
 - unaligned 地址是否由当前 DUT 定义处理。
 - 未映射地址 error。
 - 外设 unknown offset error。
+- 新增 CPU-shaped byte-enable sequence：同一 `simple_bus_item` 按 access profile 施加 `addr`/`be` 联合约束。byte profile 使用 `be = 4'b0001 << addr[1:0]`；halfword profile 要求 `addr[0] == 0`，并按 `addr[1]` 选择 `4'b0011` 或 `4'b1100`；word profile 要求 `addr[1:0] == 0` 且 `be == 4'b1111`。
+- CPU-shaped sequence 与 generic bus-corner sequence 分开。后者可以产生任意非零 `be` 组合，用于验证 simple bus 的通用 byte-lane 行为；前者用于模拟当前 core 实际可能发出的请求，二者的预期结果不得混用。
+- 对 MMIO，先从 ABI 中选择已定义的 word-aligned register offset，再按 access profile 生成 byte offset。`RTL-001` 的 `reg+1` byte 和 `reg+2` halfword 用例在当前 DUT 上应先稳定复现 error，随后才进入 RTL 修复和回归。
+- 未定义 MMIO offset、窗口外地址和当前未定义的 misaligned access 各自使用专门的 negative sequence，不与已定义 MMIO 寄存器访问混在同一“legal”随机流中。
 
 ## 14. 后续章节占位：side effect scoreboard
 
@@ -1955,14 +2022,25 @@ package 按依赖顺序加入：
 
 - random target。
 - random read/write。
+- 每笔 item constrained-random `idle_cycles`；随机值由 sequence 产生，driver 只按值插入 request 前空拍。
 - 通过 `data_subsystem_cfg_if` 为每笔 transaction 随机合法 delay；只在上一笔 response 完成后切换。
 - random legal/illegal offset。
 - target x access type。
 - target x delay。
+- target x idle gap。
+- idle gap x delay。
 - target x response。
 - side effect x delay。
 
-固定 delay test 和确定性 dynamic-delay test 继续保留，random delay 用于扩大覆盖，不替代可重复的基础回归。
+约束分层和随机分布：
+
+- random sequence 在 sequence 层先选择 target，再约束 item 的地址范围；`simple_bus_item.decode_target()` 继续只根据最终地址推导 target，不把 target 变成 item 的随机协议字段。
+- legal traffic 的初始分布建议为 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%；窗口外 undefined 地址不放入 legal traffic，而是由独立 negative sequence 定向覆盖。具体比例可以在 sequence 配置中调整，但必须避免 32-bit 无权重地址随机。
+- 每个 MMIO target 再分 known-register 和 unknown-offset 两类 bucket。正常功能随机应以 known-register 为主；unknown-offset 作为独立 error 流或较低权重 bucket，确保不会因外设窗口大、已定义寄存器少而压倒正常访问。
+- known-register bucket 从 ABI 列出的寄存器 offset 中选择，再选择 read/write 访问和 access profile。访问属性、保留 bit 和 side effect 的约束以 ABI 为准，不能只按地址窗口随机。
+- generic bus-corner、CPU-shaped、known-MMIO、unknown-MMIO 和 unmapped-address sequence 分别统计 coverage。至少增加 target x access-profile、MMIO known/unknown x read/write、target x response，以及 target x access-profile x delay；coverage 只反映实际采样 transaction，不以 sequence 计划值替代。
+
+固定 delay、确定性 idle-gap test 和确定性 dynamic-delay test 继续保留；random idle gap/random delay 用于扩大覆盖，不替代可重复的基础回归。
 
 ## 16. 后续章节占位：SoC directed 回归保持
 

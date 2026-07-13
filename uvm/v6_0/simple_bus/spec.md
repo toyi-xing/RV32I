@@ -111,6 +111,10 @@ UVM driver 应在 request 被接受前保持 request payload 稳定。payload �
 
 当 `core_req_i.valid=1` 且 `core_req_ready_o=0` 时，driver 不得改变上述 payload。
 
+master 可以在两笔 transaction 之间主动保持 request idle。transaction 中的 `idle_cycles` 定义为：上一笔 response 完成后，driver 在发起本笔 request 前额外保持 `core_req_i.valid=0` 的完整采样拍数。第一笔 transaction 没有“上一笔 response”，monitor 对其 `idle_cycles` 统一记为 0；需要检查 idle gap 的定向 sequence 应先发送一笔 warm-up transaction，再从后续 transaction 开始检查。
+
+`idle_cycles=0` 表示 driver 在上一笔 response 完成后按最小时序发起下一笔 request；`idle_cycles=N` 且 `N>0` 表示额外保持 N 个完整采样拍 request idle。该间隔由 sequence 决定、driver 执行，不能由 driver 自行随机。sequence 不应在相邻 item 之间另外用时钟等待制造隐含 gap；所有有意的 request 间隔都通过 `idle_cycles` 表达。request idle 且没有 outstanding transaction 时，DUT 不应产生 response。
+
 ### 4.2 Response 完成
 
 一笔 transaction 在 `core_resp_o.valid=1` 的时钟上升沿采样点完成。
@@ -188,6 +192,7 @@ UVM item 应描述一笔完整 simple bus transaction，而不是只描述 reque
 | `addr` | driver/monitor | byte address。 |
 | `be` | driver/monitor | byte enable。 |
 | `wdata` | driver/monitor | write data。 |
+| `idle_cycles` | sequence/driver/monitor | 本笔 request 前由 master 插入的额外 idle 拍数；monitor 对首笔 transaction 记 0。 |
 | `rdata` | monitor | response read data。 |
 | `error` | monitor | response error。 |
 | `target` | monitor 或 scoreboard 推导 | DMEM/GPIO0/UART0/TIMER0/undefined。 |
@@ -195,7 +200,41 @@ UVM item 应描述一笔完整 simple bus transaction，而不是只描述 reque
 
 `resp_delay=0` 表示 request accepted 与 response valid 出现在同一个采样点。
 
-driver 负责发 request 并等待 response，也可以把本笔实际等待拍数回填到原始 item，供 sequence 做定向自检；monitor 负责独立观察总线，把 accepted request 和 response 合成为一笔 transaction 后发给 scoreboard/coverage。
+sequence 为每笔 item 设置 `idle_cycles`，driver 按该值保持 request idle 后再发 request，并等待 response。driver 也可以把本笔实际 response 等待拍数回填到原始 item，供 sequence 做定向自检；monitor 负责独立观察总线，把 request 前实际出现的 idle 间隔、accepted request 和 response 合成为一笔 transaction 后发给 scoreboard/coverage。
+
+`idle_cycles` 与 response delay 相互独立：前者模拟 CPU 在两次 data access 之间没有发起总线请求的周期，后者模拟 request accepted 后 DUT 返回 response 的等待周期。基础 smoke 固定 `idle_cycles=0`；定向 idle-gap test 覆盖若干固定间隔；constrained-random sequence 再逐笔随机合法间隔。
+
+### 6.1 约束归属与激励分层
+
+`simple_bus_item` 是协议级 transaction，通用约束只要求 `be != 0`，不在 item
+中加入 CPU access size、地址窗口、MMIO 寄存器 offset 或 target 权重。这样 generic
+bus-corner sequence 可以覆盖任意非零 byte-enable 组合，而不会被当前 RV32I core 的
+访存指令形状限制。
+
+模拟当前 CPU 请求时，专属 sequence 对同一个 item 施加 access profile 约束：
+
+| profile | `addr` / `be` 关系 |
+|---|---|
+| CPU byte | `be = 4'b0001 << addr[1:0]`。 |
+| CPU halfword | `addr[0] == 0`；`addr[1] == 0` 时 `be = 4'b0011`，否则 `be = 4'b1100`。 |
+| CPU word | `addr[1:0] == 0`，`be = 4'b1111`。 |
+| generic bus corner | 地址与任意非零 `be` 独立生成，不代表当前 CPU 一定会产生该请求。 |
+
+因此，DMEM、known-MMIO、unknown-MMIO 和 unmapped-address 应由不同 sequence 或
+sequence mode 生成，而不是通过 item 子类区分。只有 simple bus 协议增加了新的
+transaction 字段时，才考虑新增 item 类型。
+
+随机 sequence 先在 sequence 层选择 target，再约束 `addr`。legal traffic 的初始
+建议分布为 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%；窗口外地址由独立
+negative sequence 覆盖。对每个 MMIO target，必须再区分 ABI 已定义的 register
+word offset 和 unknown offset：正常功能流以 known offset 为主，unknown offset
+作为独立 error 流或较低权重 bucket。这样不会让大量未定义 offset 淹没有效 MMIO
+访问。
+
+MMIO known-register sequence 从 `dut/docs/periph_register_abi.md` 选择寄存器，
+再按其访问属性和 access profile 生成请求。对当前 `RTL-001`，已定义寄存器的
+`reg+1` byte 和 `reg+2` halfword 请求应先作为预期失败的定向用例；修复后再纳入
+正常的 known-MMIO byte-enable 随机流。
 
 ## 7. Response Delay 模型
 
@@ -229,11 +268,26 @@ delay 配置的生效和切换规则：
 
 wait-state 验证分三层保留：
 
-| 层次 | delay 行为 | 主要用途 |
-|---|---|---|
-| fixed smoke | 一次 test/run 全程固定为 0、1、3、7 等值 | 基础调试和单一 delay 失败定位。 |
-| deterministic dynamic | 单次 test 按 `0 -> 3 -> 1 -> 7 -> 0` 等序列逐笔切换 | 检查计数器清理、重新锁存和跨 transaction 污染。 |
-| constrained random | 每笔 transaction 随机合法 delay | 扩展组合覆盖，放在确定性动态测试稳定之后。 |
+| 层次 | delay 行为 | 主要用途 | 检查要求 |
+|---|---|---|---|
+| fixed smoke | 一次 test/run 全程固定为 0、1、3、7 等值 | 基础调试和单一 delay 失败定位。 | 独立 checker 自动比较 expected/observed delay。 |
+| deterministic dynamic | 单次 test 按 `0 -> 3 -> 1 -> 7 -> 0` 等序列逐笔切换 | 检查计数器清理、重新锁存和跨 transaction 污染。 | sequence 定向自检，同时经过独立 checker。 |
+| constrained random | 每笔 transaction 随机合法 delay | 扩展组合覆盖，放在确定性动态测试稳定之后。 | 独立 checker 自动比较，并采集 delay coverage。 |
+
+### 7.1 Response Delay 检查要求
+
+response delay wrapper 属于本环境需要验证的 DUT 行为。除 sequence 根据 driver 回填结果进行定向自检外，还应有一条独立的 expected/observed 检查路径；不能只依赖发起配置的 sequence 自己判断 wrapper 是否正确。
+
+每笔 transaction 按以下口径检查：
+
+| 检查信息 | 来源与时机 |
+|---|---|
+| `expected_delay` | request accepted 时，根据地址译码 target，并快照该 target 当拍生效的 delay 配置。 |
+| `observed_delay` | monitor 从 accepted request 到对应 response valid 独立统计得到的 `resp_delay`。 |
+
+response 完成后比较 `expected_delay == observed_delay`。undefined target 不经过 target delay wrapper，因此 `expected_delay` 固定为 0。当前协议是 single outstanding、in-order completion，expected 与 observed 可以按顺序关联，不需要 transaction ID。
+
+该检查与通用 simple bus 功能 scoreboard 并列：功能 scoreboard 负责 data/error/MMIO 结果，response-delay checker 负责 wrapper 的配置值与实际等待拍数。sequence 对原始 item 的比较可以保留用于快速定位，但不能替代这条独立检查。固定 delay、确定性 dynamic delay 和后续 random delay 都必须经过相同的 checker。
 
 动态 test 应自动比较本笔配置的 expected delay 和 driver/monitor 观察到的 `resp_delay`；日志仍保留 addr、target、configured delay 和 observed delay，便于定位 off-by-one 问题。
 
@@ -370,15 +424,21 @@ coverage 用于证明测试覆盖过关键组合，不替代 scoreboard/SVA。
 | op | read/write |
 | response | OK/error |
 | delay | 0 / small non-zero / larger non-zero |
+| request idle gap | 0 / small non-zero / larger non-zero |
 | byte enable | `4'hf`，后续扩展其它组合 |
+| access profile | word，后续扩展 CPU byte/halfword 与 generic bus corner |
 | MMIO offset | known/unknown |
 
 后续可加入 cross：
 
 - target x delay
+- target x request idle gap
+- request idle gap x delay
 - target x read/write
 - target x OK/error
 - MMIO register x read/write
+- target x access profile
+- MMIO known/unknown offset x read/write
 - GPIO/UART/TIMER side effect x delay
 
 0835 coverage 不追求完整闭合，重点是建立可运行的 covergroup 和覆盖报告入口。
@@ -427,9 +487,11 @@ UVM 使用本工作区快照中的这些定义：
 - monitor 能把 accepted request 和 response 合成为 transaction。
 - scoreboard 能自动判断 DMEM word write/read PASS/FAIL。
 - 能配置至少 DMEM 的 0 wait 和非 0 wait。
+- 一个定向 idle-gap test 能在相邻 transaction 之间插入 0/1/3/7 等不同间隔，且 monitor 能观察到对应 gap，scoreboard/SVA 仍通过。
 - 至少一个确定性动态 test 能在单次仿真中逐笔切换多个 delay，并自动检查 configured/observed delay 一致。
+- 独立 response-delay checker 能对固定和动态 delay 自动比较 expected/observed 拍数。
 - 至少有一组 simple bus SVA 处于可运行状态。
-- log 中能看出 transaction 的 addr、op、target、delay、error。
+- log 中能看出 transaction 的 addr、op、target、idle gap、response delay、error。
 - 全局 timeout 和单 transaction response timeout 能把无响应转换为明确失败，而不是永久挂起。
 
-MVP 之后继续扩展 MMIO、byte enable、side effect、random delay 和 coverage。0835 阶段最终完成标准以 `docs/08xx/0835 wait-state验证收口、SVA与UVM入门demo规划.md` 第 13 章为准；扩展时仍应以本文为验证边界，避免把本环境扩大成 full CPU UVM。
+MVP 之后继续扩展 MMIO、byte enable、side effect、random idle gap、random delay 和 coverage。0835 阶段最终完成标准以 `docs/08xx/0835 wait-state验证收口、SVA与UVM入门demo规划.md` 第 13 章为准；扩展时仍应以本文为验证边界，避免把本环境扩大成 full CPU UVM。

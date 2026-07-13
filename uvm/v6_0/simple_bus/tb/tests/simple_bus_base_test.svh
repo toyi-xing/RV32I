@@ -26,6 +26,18 @@ class simple_bus_base_test extends uvm_test;
 
     task run_phase(uvm_phase phase);
         phase.raise_objection(this);
+        //-------------------临时代码，调试用------------------
+        begin
+            simple_bus_item tr;
+            tr = simple_bus_item::type_id::create("tr");
+            tr.write        = 1'b1;
+            tr.addr         = core_pkg::DMEM_BASE + 32'h40;
+            tr.wdata        = 32'h1234_5678;
+            tr.be           = 4'b1111;
+            tr.idle_cycles  = 0;
+            `uvm_info(get_type_name(), tr.item2string(), UVM_LOW)
+        end
+        //--------------------------------------------------
         #100ns;
         phase.drop_objection(this);
     endtask
