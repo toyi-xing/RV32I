@@ -22,5 +22,7 @@ package simple_bus_pkg;
     import data_bus_pkg::*;
 
     `include "simple_bus_item.svh"
+    `include "simple_bus_sequences.svh"
+    `include "simple_bus_sequencer.svh"
     `include "simple_bus_base_test.svh"
 endpackage

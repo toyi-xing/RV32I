@@ -2,8 +2,9 @@
 // 本文件中的相对路径以 sim/ 目录为基准，由 run_test.sh 在该目录调用 VCS。
 
 // simple_bus_pkg.sv 通过 `include 引入 tests/ 下的 class 文件。
-+incdir+../tb/tests
++incdir+../tb/agent
 +incdir+../tb/seq
++incdir+../tb/tests
 
 // DUT 公共 package 必须先于使用它们的 UVM package 编译。
 ../dut/rtl/common/core_pkg.sv

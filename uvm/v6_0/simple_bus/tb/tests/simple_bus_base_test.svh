@@ -27,6 +27,7 @@ class simple_bus_base_test extends uvm_test;
     task run_phase(uvm_phase phase);
         phase.raise_objection(this);
         //-------------------临时代码，调试用------------------
+        // 测试 simple_bus_item 能过编译
         begin
             simple_bus_item tr;
             tr = simple_bus_item::type_id::create("tr");
@@ -36,6 +37,12 @@ class simple_bus_base_test extends uvm_test;
             tr.be           = 4'b1111;
             tr.idle_cycles  = 0;
             `uvm_info(get_type_name(), tr.item2string(), UVM_LOW)
+        end
+        // 测试 seq、seqr 能过编译
+        begin
+            simple_bus_smoke_seq seq;
+            seq = simple_bus_smoke_seq::type_id::create("seq");
+            `uvm_info(get_type_name(), "smoke seq object created", UVM_NONE)
         end
         //--------------------------------------------------
         #100ns;

@@ -58,6 +58,12 @@ class simple_bus_item extends uvm_sequence_item;
 
     function new(string name = "simple_bus_item");
         super.new(name);
+        // 默认复制，在 seq 忘记赋值或 randomize() 情况下也保证安全行为
+        write       = 1'b0;
+        be          = 4'b1111;
+        addr        = core_pkg::DMEM_BASE;
+        wdata       = '0;
+        idle_cycles = 0;
     endfunction
 
     //-----------------------------------------------------------------------

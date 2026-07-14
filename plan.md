@@ -610,11 +610,11 @@ phase.drop_objection(this);
 - base test 仍能运行。
 - log 中能看到 item 字段打印。
 
-## 4. sequencer 和最小 sequence `执行中`
+## 4. sequencer 和最小 sequence `已完成`
 
 目标：让 UVM 能生成一笔或多笔 simple bus transaction。
 
-### 4.1 新增 sequencer 文件
+### 4.1 新增 sequencer 文件 `已完成`
 
 新增：
 
@@ -634,7 +634,7 @@ class simple_bus_sequencer extends uvm_sequencer #(simple_bus_item);
 endclass
 ```
 
-### 4.2 新增 smoke sequence 文件
+### 4.2 新增 smoke sequence 文件 `已完成`
 
 新增：
 
@@ -696,7 +696,7 @@ endclass
 - 基础 smoke 显式设置 `idle_cycles=0`，保持最小请求间隔；定向和随机 idle gap 由后续独立 sequence 覆盖。
 - read 的 `be` 当前填 `4'hf` 只是为了字段完整；DUT 读路径主要看 `write=0` 和 addr。
 
-### 4.3 接入 package
+### 4.3 接入 package `已完成`
 
 修改 `simple_bus_pkg.sv`：
 
@@ -707,7 +707,7 @@ endclass
 `include "simple_bus_base_test.svh"
 ```
 
-### 4.4 base test 临时启动 sequence
+### 4.4 base test 临时启动 sequence `已完成`
 
 在没有 driver 前，不建议真的启动 sequence，因为 sequence 会等 driver 取 item。
 
@@ -719,7 +719,7 @@ seq = simple_bus_smoke_seq::type_id::create("seq");
 `uvm_info(get_type_name(), "smoke sequence object created", UVM_LOW)
 ```
 
-### 4.5 验证节点
+### 4.5 验证节点 `已完成`
 
 本章完成标准：
 
@@ -727,7 +727,7 @@ seq = simple_bus_smoke_seq::type_id::create("seq");
 - base test 仍能运行。
 - 暂时不要求 transaction 被 driver 消费。
 
-## 5. driver
+## 5. driver `执行中`
 
 目标：实现一个能按 simple data bus 协议发 request、等待 ready、等待 response 的 UVM driver。
 
