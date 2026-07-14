@@ -49,7 +49,7 @@ class simple_bus_smoke_seq extends simple_bus_base_seq;
     //-----------------------------------------------------------------------
 
     // 0 空拍的写 word master 指令
-    task automatic send_write32(logic [core_pkg::XLEN-1:0] addr,
+    protected task automatic send_write32(logic [core_pkg::XLEN-1:0] addr,
                                 logic [core_pkg::XLEN-1:0] data);
         req = simple_bus_item::type_id::create("smoke_write32");
         start_item(req);
@@ -62,7 +62,7 @@ class simple_bus_smoke_seq extends simple_bus_base_seq;
     endtask
     
     // 0 空拍的读 word master 指令
-    task automatic send_read32(logic [core_pkg::XLEN-1:0] addr);
+    protected task automatic send_read32(logic [core_pkg::XLEN-1:0] addr);
         req = simple_bus_item::type_id::create("smoke_read32");
         start_item(req);
         req.write = 1'b0;

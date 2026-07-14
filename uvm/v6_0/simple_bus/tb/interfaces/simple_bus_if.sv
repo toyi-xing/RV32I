@@ -28,7 +28,7 @@ interface simple_bus_if (
     clocking master_drv_cb @(posedge clk_i);
         default input #1step output #1ns;
         input  req_ready_o;
-        output req_i;
+        inout  req_i;   // 方便 drv 根据 valid 判断实际握手，驱动 idle
         input  resp_o;
     endclocking
 
@@ -48,11 +48,13 @@ interface simple_bus_if (
 
     modport master_drv_mp (
         clocking master_drv_cb,
+        input    clk_i,
         input    rst_n_i
     );
 
     modport mon_mp (
         clocking mon_cb,
+        input    clk_i,
         input    rst_n_i
     );
 
