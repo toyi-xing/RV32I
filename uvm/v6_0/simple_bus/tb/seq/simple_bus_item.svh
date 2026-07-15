@@ -20,12 +20,12 @@ class simple_bus_item extends uvm_sequence_item;
     rand logic [3:0]                be;
     rand logic [core_pkg::XLEN-1:0] addr;
     rand logic [core_pkg::XLEN-1:0] wdata;
-    rand int unsigned               idle_cycles;    // 上一笔 response 完成后，到本笔 request 之前的空拍，模拟 cpu 并不每拍指令都访存；首笔表示 initial idle
+    rand int                        idle_cycles;    // 上一笔 response 完成后，到本笔 request 之前的空拍，模拟 cpu 并不每拍指令都访存；首笔表示 initial idle
 
     // 从 DUT response 填写（简化 UVM 平台，放在同一个 item 中）
     logic [core_pkg::XLEN-1:0] rdata;
     logic                      error;
-    int unsigned               resp_delay;          // UVM 统计的 accept rsq 请求到 resp 响应的实际延迟时间，应与配置匹配，验证总线 wrapper
+    int                        resp_delay;          // UVM 统计的 accept rsq 请求到 resp 响应的实际延迟时间，应与配置匹配，验证总线 wrapper
 
     `uvm_object_utils_begin(simple_bus_item)
         `uvm_field_int(write,       UVM_ALL_ON)
@@ -58,16 +58,16 @@ class simple_bus_item extends uvm_sequence_item;
 
     function new(string name = "simple_bus_item");
         super.new(name);
-        // 默认赋值，在 seq 忘记赋值或 randomize() 情况下也保证安全行为
+        // 默认 sentinel 赋值，在 seq 忘记赋值或 randomize() 情况下也保证安全行为
         write       = 1'b0;
         be          = 4'b1111;
         addr        = core_pkg::DMEM_BASE;
         wdata       = '0;
-        idle_cycles = 0;
-        // 默认赋值，防止未发送时以为已回填
+        idle_cycles = -1;
+        // 默认 sentinel 赋值，防止未发送时以为已回填
         rdata       = 'x;
         error       = 1'bx;
-        resp_delay  = 0;
+        resp_delay  = -1;
     endfunction
 
     //-----------------------------------------------------------------------

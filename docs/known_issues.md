@@ -1,6 +1,6 @@
 # Known Issues
 
-本文档用于记录已经确认、但暂未修复的问题，避免问题因阶段切换或 `plan.md` 更新而丢失。这里记录问题现象、影响范围、暂缓原因、验证方法和关闭条件；具体阶段的执行步骤仍放在 `plan.md` 中。
+本文档用于记录已经暴露的问题（及其当前状态），避免问题因阶段切换或 `plan.md` 更新而丢失。这里记录问题现象、影响范围、暂缓原因、验证方法和关闭条件。
 
 问题状态使用以下口径：
 
@@ -86,3 +86,28 @@ byte enable 和 error 阶段重新处理本问题。
 - 现有 Verilator C/ASM 定向自检回归全部通过。
 - 相关 UVM 定向测试在固定延迟和可变延迟下通过。
 - 明确 v6.0 DUT 快照的处理方式：同步修复并记录快照差异，或保留 v6.0 行为并将修复归入后续 release。
+
+## REG-001：SoC 回归脚本将 FAIL/TIMEOUT 误统计为 PASS
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `Fixed` |
+| 修复日期 | 2026-07-01 |
+| 修复版本 | v5.6（提交 `7af8c51`，tag `v5.6-bugfix-regression-stat`） |
+| 影响范围 | SoC 汇编和 C directed regression 的结果统计；被掩盖的失败用例包括汇编 `0603_gpio_rw`、C `0651_soc_mmio_smoke` 和 `0652_soc_mmio_gpio_uart` |
+| 相关文件 | `sim/soc_asm/run_all.sh`、`sim/soc_c/run_all.sh`、`sw/asm/0603_gpio_rw.S`、`sw/c/0651_soc_mmio_smoke.c`、`sw/c/0652_soc_mmio_gpio_uart.c`、`tb/sv/tb_rv32i_soc.sv`、`rtl/soc/data_subsystem.sv` |
+
+### 问题说明
+
+早期 ASM/C 回归脚本只根据仿真器进程退出码判断单项测试是否通过。testbench 使用 `$fatal`/`$finish` 结束仿真时，退出码不能可靠地区分 PASS、FAIL 和 TIMEOUT；因此，部分已经打印失败或超时信息的测试仍会被脚本计为 PASS，导致回归汇总不可信，并掩盖了后续列出的测试程序问题。
+
+### 修复内容与关联问题
+
+- 两个 `run_all.sh` 均为每个测试保留日志；只有仿真退出码为 0、日志包含 `PASS after `，且不包含 `FAIL after ` 或 `TIMEOUT:` 时才统计为 PASS。否则明确统计为 FAIL，并打印日志路径。
+- 统计修复后暴露出 GPIO IN 检查假设错误：`GPIO_IN[31:30]` 由 TB 周期信号驱动，不是固定输入。`0603`、`0651`、`0652` 改为屏蔽高两位，仅比较稳定的 `GPIO_IN[29:0]`。
+- TB 中 `gpio0_in[29:0]` 的复位默认值由 `'0` 改为 `30'hA5A55A5A`，与上述用例的默认输入约定一致。
+- 同一提交还将 `data_subsystem.sv` 中 `resp_target` 改为显式声明后再连续赋值，修正该处的连续赋值声明问题。
+
+### 验证与关闭依据
+
+修复后的回归入口会把 PASS/FAIL/TIMEOUT 文本结果纳入统计，失败测试不再仅因进程返回码而误报成功。相关 GPIO 用例已按 TB 的实际驱动语义更新，修复提交已随 v5.6 及后续 release 保留。

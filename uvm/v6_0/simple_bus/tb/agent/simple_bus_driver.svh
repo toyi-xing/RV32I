@@ -7,6 +7,8 @@
 //   - 当前总线只允许 single outstanding；一笔 request 收到 response 后才获取下一笔 item。
 //   - `idle_cycles` 由 sequence 决定，driver 只负责执行；response 观察结果回填item，最终功能
 //     检查仍以 monitor/scoreboard 为准。
+//   - 正常 sequence 不在相邻 item 间插入额外时间控制，计划 idle 与 monitor 观测值应一致；
+//     若 item 在 clocking event 之间交付，实际 gap 可能包含额外对齐拍，属于平台调度偏差。
 //
 // 功能：
 //   - 等待 reset 释放，按 item 产生 request，并在 backpressure 期间保持 payload。
@@ -36,10 +38,9 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
         // rst 行为
         drive_idle();
         wait_reset_release();
-
         // 不断发送 seq 例化的 item
         forever begin
-            seq_item_port.get_next_item(req);
+            seq_item_port.get_next_item(req);   // 直接使用 drv 自带的 req 语柄
             drive_item(req);
             seq_item_port.item_done();
         end
@@ -86,7 +87,7 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
         wait_cycles = 0;
         while (!accepted) begin  // 同时覆盖 item 在 posedge 或 clk 间到达
             @(vif.master_drv_cb);
-            accepted = (vif.master_drv_cb.req_i.valid === 1'b1 ) && (vif.master_drv_cb.req_ready_o === 1'b1);
+            accepted = (vif.master_drv_cb.req_valid_observed === 1'b1 ) && (vif.master_drv_cb.req_ready_o === 1'b1);
             if (!accepted) begin // 防止首拍握手导致多记 1
                 wait_cycles++;
                 if (wait_cycles > MAX_REQ_WAIT_CYCLES) begin        // 仅负责超时保护，不负责协议检查

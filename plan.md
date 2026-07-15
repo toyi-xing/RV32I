@@ -869,11 +869,11 @@ endclass
 - 如果后续 env 没有设置 vif，driver 应报清楚 `uvm_fatal`。
 - 还未接 agent/env 前，不要求产生真实 transaction。
 
-## 6. monitor `执行中`
+## 6. monitor `已完成`
 
 目标：实现被动 monitor，把 DUT 引脚上真实发生的 request/response 重建成 transaction。
 
-### 6.1 新增 monitor 文件
+### 6.1 新增 monitor 文件 `已完成`
 
 新增：
 
@@ -964,7 +964,7 @@ endclass
 - monitor 当前不统计或回填 `idle_cycles`；它只重建 DUT 引脚上已 accepted 的 request 和对应 response。driver idle-gap 的实际执行检查作为后续可选测试平台自检，不进入通用 scoreboard。
 - monitor 输出的是“DUT 引脚真实发生的 transaction”，scoreboard 后续只看 monitor，不直接信任 driver。
 
-### 6.2 接入 package
+### 6.2 接入 package `已完成`
 
 修改 `simple_bus_pkg.sv`：
 
@@ -977,7 +977,7 @@ endclass
 `include "simple_bus_base_test.svh"
 ```
 
-### 6.3 验证节点
+### 6.3 验证节点 `已完成`
 
 本章完成标准：
 
@@ -985,7 +985,7 @@ endclass
 - monitor 不驱动任何 DUT 信号。
 - 后续接入 DUT 后，monitor 输出的 item 应以真实引脚为准，而不是 driver item 为准。
 
-## 7. agent 和 env
+## 7. agent 和 env `执行中`
 
 目标：把 sequencer、driver、monitor 封装成 agent，并把 agent 接入 env。
 
@@ -1219,7 +1219,6 @@ interface data_subsystem_cfg_if (
         soc_pkg::target_e target_i,
         logic [6:0]       delay_i
     );
-        @(negedge clk_i);
         case (target_i)
             TARGET_DMEM:   dmem_resp_delay_cycles   = delay_i;
             TARGET_GPIO0:  gpio0_resp_delay_cycles  = delay_i;
@@ -1233,7 +1232,7 @@ endinterface
 `default_nettype wire
 ```
 
-本 interface 不属于 simple bus 协议。调用者必须保证只在没有 outstanding transaction 时调用 `set_target_delay()`，并让配置在下一笔 request accepted 前稳定。第一版固定 smoke 不调用该 task，只使用 top 设置的默认值。
+本 interface 不属于 simple bus 协议。调用者必须保证只在没有 outstanding transaction 时调用 `set_target_delay()`，并让配置在下一笔 request accepted 前稳定。该 task 只立即更新配置，不在内部等待 `posedge/negedge`；调用方在上一笔 `finish_item()` 返回后设置新值，再立即交付下一笔 item，配置会在下一次 request accepted 前保持稳定，同时不会引入隐含 idle 拍。第一版固定 smoke 不调用该 task，只使用 top 设置的默认值。
 
 ### 8.3 UVM top 增加 DUT 连接信号和配置 interface
 
@@ -1803,7 +1802,7 @@ uvm/v6_0/simple_bus/sim/run_all.sh
 uvm/v6_0/simple_bus/tb/seq/simple_bus_dynamic_delay_seq.svh
 ```
 
-本 sequence 通过 `data_subsystem_cfg_if` 在相邻 transaction 之间切换 DMEM delay。它不修改通用 simple bus driver 的配置职责；driver 只把实际观察到的 `resp_delay` 回填到原始 item，供 sequence 在 `finish_item()` 返回后比较。
+本 sequence 通过 `data_subsystem_cfg_if` 在相邻 transaction 之间切换 DMEM delay。它不修改通用 simple bus driver 的配置职责；driver 只把实际观察到的 `resp_delay` 回填到原始 item，供 sequence 在 `finish_item()` 返回后比较。delay 配置 task 不插入时钟等待，sequence 设置新值后立即交付下一笔 item，避免为 dynamic delay 引入额外 request idle 拍。
 
 建议骨架：
 
@@ -1866,7 +1865,7 @@ class simple_bus_dynamic_delay_seq extends uvm_sequence #(simple_bus_item);
 endclass
 ```
 
-`finish_item()` 返回时 driver 已经调用 `item_done()`，按本计划 driver 只有在 response 完成后才调用 `item_done()`，因此下一次 `set_target_delay()` 不会发生在 outstanding transaction 中。
+`finish_item()` 返回时 driver 已经调用 `item_done()`，按本计划 driver 只有在 response 完成后才调用 `item_done()`，因此下一次 `set_target_delay()` 不会发生在 outstanding transaction 中。配置在同一仿真时刻立即更新，随后交付的下一笔 item 仍由 clocking block 在 output skew 驱动；到下一采样点时 delay 已稳定，不需要额外等待半拍。
 
 ### 11.7 新增 dynamic-delay test
 
@@ -2029,7 +2028,7 @@ checker 被动获取 `simple_bus_if.monitor` 和 `data_subsystem_cfg_if`。每�
 
 - 在 basic driver/monitor 和确定性 idle-gap test 稳定后，可新增 driver idle-gap checker，验证 sequence item 的 `idle_cycles` 是否真实反映在 interface 引脚上。
 - checker 只验证 UVM stimulus 执行正确性，不连接 DUT 功能 scoreboard，也不将 mismatch 归因于 DUT。
-- 以 warm-up transaction 为起点；从上一笔 response valid 后开始，统计到下一笔 `req.valid` 首次出现前的完整空拍数，并与对应的非首笔 item `idle_cycles` 比较。首笔 initial idle 不参与比较。
+- 以 warm-up transaction 为起点；从上一笔 response valid 后开始，统计到下一笔 `req.valid` 首次出现前的完整空拍数，并与对应的非首笔 item `idle_cycles` 严格比较。正常 sequence 不插入额外时间控制，不默认允许调度造成的 `+1`；首笔 initial idle 不参与比较。
 - 该功能可复用 monitor 的被动采样或独立 analysis/checker 组织；具体实现届时根据 agent/env 结构确定，不在当前阶段提前锁死。
 
 固定 delay、确定性 idle-gap test 和确定性 dynamic-delay test 继续保留；random idle gap/random delay 用于扩大覆盖，不替代可重复的基础回归。

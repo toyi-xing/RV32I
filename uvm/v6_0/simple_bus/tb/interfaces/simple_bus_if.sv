@@ -25,10 +25,15 @@ interface simple_bus_if (
     data_bus_pkg::data_req_t    req_i;
     data_bus_pkg::data_resp_t   resp_o;
 
+    // 供 drv 根据 valid 判断实际握手，驱动 idle 的观察信号
+    logic  req_valid_observed;
+    assign req_valid_observed = req_i.valid;
+
     clocking master_drv_cb @(posedge clk_i);
         default input #1step output #1ns;
         input  req_ready_o;
-        inout  req_i;   // 方便 drv 根据 valid 判断实际握手，驱动 idle
+        input  req_valid_observed;
+        output req_i;
         input  resp_o;
     endclocking
 

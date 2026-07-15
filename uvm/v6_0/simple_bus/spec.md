@@ -111,9 +111,9 @@ UVM driver 应在 request 被接受前保持 request payload 稳定。payload �
 
 当 `core_req_i.valid=1` 且 `core_req_ready_o=0` 时，driver 不得改变上述 payload。
 
-master 可以在两笔 transaction 之间主动保持 request idle。transaction 中的 `idle_cycles` 定义为：上一笔 response 完成后，driver 在发起本笔 request 前额外保持 `core_req_i.valid=0` 的完整采样拍数。第一笔 transaction 没有“上一笔 response”，monitor 对其 `idle_cycles` 统一记为 0；需要检查 idle gap 的定向 sequence 应先发送一笔 warm-up transaction，再从后续 transaction 开始检查。
+master 可以在两笔 transaction 之间主动保持 request idle。对于非首笔 transaction，`idle_cycles` 定义为：上一笔 response 完成后，到本笔 `core_req_i.valid` 首次为 1 前，额外保持 `core_req_i.valid=0` 的完整采样拍数。第一笔 transaction 没有“上一笔 response”，其 `idle_cycles` 定义为 reset 释放锚点后、首个 `core_req_i.valid=1` 前的完整采样拍数，即 initial idle。
 
-`idle_cycles=0` 表示 driver 在上一笔 response 完成后按最小时序发起下一笔 request；`idle_cycles=N` 且 `N>0` 表示额外保持 N 个完整采样拍 request idle。该间隔由 sequence 决定、driver 执行，不能由 driver 自行随机。sequence 不应在相邻 item 之间另外用时钟等待制造隐含 gap；所有有意的 request 间隔都通过 `idle_cycles` 表达。request idle 且没有 outstanding transaction 时，DUT 不应产生 response。
+`idle_cycles=0` 表示 driver 在上一笔 response 完成后的最早下一采样拍发起 request；首笔则表示 reset 释放后按最小时序发起 request。`idle_cycles=N` 且 `N>0` 表示额外保持 N 个完整采样拍 request idle。该间隔由 sequence 决定、driver 执行，不能由 driver 自行随机。sequence 不应在相邻 item 之间另外用时钟等待制造隐含 gap；所有有意的 request 间隔都通过 `idle_cycles` 表达。request idle 且没有 outstanding transaction 时，DUT 不应产生 response。
 
 ### 4.2 Response 完成
 
@@ -192,7 +192,7 @@ UVM item 应描述一笔完整 simple bus transaction，而不是只描述 reque
 | `addr` | driver/monitor | byte address。 |
 | `be` | driver/monitor | byte enable。 |
 | `wdata` | driver/monitor | write data。 |
-| `idle_cycles` | sequence/driver/monitor | 本笔 request 前由 master 插入的额外 idle 拍数；monitor 对首笔 transaction 记 0。 |
+| `idle_cycles` | sequence/driver/monitor | 本笔 request 前由 master 插入的额外 idle 拍数；首笔表示 reset 释放后的 initial idle。 |
 | `rdata` | monitor | response read data。 |
 | `error` | monitor | response error。 |
 | `target` | monitor 或 scoreboard 推导 | DMEM/GPIO0/UART0/TIMER0/undefined。 |
@@ -200,7 +200,9 @@ UVM item 应描述一笔完整 simple bus transaction，而不是只描述 reque
 
 `resp_delay=0` 表示 request accepted 与 response valid 出现在同一个采样点。
 
-sequence 为每笔 item 设置 `idle_cycles`，driver 按该值保持 request idle 后再发 request，并等待 response。driver 也可以把本笔实际 response 等待拍数回填到原始 item，供 sequence 做定向自检；monitor 负责独立观察总线，把 request 前实际出现的 idle 间隔、accepted request 和 response 合成为一笔 transaction 后发给 scoreboard/coverage。
+sequence 为每笔 item 设置 `idle_cycles`，driver 按该值保持 request idle 后再发 request，并等待 response。driver 也可以把本笔实际 response 等待拍数回填到原始 item，供 sequence 做定向自检；monitor 独立观察总线，把 request 前实际出现的 idle 间隔、accepted request 和 response 合成为一笔 transaction，并通过 analysis port 提供给 scoreboard、coverage 或专用 checker 等订阅者。
+
+item 中的 `idle_cycles` 是 sequence 计划值，driver 在取得该 item 后执行；monitor 中的 `idle_cycles` 是 interface 引脚上的实际观测值。正常 sequence 不在相邻 item 之间插入额外时间控制，按 clocking event 连续交付时两者必须一致。若未来某个 sequence 在相邻 clocking event 之间交付 item，request 只能在下一次 clocking output skew 生效，monitor 可能额外观察到一个用于对齐的完整 idle 拍；该情况属于验证平台调度偏差，不是当前测试的正常预期，也不归因于 DUT。DUT 功能检查和 coverage 仍以 monitor 观测值为准，计划值与实际值的精确比较由专用 driver idle-gap checker 诊断，不由通用 scoreboard 静默放宽。
 
 `idle_cycles` 与 response delay 相互独立：前者模拟 CPU 在两次 data access 之间没有发起总线请求的周期，后者模拟 request accepted 后 DUT 返回 response 的等待周期。基础 smoke 固定 `idle_cycles=0`；定向 idle-gap test 覆盖若干固定间隔；constrained-random sequence 再逐笔随机合法间隔。
 
