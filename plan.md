@@ -985,11 +985,11 @@ endclass
 - monitor 不驱动任何 DUT 信号。
 - 后续接入 DUT 后，monitor 输出的 item 应以真实引脚为准，而不是 driver item 为准。
 
-## 7. agent 和 env `执行中`
+## 7. agent 和 env `已完成`
 
 目标：把 sequencer、driver、monitor 封装成 agent，并把 agent 接入 env。
 
-### 7.1 新增 agent 文件
+### 7.1 新增 agent 文件 `已完成`
 
 新增：
 
@@ -1028,7 +1028,7 @@ endclass
 
 第一版只支持 active agent；后续若需要 passive agent 再加 `is_active` 配置。
 
-### 7.2 新增 env 文件
+### 7.2 新增 env 文件 `已完成`
 
 新增：
 
@@ -1061,7 +1061,7 @@ endclass
 agent.monitor.item_ap.connect(scoreboard.item_export);
 ```
 
-### 7.3 修改 base test 例化 env
+### 7.3 修改 base test 例化 env `已完成`
 
 修改：
 
@@ -1095,7 +1095,7 @@ class simple_bus_base_test extends uvm_test;
 endclass
 ```
 
-### 7.4 修改 top 设置 virtual interface
+### 7.4 修改 top 设置 virtual interface `已完成`
 
 修改：
 
@@ -1132,7 +1132,7 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 
 跑通后再收紧路径。即使 field name 都使用 `"vif"`，两个不同的参数化类型也不会相互替代；driver/monitor 的 `config_db::get()` 必须分别使用对应 modport 类型。
 
-### 7.5 接入 package
+### 7.5 接入 package `已完成`
 
 修改 `simple_bus_pkg.sv` include 顺序：
 
@@ -1147,7 +1147,7 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 `include "simple_bus_base_test.svh"
 ```
 
-### 7.6 验证节点
+### 7.6 验证节点 `已完成`
 
 本章完成标准：
 
@@ -1155,7 +1155,7 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 - driver/monitor 都能拿到 vif。
 - 因为还没有 DUT 和 sequence，允许没有真实 bus transaction。
 
-## 8. DUT harness 和 DMEM smoke
+## 8. DUT harness 和 DMEM smoke `执行中`
 
 目标：把 `data_subsystem` 接进 UVM top，用 UVM driver 访问 DMEM，完成第一条真正的 UVM smoke。
 

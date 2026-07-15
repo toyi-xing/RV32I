@@ -10,7 +10,8 @@
 //
 // 功能：
 //   - 汇总 simple bus UVM 环境所需的公共 package 和宏依赖。
-//   - 当前只接入 simple_bus_base_test，后续按计划加入 item、agent、env 和 test。
+//   - 当前已接入 transaction、sequence、agent、env 和 base test；后续继续加入
+//     scoreboard、coverage 与派生 test。
 //------------------------------------------------------------------------------
 
 package simple_bus_pkg;
@@ -26,5 +27,7 @@ package simple_bus_pkg;
     `include "simple_bus_sequencer.svh"
     `include "simple_bus_driver.svh"
     `include "simple_bus_monitor.svh"
+    `include "simple_bus_agent.svh"
+    `include "simple_bus_env.svh"
     `include "simple_bus_base_test.svh"
 endpackage

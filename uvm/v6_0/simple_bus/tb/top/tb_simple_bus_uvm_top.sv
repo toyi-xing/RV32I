@@ -50,6 +50,18 @@ module tb_simple_bus_uvm_top;
     // UVM test 启动
     // -------------------------------------------------------------------------
     initial begin
+        uvm_config_db#(virtual simple_bus_if.master_drv_mp)::set(
+            null,
+            "uvm_test_top.env.agent.driver",
+            "vif",
+            simple_bus_vif.master_drv_mp
+        );
+        uvm_config_db#(virtual simple_bus_if.mon_mp)::set(
+            null,
+            "uvm_test_top.env.agent.monitor",
+            "vif",
+            simple_bus_vif.mon_mp
+        );
         uvm_top.set_timeout(1ms,1'b0);
         run_test();
     end
