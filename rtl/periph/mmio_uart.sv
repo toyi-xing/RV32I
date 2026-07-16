@@ -53,6 +53,11 @@ module mmio_uart #(
     import core_pkg::*;
     import soc_pkg::*;
 
+    // 信号声明（兼容 VCS 要求）
+    logic offset_illegal;
+    logic wo_hit;
+    logic wo_idx;        // 后续多于 2 个寄存器时应使用 [$clog2(WO_N)-1:0]
+
     // 直接设为 12 位宽，方便与 soc 包中的 OFFSET 比较
     // valid_i 保证地址已命中本外设窗口；本模块只检查窗口内 offset 是否为已定义寄存器。
     wire [core_pkg::XLEN-1:0] full_offset = addr_i - BASE_ADDR;
@@ -94,7 +99,6 @@ module mmio_uart #(
     assign access_fault_o = offset_illegal;
 
     // 读端口与 offset 非法检测
-    logic offset_illegal;
     always_comb begin : UART_READ
         rdata_o        = '0;
         offset_illegal = 1'b0;
@@ -123,8 +127,6 @@ module mmio_uart #(
         endcase
     end
     // WO 寄存器 IDX 译码
-    logic wo_hit;
-    logic wo_idx;        // 后续多于 2 个寄存器时应使用 [$clog2(WO_N)-1:0]
     always_comb begin : UART_WO_IDX_DECODE
         wo_idx = '0;
         wo_hit = 1'b1;

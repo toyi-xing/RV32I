@@ -9,9 +9,10 @@
 //
 // 功能：
 //   - 聚合 simple data bus 的 request、ready 和 response 信号。
-//   - 提供 master driver、monitor 及预留 slave clocking block。
+//   - 提供 master driver 和 monitor 的 clocking block。
 //   - 在 ASSERT_ON 打开时检查 reset、X/Z 和 backpressure payload stable。
 //------------------------------------------------------------------------------
+`default_nettype none
 
 interface simple_bus_if (
     input logic clk_i,
@@ -35,13 +36,6 @@ interface simple_bus_if (
         input  req_valid_observed;
         output req_i;
         input  resp_o;
-    endclocking
-
-    clocking slave_cb @(posedge clk_i);
-        default input #1step output #1ns;
-        output req_ready_o;
-        input  req_i;
-        output resp_o;
     endclocking
 
     clocking mon_cb @(posedge clk_i);
@@ -121,3 +115,5 @@ interface simple_bus_if (
     `endif
 
 endinterface
+
+`default_nettype wire

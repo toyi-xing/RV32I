@@ -62,12 +62,12 @@ data_subsystem
 UVM delay configuration
         |
         v
-data_subsystem_cfg_if
+resp_delay_cfg_if
         |
         +--> per-target response delay inputs
 ```
 
-`simple_bus_if` 只表达 core-side request/response 协议。`data_subsystem_cfg_if` 是 v6.0 DUT 专用的验证配置通道，用于控制各 target 的 response delay；它不是 simple data bus 的组成部分，也不应进入通用 simple bus agent 的 transaction payload。
+`simple_bus_if` 只表达 core-side request/response 协议。`resp_delay_cfg_if` 是 v6.0 DUT 专用的验证配置通道，用于控制各 target 的 response delay；它不是 simple data bus 的组成部分，也不应进入通用 simple bus agent 的 transaction payload。
 
 `data_subsystem` core 侧接口是验证主接口：
 
@@ -259,7 +259,7 @@ MMIO known-register sequence 从 `dut/docs/periph_register_abi.md` 选择寄存�
 
 response delay wrapper 是验证配套层，不表示外设本体一定是多拍 slave。GPIO/UART/TIMER32 本体仍是固定响应寄存器块；wrapper 在 request accepted 当拍访问本体并锁存结果，再延迟返回给 core/simple bus master。
 
-delay 配置通过独立的 `data_subsystem_cfg_if` 连接到上述四个 DUT 输入。该 interface 由 UVM top 实例化，通过 `uvm_config_db` 把 virtual interface 句柄交给需要动态配置的 test/sequence；通用 simple bus driver 仍只负责 `req/req_ready/resp`，不直接拥有 DUT 专用 delay 配置。
+delay 配置通过独立的 `resp_delay_cfg_if` 连接到上述四个 DUT 输入。该 interface 由 UVM top 实例化，通过 `uvm_config_db` 把 virtual interface 句柄交给需要动态配置的 test/sequence；通用 simple bus driver 仍只负责 `req/req_ready/resp`，不直接拥有 DUT 专用 delay 配置。
 
 delay 配置的生效和切换规则：
 

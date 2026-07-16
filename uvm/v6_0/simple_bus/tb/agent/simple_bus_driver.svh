@@ -114,6 +114,6 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
         // 收到 resp，回填 item
         item.rdata = vif.master_drv_cb.resp_o.rdata;
         item.error = vif.master_drv_cb.resp_o.error;
-        `uvm_info(get_type_name(), {"transaction done, item:", item.item2string()}, UVM_MEDIUM);
+        `uvm_info(get_type_name(), {"driver completed a item:", item.item2string()}, UVM_MEDIUM);
     endtask
 endclass

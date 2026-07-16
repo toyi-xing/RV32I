@@ -86,7 +86,7 @@ class simple_bus_monitor extends uvm_component;
                 tr.error      = vif.mon_cb.resp_o.error;
                 // 本次 transaction 结束，通过 ap 广播出去
                 mon_item_ap.write(tr);
-                `uvm_info(get_type_name(), {"a transaction finished",tr.item2string()}, UVM_MEDIUM)
+                `uvm_info(get_type_name(), {"monitor observed a bus transfer:",tr.item2string("transfer")}, UVM_MEDIUM)
                 // 创建一个新的 transfer 对象并记录本次 resp 拍数，供下一个 transaction 使用
                 pending    = 1'b0;
                 tr         = simple_bus_item::type_id::create("", this);

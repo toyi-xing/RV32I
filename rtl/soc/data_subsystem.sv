@@ -64,6 +64,14 @@ module data_subsystem (
     import soc_pkg::*;
     import data_bus_pkg::*;
 
+    // 信号声明(兼容 VCS 要求)
+    wire req_accept_fire, req_re_accept, req_we_accept;
+    wire dmem_hit, gpio0_hit, uart0_hit, timer0_hit, mapped_hit;
+    wire req_dmem_valid, req_gpio0_valid, req_uart0_valid, req_timer0_valid, req_undefined_valid;
+    wire [core_pkg::XLEN-1:0] gpio0_rdata, uart0_rdata, timer0_rdata;
+    wire gpio0_access_fault, uart0_access_fault, timer0_access_fault;
+    wire resp_undefined_valid;
+
     // 状态信号
     reg resp_pending_q; // 接受了 req 但还没给出 resp
     soc_pkg::target_e target, resp_target_q; // req 请求的目标，resp 响应源
@@ -89,23 +97,23 @@ module data_subsystem (
     assign core_req_ready_o = !resp_pending_q;
 
     // 本拍是一个真实被接受的的访存信号（脉冲信号）
-    wire req_accept_fire = core_req_i.valid &  core_req_ready_o;
-    wire req_re_accept   = req_accept_fire  & !core_req_i.write;
-    wire req_we_accept   = req_accept_fire  &  core_req_i.write;
+    assign req_accept_fire = core_req_i.valid &  core_req_ready_o;
+    assign req_re_accept   = req_accept_fire  & !core_req_i.write;
+    assign req_we_accept   = req_accept_fire  &  core_req_i.write;
 
     // core_addr 命中分配
-    wire dmem_hit   = (core_req_i.addr >= DMEM_BASE)   & (core_req_i.addr < DMEM_BASE   + DMEM_SIZE_BYTES);
-    wire gpio0_hit  = (core_req_i.addr >= GPIO0_BASE)  & (core_req_i.addr < GPIO0_BASE  + GPIO0_SIZE_BYTES);
-    wire uart0_hit  = (core_req_i.addr >= UART0_BASE)  & (core_req_i.addr < UART0_BASE  + UART0_SIZE_BYTES);
-    wire timer0_hit = (core_req_i.addr >= TIMER0_BASE) & (core_req_i.addr < TIMER0_BASE + TIMER0_SIZE_BYTES);
-    wire mapped_hit = dmem_hit | gpio0_hit | uart0_hit | timer0_hit;    // addr 命中已实现的地址
+    assign dmem_hit   = (core_req_i.addr >= DMEM_BASE)   & (core_req_i.addr < DMEM_BASE   + DMEM_SIZE_BYTES);
+    assign gpio0_hit  = (core_req_i.addr >= GPIO0_BASE)  & (core_req_i.addr < GPIO0_BASE  + GPIO0_SIZE_BYTES);
+    assign uart0_hit  = (core_req_i.addr >= UART0_BASE)  & (core_req_i.addr < UART0_BASE  + UART0_SIZE_BYTES);
+    assign timer0_hit = (core_req_i.addr >= TIMER0_BASE) & (core_req_i.addr < TIMER0_BASE + TIMER0_SIZE_BYTES);
+    assign mapped_hit = dmem_hit | gpio0_hit | uart0_hit | timer0_hit;    // addr 命中已实现的地址
 
     //accepted request 命中各目标窗口时，产生对应 target 的访问脉冲
-    wire req_dmem_valid      = req_accept_fire &  dmem_hit;
-    wire req_gpio0_valid     = req_accept_fire &  gpio0_hit;
-    wire req_uart0_valid     = req_accept_fire &  uart0_hit;
-    wire req_timer0_valid    = req_accept_fire &  timer0_hit;
-    wire req_undefined_valid = req_accept_fire & !mapped_hit;
+    assign req_dmem_valid      = req_accept_fire &  dmem_hit;
+    assign req_gpio0_valid     = req_accept_fire &  gpio0_hit;
+    assign req_uart0_valid     = req_accept_fire &  uart0_hit;
+    assign req_timer0_valid    = req_accept_fire &  timer0_hit;
+    assign req_undefined_valid = req_accept_fire & !mapped_hit;
 
     //======================================================================
     // 固定响应 target 的延时响应包装层，用计数器注入非 0 wait-state。
@@ -199,8 +207,6 @@ module data_subsystem (
     // core_resp_o.valid = req_dmem_valid;
     // core_resp_o.rdata = dmem_rdata_i;
 
-    wire [core_pkg::XLEN-1:0] gpio0_rdata;
-    wire gpio0_access_fault;
     mmio_gpio #(
         .BASE_ADDR  (soc_pkg::GPIO0_BASE),
         .GPIO_WIDTH (32)
@@ -227,8 +233,6 @@ module data_subsystem (
     // core_resp_o.rdata = gpio0_rdata;
     // core_resp_o.error = gpio0_access_fault;
 
-    wire [core_pkg::XLEN-1:0] uart0_rdata;
-    wire uart0_access_fault;
     mmio_uart #(
         .BASE_ADDR (soc_pkg::UART0_BASE)
     ) u_mmio_uart0 (
@@ -257,8 +261,6 @@ module data_subsystem (
     // core_resp_o.rdata = uart0_rdata;
     // core_resp_o.error = uart0_access_fault;
 
-    wire [core_pkg::XLEN-1:0] timer0_rdata;
-    wire timer0_access_fault;
     mmio_timer32 #(
         .BASE_ADDR (soc_pkg::TIMER0_BASE)
     ) u_mmio_timer32_0 (
@@ -281,7 +283,7 @@ module data_subsystem (
     // core_resp_o.error = timer0_access_fault;
 
     // undefined
-    wire resp_undefined_valid = req_undefined_valid;    // undefined 保持同拍响应
+    assign resp_undefined_valid = req_undefined_valid;    // undefined 保持同拍响应
 
     // core_resp MUX
     soc_pkg::target_e resp_target;

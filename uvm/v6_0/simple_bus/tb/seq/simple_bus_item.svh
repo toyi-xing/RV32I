@@ -108,11 +108,11 @@ class simple_bus_item extends uvm_sequence_item;
         endcase
     endfunction
 
-    function string item2string();
-        return $sformatf({"\n[item] master: %s be=%04bb addr=0x%08x target=%s wdata=0x%08x idle_cycles=%0d",
-                          "\n[item]  slave: rdata=0x%08x error=%0d resp_delay=%0d"},
-                         rw2string(), be, addr, target_name(), wdata, idle_cycles,
-                         rdata, error, resp_delay);
+    function string item2string(string object_kind = "item");
+        return $sformatf({"\n[%s] master: %s be=%04bb addr=0x%08x target=%s wdata=0x%08x idle_cycles=%0d",
+                          "\n[%s]  slave: rdata=0x%08x error=%0d resp_delay=%0d"},
+                         object_kind, rw2string(), be, addr, target_name(), wdata, idle_cycles,
+                         object_kind, rdata, error, resp_delay);
     endfunction
 
 endclass

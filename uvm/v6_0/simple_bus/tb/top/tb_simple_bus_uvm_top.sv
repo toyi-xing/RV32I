@@ -9,7 +9,8 @@
 // 功能：
 //   - 产生 100 MHz 时钟和低有效复位。
 //   - 设置 UVM 全局超时并启动命令行指定的 test。
-//   - 已例化 simple_bus_if，后续在本模块中接入 DUT 和 virtual interface 配置。
+//   - 例化 simple_bus_if、response delay 配置接口、data_subsystem 和 simple_ram。
+//   - 将 driver、monitor 和 DUT 专用配置 interface 通过 config_db 提供给 UVM test。
 //------------------------------------------------------------------------------
 
 `timescale 1ns/1ps
@@ -44,6 +45,49 @@ module tb_simple_bus_uvm_top;
         .clk_i(clk),
         .rst_n_i(rst_n)
     );
+    // resp_delay_cfg_vif
+    resp_delay_cfg_if resp_delay_cfg_vif(
+        .clk_i(clk),
+        .rst_n_i(rst_n)
+    );
+
+    // dut
+    logic                      dmem_we;
+    logic [3:0]                dmem_be;
+    logic [core_pkg::XLEN-1:0] dmem_addr;
+    logic [core_pkg::XLEN-1:0] dmem_wdata;
+    logic [core_pkg::XLEN-1:0] dmem_rdata;
+    data_subsystem u_data_subsystem(
+        .clk_i       (clk),
+        .rst_n_i     (rst_n),
+
+        .core_req_ready_o (simple_bus_vif.req_ready_o),
+        .core_req_i       (simple_bus_vif.req_i),
+        .core_resp_o      (simple_bus_vif.resp_o),
+
+        .dmem_resp_delay_cycles_i   (resp_delay_cfg_vif.dmem_resp_delay_cycles),
+        .gpio0_resp_delay_cycles_i  (resp_delay_cfg_vif.gpio0_resp_delay_cycles),
+        .uart0_resp_delay_cycles_i  (resp_delay_cfg_vif.uart0_resp_delay_cycles),
+        .timer0_resp_delay_cycles_i (resp_delay_cfg_vif.timer0_resp_delay_cycles),
+
+        .dmem_we_o    (dmem_we),
+        .dmem_be_o    (dmem_be),
+        .dmem_addr_o  (dmem_addr),
+        .dmem_wdata_o (dmem_wdata),
+        .dmem_rdata_i (dmem_rdata),
+
+        .gpio0_in_i         ('0),
+        .uart0_rx_valid_i   (1'b0),
+        .uart0_rx_data_i    ('0)
+    );
+    simple_ram u_simple_ram (
+        .clk_i   (clk),
+        .we_i    (dmem_we),
+        .be_i    (dmem_be),
+        .addr_i  (dmem_addr),
+        .wdata_i (dmem_wdata),
+        .rdata_o (dmem_rdata)
+    );
 
 
     // -------------------------------------------------------------------------
@@ -62,6 +106,13 @@ module tb_simple_bus_uvm_top;
             "vif",
             simple_bus_vif.mon_mp
         );
+        uvm_config_db#(virtual resp_delay_cfg_if)::set(
+            null,
+            "uvm_test_top",
+            "resp_delay_cfg_vif",
+            resp_delay_cfg_vif
+        );
+        resp_delay_cfg_vif.rst_resp_delay();
         uvm_top.set_timeout(1ms,1'b0);
         run_test();
     end

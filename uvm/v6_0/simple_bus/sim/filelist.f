@@ -12,7 +12,19 @@
 ../dut/rtl/common/soc_pkg.sv
 ../dut/rtl/common/data_bus_pkg.sv
 
+// DUT rtl
+// -y ../dut/rtl/mem
+// -y ../dut/rtl/periph
+// -y ../dut/rtl/soc
+// +libext+.sv
+../../../../rtl/soc/data_subsystem.sv
+../../../../rtl/periph/mmio_gpio.sv
+../../../../rtl/periph/mmio_timer32.sv
+../../../../rtl/periph/mmio_uart.sv
+../../../../rtl/mem/simple_ram.sv
+
 // UVM package 先于导入它的静态 testbench top 编译。
 ../tb/interfaces/simple_bus_if.sv
+../tb/interfaces/data_subsystem_cfg_if.sv
 ../tb/pkg/simple_bus_pkg.sv
 ../tb/top/tb_simple_bus_uvm_top.sv

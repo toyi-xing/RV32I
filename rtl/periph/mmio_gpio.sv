@@ -50,6 +50,11 @@ module mmio_gpio #(
     import core_pkg::*;
     import soc_pkg::*;
 
+    // 信号声明(兼容 VCS 要求)
+    logic offset_illegal;
+    wire  [core_pkg::XLEN-1:0] pending_valid;       // 将要挂起的位
+    logic [core_pkg::XLEN-1:0] clear_pending_mask;  // 本拍要被清掉的挂起位
+
     // GPIO 输入来自 SoC/testbench 外部，可能跨时钟域；先同步到 clk_i 域。
     reg [GPIO_WIDTH-1:0] gpio_in_meta, gpio_in_sync, gpio_in_sync_q;
     always_ff @(posedge clk_i or negedge rst_n_i) begin : GPIO_SYNC
@@ -99,7 +104,6 @@ module mmio_gpio #(
     assign access_fault_o = offset_illegal;
 
     // 读端口与 offset 非法检测
-    logic offset_illegal;
     always_comb begin : GPIO_READ
         rdata_o        = '0;
         offset_illegal = 1'b0;
@@ -215,10 +219,7 @@ module mmio_gpio #(
                                           (gpio_rw[IRQ_FALL_EN_IDX][GPIO_WIDTH-1:0] & fall_hit) |
                                           (gpio_rw[IRQ_HIGH_EN_IDX][GPIO_WIDTH-1:0] & high_hit) |
                                           (gpio_rw[IRQ_LOW_EN_IDX][GPIO_WIDTH-1:0]  & low_hit);
-        // 将要挂起的位
-    wire [core_pkg::XLEN-1:0] pending_valid = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, pending_hit & gpio_rw[IRQ_EN_IDX]};
-        // 本拍要被清掉的挂起位
-    logic [core_pkg::XLEN-1:0] clear_pending_mask;
+    assign pending_valid = {{(core_pkg::XLEN-GPIO_WIDTH){1'b0}}, pending_hit & gpio_rw[IRQ_EN_IDX]};
     always_comb begin
         clear_pending_mask = '0;
         if(valid_i && we_i && rw1c_hit && rw1c_idx == IRQ_PENDING_IDX) begin

@@ -1155,11 +1155,11 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 - driver/monitor 都能拿到 vif。
 - 因为还没有 DUT 和 sequence，允许没有真实 bus transaction。
 
-## 8. DUT harness 和 DMEM smoke `执行中`
+## 8. DUT harness 和 DMEM smoke `已完成`
 
 目标：把 `data_subsystem` 接进 UVM top，用 UVM driver 访问 DMEM，完成第一条真正的 UVM smoke。
 
-### 8.1 更新 filelist，接入归档 DUT RTL
+### 8.1 更新 filelist，接入归档 DUT RTL `已完成`
 
 修改：
 
@@ -1191,7 +1191,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 
 `simple_bus_if` 是通用 bus 协议 interface；`data_subsystem_cfg_if` 只承载 v6.0 DUT 的 per-target delay 配置。两者分开，避免 simple bus agent 绑定 `data_subsystem` 的验证专用端口。
 
-### 8.2 新增 `data_subsystem_cfg_if`
+### 8.2 新增 `data_subsystem_cfg_if` `已完成`
 
 新增：
 
@@ -1234,7 +1234,7 @@ endinterface
 
 本 interface 不属于 simple bus 协议。调用者必须保证只在没有 outstanding transaction 时调用 `set_target_delay()`，并让配置在下一笔 request accepted 前稳定。该 task 只立即更新配置，不在内部等待 `posedge/negedge`；调用方在上一笔 `finish_item()` 返回后设置新值，再立即交付下一笔 item，配置会在下一次 request accepted 前保持稳定，同时不会引入隐含 idle 拍。第一版固定 smoke 不调用该 task，只使用 top 设置的默认值。
 
-### 8.3 UVM top 增加 DUT 连接信号和配置 interface
+### 8.3 UVM top 增加 DUT 连接信号和配置 interface `已完成`
 
 在 `tb/top/tb_simple_bus_uvm_top.sv` 中声明：
 
@@ -1297,7 +1297,7 @@ uvm_config_db #(virtual data_subsystem_cfg_if)::set(
 );
 ```
 
-### 8.4 UVM top 例化 `data_subsystem`
+### 8.4 UVM top 例化 `data_subsystem` `已完成`
 
 建议骨架：
 
@@ -1343,7 +1343,7 @@ data_subsystem u_data_subsystem (
 );
 ```
 
-### 8.5 UVM top 例化 `simple_ram`
+### 8.5 UVM top 例化 `simple_ram` `已完成`
 
 建议骨架：
 
@@ -1360,7 +1360,7 @@ simple_ram u_simple_ram (
 
 第一版不需要加 `+dmem=<path>`，RAM 初始值默认 0。
 
-### 8.6 新增 smoke test 文件
+### 8.6 新增 smoke test 文件 `已完成`
 
 新增：
 
@@ -1389,7 +1389,7 @@ class simple_bus_smoke_test extends simple_bus_base_test;
 endclass
 ```
 
-### 8.7 接入 package
+### 8.7 接入 package `已完成`
 
 修改 `simple_bus_pkg.sv` include 顺序：
 
@@ -1405,7 +1405,7 @@ endclass
 `include "simple_bus_smoke_test.svh"
 ```
 
-### 8.8 更新 run_all
+### 8.8 更新 run_all `已完成`
 
 `uvm/v6_0/simple_bus/sim/run_all.sh` 增加：
 
@@ -1413,7 +1413,7 @@ endclass
 ./run_test.sh simple_bus_smoke_test 1
 ```
 
-### 8.9 验证节点
+### 8.9 验证节点 `已完成`
 
 本章完成标准：
 
@@ -1423,7 +1423,7 @@ endclass
 - `data_subsystem_cfg_if` 默认值为 0，普通 smoke 保持 0 wait-state。
 - 暂时允许不检查 read data，但 log 中要能看出事务发生。
 
-## 9. 最小 scoreboard
+## 9. 最小 scoreboard `执行中`
 
 目标：让 UVM smoke 不只是“跑完”，而是能自动判断 DMEM 基本 read/write 是否正确。
 

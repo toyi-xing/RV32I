@@ -38,7 +38,7 @@ module simple_ram #(
     assign word_addr = ADDR_WIDTH'((addr_i - DMEM_BASE) >> 2);
     assign rdata_o   = mem[word_addr];
 
-    always_ff @(posedge clk_i) begin
+    always @(posedge clk_i) begin
         if (we_i) begin
             if (be_i[0]) begin
                 mem[word_addr][7:0] <= wdata_i[7:0];
