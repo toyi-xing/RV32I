@@ -1423,11 +1423,11 @@ endclass
 - `data_subsystem_cfg_if` 默认值为 0，普通 smoke 保持 0 wait-state。
 - 暂时允许不检查 read data，但 log 中要能看出事务发生。
 
-## 9. 最小 scoreboard `执行中`
+## 9. 最小 scoreboard `已完成`
 
 目标：让 UVM smoke 不只是“跑完”，而是能自动判断 DMEM 基本 read/write 是否正确。
 
-### 9.1 新增 scoreboard 文件
+### 9.1 新增 scoreboard 文件 `已完成`
 
 新增：
 
@@ -1511,7 +1511,7 @@ endclass
 - 未写过的地址先不检查初值，避免和 RAM 初始化策略耦合。
 - 如果 VCS 对 `ref_valid.exists(wa)` 写法有类型报错，可把 key 类型统一成 `int unsigned` 或 `logic [31:0]` 后调整。
 
-### 9.2 env 接入 scoreboard
+### 9.2 env 接入 scoreboard `已完成`
 
 修改：
 
@@ -1545,7 +1545,7 @@ class simple_bus_env extends uvm_env;
 endclass
 ```
 
-### 9.3 接入 package
+### 9.3 接入 package  `已完成`
 
 修改 `simple_bus_pkg.sv` include 顺序：
 
@@ -1562,7 +1562,7 @@ endclass
 `include "simple_bus_smoke_test.svh"
 ```
 
-### 9.4 验证节点
+### 9.4 验证节点 `已完成`
 
 本章完成标准：
 
@@ -1570,115 +1570,144 @@ endclass
 - 错误时 scoreboard 打印 addr、expected、actual。
 - DMEM 基本 word write/read 通过。
 
-## 10. 第一批状态型 SVA
+## 10. 第一批状态型 SVA `已完成`
 
-目标：在 interface 已有 reset、X/Z 和 backpressure payload stable 基础断言之上，补充最少量、价值最高的 single-outstanding 状态型协议断言。
+目标：把 simple bus 的基础协议断言和状态型断言统一收敛到 `tb/sva`，在 interface
+作用域检查最少量、价值最高的 single-outstanding 协议不变量。
 
-### 10.1 新增 assertion 文件
+### 10.1 新增 SVA 目录和 assertion 文件 `已完成`
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_assert.svh
+uvm/v6_0/simple_bus/tb/sva/simple_bus_assert.svh
 ```
 
-为了第一版接入简单，建议本文件不单独成 module，而是写成 interface 内可 include 的代码片段，由 `simple_bus_if.sv` include。当前 interface 已有的基础断言不在这里重复实现；所有基础/状态型断言统一受 `ASSERT_ON` 控制。
+`simple_bus_assert.svh` 不是独立 module，也不属于 `simple_bus_pkg`。它是由
+`simple_bus_if.sv` 在 interface 内部文本 include 的代码片段；预处理后其中的
+property/assertion 与 interface 信号处于同一作用域，可以直接使用 `clk_i`、`rst_n_i`、
+`req_i`、`req_ready_o` 和 `resp_o`。`.svh` 不作为独立源文件加入 filelist。
 
-建议骨架：
+本文件统一保存当前已在 interface 中实现的基础断言，以及本章新增的状态型断言：
+
+- reset quiet。
+- request/response 控制和 payload 的 X/Z 检查。
+- backpressure 时 request payload stable。
+- single outstanding：存在未完成 request 时不能再接受第二笔 request。
+- no orphan response：每个 response 都必须对应 outstanding request 或本拍刚 accepted 的
+  0 wait-state request。
+
+所有 assertion 和 assertion state 均由本文件中的 `` `ifdef ASSERT_ON `` 包住，避免关闭
+断言时留下状态逻辑。第一版不在这里加入具体 MMIO 寄存器、DMEM 数据值、delay 配置等功能
+检查；这些分别属于 checker/scoreboard 的职责。
+
+建议状态型部分的骨架：
 
 ```systemverilog
 `ifdef ASSERT_ON
     logic assert_outstanding_q;
-    wire  assert_accept_fire = req.valid && req_ready;
+    wire  assert_accept_fire = req_i.valid && req_ready_o;
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always_ff @(posedge clk_i or negedge rst_n_i) begin
+        if (!rst_n_i) begin
             assert_outstanding_q <= 1'b0;
         end
         else begin
-            if (assert_accept_fire && !resp.valid) begin
+            if (assert_accept_fire && !resp_o.valid) begin
                 assert_outstanding_q <= 1'b1;
             end
-            if (resp.valid) begin
+            if (resp_o.valid) begin
                 assert_outstanding_q <= 1'b0;
             end
         end
     end
 
     property p_no_second_accept_when_outstanding;
-        @(posedge clk) disable iff (!rst_n)
+        @(posedge clk_i) disable iff (!rst_n_i)
             assert_outstanding_q |-> !assert_accept_fire;
     endproperty
 
     property p_no_orphan_response;
-        @(posedge clk) disable iff (!rst_n)
-            resp.valid |-> (assert_outstanding_q || assert_accept_fire);
+        @(posedge clk_i) disable iff (!rst_n_i)
+            resp_o.valid |-> (assert_outstanding_q || assert_accept_fire);
     endproperty
-
-    a_no_second_accept_when_outstanding:
-        assert property (p_no_second_accept_when_outstanding);
-
-    a_no_orphan_response:
-        assert property (p_no_orphan_response);
 `endif
 ```
 
-### 10.2 interface 中 include assertion
+实现时应根据 `data_subsystem` 的 0 wait-state 同拍 accept/response 语义，复核
+`assert_outstanding_q` 的更新与两个 property 的采样口径；不要机械照抄骨架。
+
+### 10.2 interface 接入并迁移基础断言 `已完成`
 
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_if.sv
+uvm/v6_0/simple_bus/tb/interfaces/simple_bus_if.sv
+uvm/v6_0/simple_bus/sim/filelist.f
 ```
 
-在 `endinterface` 前加入：
+在 `simple_bus_if.sv` 的 `endinterface` 前加入：
 
 ```systemverilog
 `include "simple_bus_assert.svh"
 ```
 
-注意：
+并把当前 interface 内已有的 reset、X/Z、backpressure payload stable assertion 从
+`simple_bus_if.sv` 迁移到 `simple_bus_assert.svh`，不复制保留两份。这样 interface 只保留
+总线信号、clocking block、modport 和 assertion include，所有 simple bus SVA 统一维护。
 
-- 该 include 必须在 interface 内部。
-- `simple_bus_assert.svh` 使用 interface 内已有的 `clk/rst_n/req/req_ready/resp`。
-- interface 内已有的基础断言也必须放在同一个 `ASSERT_ON` 条件下，避免第 2～7 章 DUT 尚未接入时对悬空 slave 输出产生误报。
-- 已实现的 reset、X/Z 和 payload stable 断言不在本文件重复定义；本文件只增加需要 outstanding 状态记录的断言。
-
-### 10.3 run_test 支持 ASSERT_ON
-
-修改：
+`filelist.f` 增加：
 
 ```text
-uvm/v6_0/simple_bus/sim/run_test.sh
++incdir+../tb/sva
 ```
 
-第 8、9 章 DUT/driver/monitor/scoreboard 已接通后，第一版可以默认打开：
+断言应放在 interface 内，而非 `tb_simple_bus_uvm_top.sv`：它们描述的是可复用的 simple
+bus 协议，使用 interface 作用域信号；top 只负责实例化 interface、DUT 和 testbench model。
+未来若要检查 `data_subsystem` 内部实现状态，再在 `tb/sva` 新增独立 assertion module 和
+bind 文件，本章不提前建立。
+
+### 10.3 ASSERT_ON 编译开关 `无需改动`
+
+`run_test.sh` 已支持通过 shell 环境变量控制 VCS 编译宏：
 
 ```bash
-ASSERT_DEFINE="+define+ASSERT_ON"
-
-vcs -full64 -sverilog -ntb_opts uvm \
-    ${ASSERT_DEFINE} \
-    ...
+ASSERT_ON=1 uvm/v6_0/simple_bus/sim/run_test.sh simple_bus_smoke_test 1
 ```
 
-如果希望可选：
+该变量只对本条命令生效；脚本在 `ASSERT_ON=1` 时加入 `+define+ASSERT_ON`，并使用与未开启
+断言不同的 build 目录，避免 VCS 增量编译复用错误配置。普通命令不设置该变量即关闭 assertion。
 
-```bash
-ASSERT_DEFINE=${ASSERT_DEFINE:-+define+ASSERT_ON}
-```
+本章不改变这一脚本接口；实现后分别验证关闭和开启 assertion 的编译/仿真路径。
 
-然后允许命令行环境覆盖。
+### 10.4 SVA、UVM 与 coverage 分层 `无需改动`
 
-### 10.4 验证节点
+- SVA 只依赖 interface 的时钟、reset 和引脚级协议状态，不 import UVM package，也不读取
+  sequence item、scoreboard 或 driver 的内部状态。
+- UVM driver/monitor 继续通过 virtual interface 驱动/重建 transaction；scoreboard/checker
+  通过 monitor analysis port 检查数据、error、delay 和外设功能语义。
+- assertion failure 通过 `$error` 进入仿真日志，`run_test.sh` 的 `SIM_ERROR` 统计将其判为
+  FAIL；UVM 不需要直接调用 assertion。
+- 后续 functional coverage 放在 `tb/coverage`，作为由 env 创建、订阅 monitor analysis
+  port 的 UVM subscriber/collector；它采集重建后的 transaction，不替代 SVA 或 scoreboard。
+- 若需要 `cover property` 统计协议场景，则与 assertion 一同放在 `tb/sva`。它与 UVM
+  functional coverage 是两类覆盖，不应重复计数或相互依赖。
+
+coverage 的具体 collector 和随机激励仍放在第 15 章：先稳定确定性 DMEM、delay、error 和
+side-effect 检查，再让 coverage 报告具有可解释的输入分布；不要求等全部黄金模型完成才建立
+覆盖框架，但每个纳入 legal traffic/coverage 的场景必须已有明确 spec 和自动检查边界。
+
+### 10.5 验证节点 `已完成`
 
 本章完成标准：
 
 - `simple_bus_smoke_test` 在基础和状态型 SVA 同时打开时通过。
-- 人为制造一个简单协议错误时，至少一条断言能报错。
-- 断言错误不会混在 scoreboard 错误里看不清，log 中能看出 assertion 名称。
+- 人为制造一个简单协议错误时，至少一条 assertion 能以清晰名称报错，并被脚本计入
+  `SIM_ERROR`/FAIL。
+- 关闭 `ASSERT_ON` 时不编译 assertion 状态逻辑，普通 smoke 仍可运行。
+- 不新增 UVM coverage collector；coverage 保持第 15 章实现。
 
-## 11. wait-state smoke
+## 11. wait-state smoke `执行中`
 
 目标：让 UVM 环境覆盖 0 wait-state 和非 0 wait-state。
 

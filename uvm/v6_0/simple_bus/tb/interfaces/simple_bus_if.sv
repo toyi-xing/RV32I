@@ -57,62 +57,7 @@ interface simple_bus_if (
         input    rst_n_i
     );
 
-    //-----------------------------------------------------------------------
-    // 基础总线信号与协议检查
-    //-----------------------------------------------------------------------
-
-    `ifdef ASSERT_ON
-
-    // 总线握手信号的 rst 行为
-    property p_simple_bus_rst_output;
-        @(posedge clk_i)
-            (!rst_n_i && $past(rst_n_i === 1'b0)) |->   // 上一周期明确就是 0，防止上电可能是 X
-                (req_i.valid == 1'b0 && req_ready_o == 1'b1 && resp_o.valid == 1'b0);
-    endproperty
-    ap_simple_bus_rst_output: assert property(p_simple_bus_rst_output)
-        else $error("simple_bus reset output check failed");
-
-    // 置位控制信号后不应出现 X/Z
-    property p_control_no_x_z;
-        @(posedge clk_i) disable iff (!rst_n_i)
-            !$isunknown({req_ready_o, req_i.valid, resp_o.valid});
-    endproperty
-    ap_control_no_x_z: assert property(p_control_no_x_z)
-        else $error("control signal has X/Z after reset");
-
-    // req 有效时数据不应出现 X/Z
-    property p_req_data_no_x_z;
-        @(posedge clk_i) disable iff (!rst_n_i)
-            req_i.valid |-> !$isunknown({req_i.write, req_i.be, req_i.addr, req_i.wdata});
-    endproperty
-    ap_req_data_no_x_z: assert property(p_req_data_no_x_z)
-        else $error("req valid but req data has X/Z");
-
-    // resp 有效时 error 不能为 X/Z
-    property p_resp_err_no_x_z;
-        @(posedge clk_i) disable iff (!rst_n_i)
-        resp_o.valid |-> !$isunknown(resp_o.error);
-    endproperty
-    ap_resp_err_no_x_z: assert property(p_resp_err_no_x_z) else
-        $error("resp valid but resp_o.error is X/Z");
-
-    // resp 有效且无错误时，rdata 不能为 X/Z
-    property p_resp_rdata_no_x_z;
-        @(posedge clk_i) disable iff (!rst_n_i)
-        resp_o.valid && (resp_o.error == 1'b0) |-> !$isunknown(resp_o.rdata);
-    endproperty
-    ap_resp_rdata_no_x_z: assert property(p_resp_rdata_no_x_z) else
-        $error("resp valid & no error, but resp_o.rdata has X/Z");
-
-    // 回压时 master 保持数据不变
-    property p_master_holds_when_backpressure;
-        @(posedge clk_i) disable iff (!rst_n_i)
-            (!req_ready_o && req_i.valid) |=> (req_i.valid && $stable({req_i.write, req_i.be, req_i.addr, req_i.wdata}));
-    endproperty
-    ap_master_holds_when_backpressure: assert property(p_master_holds_when_backpressure)
-        else $error("master req/payload output changed when slave stall");
-
-    `endif
+    `include "simple_bus_sva.svh"
 
 endinterface
 

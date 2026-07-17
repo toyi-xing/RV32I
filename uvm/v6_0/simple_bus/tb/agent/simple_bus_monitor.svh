@@ -19,7 +19,7 @@ class simple_bus_monitor extends uvm_component;
 
     virtual simple_bus_if.mon_mp vif;
     simple_bus_item tr;                                 // transfer 语柄
-    uvm_analysis_port #(simple_bus_item) mon_item_ap;   // monitor 使用一对多广播端口，scoreboard/coverage 都可以订阅
+    uvm_analysis_port #(simple_bus_item) transfer_ap;   // monitor 使用一对多广播端口，scoreboard/coverage 都可以订阅
 
     function new(string name = "simple_bus_monitor", uvm_component parent = null);
         super.new(name, parent);
@@ -30,7 +30,7 @@ class simple_bus_monitor extends uvm_component;
         if (!uvm_config_db #(virtual simple_bus_if.mon_mp)::get(this,"","vif",vif)) begin
             `uvm_fatal(get_type_name(), "failed to get monitor vif")
         end
-        mon_item_ap = new("mon_item_ap", this);
+        transfer_ap = new("transfer_ap", this);
     endfunction
 
 
@@ -85,7 +85,7 @@ class simple_bus_monitor extends uvm_component;
                 tr.rdata      = vif.mon_cb.resp_o.rdata;
                 tr.error      = vif.mon_cb.resp_o.error;
                 // 本次 transaction 结束，通过 ap 广播出去
-                mon_item_ap.write(tr);
+                transfer_ap.write(tr);
                 `uvm_info(get_type_name(), {"monitor observed a bus transfer:",tr.item2string("transfer")}, UVM_MEDIUM)
                 // 创建一个新的 transfer 对象并记录本次 resp 拍数，供下一个 transaction 使用
                 pending    = 1'b0;
