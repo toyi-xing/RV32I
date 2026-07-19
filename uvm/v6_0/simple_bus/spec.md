@@ -1,157 +1,239 @@
 # v6.0 Simple Data Bus UVM Verification Spec
 
-本文定义 `uvm/v6_0/simple_bus` 这套独立 UVM 工作区对应的验证对象、simple data bus 协议语义、transaction 抽象、检查边界和非目标。
+本文定义 `uvm/v6_0/simple_bus` 独立 UVM 工作区最终形态的验证对象、协议语义、验证架构、
+数据对象所有权、检查边界、coverage 目标和非目标。
 
-本 spec 绑定项目 `v6.0` 阶段的 simple data bus 语义。后续若 data bus 被 AXI-Lite 或其它协议替换，本 spec 应作为历史版本保留或归档；新的验证环境应另起目录和 spec，不应静默复用本文。
+本 spec 绑定项目 v6.0 的 simple data bus 与 `data_subsystem` response-delay wrapper。
+后续若 data bus 被 AXI-Lite 或其它协议替换，本 spec 和对应工作区作为历史 release 资产保留；
+新协议必须建立新的版本目录、verification spec 和 filelist，不能静默复用本文。
 
 ## 1. 定位
 
-本 UVM 环境用于验证 0834 后形成的 data-side simple request/response 总线和 `data_subsystem` 访问边界。
+本 UVM 环境验证 0834 后形成的 data-side simple request/response bus、`data_subsystem` 地址
+译码与外设访问边界，以及验证配套的 per-target response-delay wrapper。
 
-0835 完整环境的目标是：
+完整环境应具备：
 
-- 用 UVM master 直接驱动 simple data bus。
-- 实例化 `data_subsystem`、外置 `simple_ram` 和现有 GPIO0/UART0/TIMER0 寄存器模型。
-- 覆盖 DMEM/MMIO read/write、response delay、error response 和部分 MMIO 副作用。
-- 沉淀 driver、monitor、scoreboard、SVA 和 coverage 的基础组织方式。
+- UVM active master 驱动 simple data bus。
+- 独立 wrapper configuration agent 驱动 per-target delay 配置。
+- 独立 peripheral sideband 组件驱动 GPIO input/UART RX，并观测 GPIO/UART/TIMER 输出事件。
+- virtual sequence 按 testcase 需要协调 bus、wrapper cfg 和 peripheral sideband stimulus。
+- monitor 从 interface 独立重建 observed transfer。
+- DMEM/MMIO 功能 scoreboard、wrapper delay checker、driver execution checker 分层检查。
+- SVA 检查引脚级协议 invariant。
+- functional coverage 只采样实际观察到的 transaction。
+- 覆盖 DMEM/MMIO read/write、byte enable、error response、response delay、idle gap 和规定的
+  MMIO side effect。
 
-本环境不实例化整颗 `rv32i_soc`，不运行 `.mem` 程序，不验证 CPU 指令流、GPR、CSR、trap handler 或 interrupt 精确提交。
+本环境不实例化整颗 `rv32i_soc`，不运行 `.mem` 程序，不验证 CPU 指令流、GPR、CSR、
+trap handler 或 interrupt 精确提交。
 
-现有 Verilator ASM/C self-check regression 继续保留。本 UVM 环境是补充验证资产，不替代 directed regression。
+现有 Verilator ASM/C self-check regression 必须继续保留。VCS/UVM/SVA 是并行验证平台，
+不替代 directed regression。
 
 ## 2. 文件与版本边界
 
 UVM 源码目录：
 
-```text
+~~~text
 uvm/v6_0/simple_bus/tb
-```
+~~~
 
 DUT RTL/ABI 快照目录：
 
-```text
+~~~text
 uvm/v6_0/simple_bus/dut
-```
+~~~
 
 仿真脚本目录：
 
-```text
+~~~text
 uvm/v6_0/simple_bus/sim
-```
+~~~
 
-目录名体现版本绑定；文件名、package 名、class 名保持 `simple_bus_*` 风格即可。v6.0 filelist 只编译本工作区的 DUT 快照，不引用根目录主线 RTL。不同版本的 UVM 环境不应同时放入同一个 VCS filelist 编译，避免 package/class/module 重名冲突。快照来源、文件映射和同步/冻结规则见 `dut/README.md`。
+目录名体现 release 绑定；package/class 名保持 simple_bus 与 v6.0 data-subsystem wrapper
+语义。最终归档后的 v6.0 filelist 只编译本工作区 DUT 快照，不引用根目录主线 RTL。不同 release
+环境不进入同一个 VCS filelist，避免 package/class/module 重名和行为漂移。
 
-## 3. DUT Harness
+开发期允许在修复 VCS 兼容性或已记录 RTL 问题时临时引用主工程 RTL；环境冻结时必须保存
+snapshot、核对映射并切回归档镜像。快照来源和同步规则见 `dut/README.md`。
 
-第一版 DUT harness 应包含：
+## 3. DUT Harness 与验证架构
 
-```text
-UVM simple bus master
-        |
-        v
-simple data bus interface
-        |
-        v
+### 3.1 静态 harness
+
+~~~text
+simple_bus_if
+    |
+    v
 data_subsystem
-        |
-        +--> external simple_ram as DMEM model
-        +--> mmio_gpio  GPIO0
-        +--> mmio_uart  UART0
-        +--> mmio_timer32 TIMER0
+    +--> external simple_ram as DMEM model
+    +--> mmio_gpio    GPIO0
+    +--> mmio_uart    UART0
+    +--> mmio_timer32 TIMER0
 
-UVM delay configuration
-        |
-        v
 resp_delay_cfg_if
-        |
-        +--> per-target response delay inputs
-```
+    |
+    +--> dmem/gpio0/uart0/timer0 response-delay inputs
 
-`simple_bus_if` 只表达 core-side request/response 协议。`resp_delay_cfg_if` 是 v6.0 DUT 专用的验证配置通道，用于控制各 target 的 response delay；它不是 simple data bus 的组成部分，也不应进入通用 simple bus agent 的 transaction payload。
+data_subsystem_periph_if
+    +--> gpio0 input/output/output-enable/irq
+    +--> uart0 RX event/TX event/irq
+    +--> timer0 irq
+~~~
 
-`data_subsystem` core 侧接口是验证主接口：
+`simple_bus_if` 只表达 core-side request/response 协议。`resp_delay_cfg_if` 是 v6.0 DUT
+wrapper 专用配置通道，不属于 simple bus，也不进入通用 bus transaction payload。
+
+`data_subsystem_periph_if` 承载 simple bus 之外的外设侧带激励与观测。它同样不属于 simple
+bus：GPIO input 和 UART RX 由专用 sideband driver 驱动，GPIO output/output-enable、UART TX
+event 及三类 IRQ 由 sideband monitor 观察。若只运行 DMEM 或纯寄存器 smoke，可以保持输入
+idle，但最终 MMIO side-effect 回归不能把这些端口常量绑死。
+
+### 3.2 UVM 组件关系
+
+~~~text
+test
+  -> virtual sequence
+       -> simple_bus_virtual_sequencer
+            +--> simple_bus_agent.sequencer
+            |      -> simple_bus_driver
+            |      -> simple_bus_if
+            |
+            +--> data_subsystem_resp_delay_wrapper_cfg_agent.sequencer
+            |      -> wrapper cfg driver
+            |      -> resp_delay_cfg_if
+            |
+            +--> data_subsystem_periph_agent.sequencer
+                   -> peripheral sideband driver
+                   -> data_subsystem_periph_if
+
+simple_bus_monitor.transfer_ap
+    +--> simple_bus_scoreboard
+    +--> data_subsystem_resp_delay_wrapper_checker
+    +--> simple_bus_driver_execution_checker
+    +--> simple_bus_coverage
+
+wrapper cfg driver.applied_cfg_ap
+    +--> data_subsystem_resp_delay_wrapper_checker
+
+simple_bus_driver.planned_item_ap
+    +--> simple_bus_driver_execution_checker
+
+data_subsystem_periph_agent.monitor.event_ap
+    +--> target-specific MMIO checker/reference model
+    +--> simple_bus_coverage
+~~~
+
+普通 bus smoke 可以直接启动 bus sequence；任何需要逐笔配置 wrapper 的场景必须通过 virtual
+sequence 协调 bus agent 与 wrapper cfg agent。需要 GPIO input 或 UART RX 的场景由 virtual
+sequence 协调 bus agent 与 peripheral sideband agent。test 和 virtual sequence 不直接访问
+virtual interface。
+
+### 3.3 DUT 主接口
 
 | 信号 | 方向 | 说明 |
 |---|---|---|
 | `core_req_i.valid` | master -> DUT | request payload 有效。 |
-| `core_req_i.write` | master -> DUT | 1 表示 write/store，0 表示 read/load。 |
-| `core_req_i.be` | master -> DUT | byte enable，bit0 对应低 byte。 |
+| `core_req_i.write` | master -> DUT | 1=write/store，0=read/load。 |
+| `core_req_i.be` | master -> DUT | byte enable，bit0 对应最低 byte lane。 |
 | `core_req_i.addr` | master -> DUT | byte address。 |
-| `core_req_i.wdata` | master -> DUT | write data，按 byte lane 对齐。 |
-| `core_req_ready_o` | DUT -> master | DUT 可接受新 request。 |
+| `core_req_i.wdata` | master -> DUT | 按 byte lane 对齐的 write data。 |
+| `core_req_ready_o` | DUT -> master | DUT 可以接受新 request。 |
 | `core_resp_o.valid` | DUT -> master | response payload 有效。 |
-| `core_resp_o.rdata` | DUT -> master | read response data；write 或 error 时不作为主要检查对象。 |
-| `core_resp_o.error` | DUT -> master | 1 表示本次访问产生 bus/access error。 |
+| `core_resp_o.rdata` | DUT -> master | read response data；write/error 时不作为软件有效数据。 |
+| `core_resp_o.error` | DUT -> master | 1 表示本次访问失败。 |
 
-`core_req_i` 和 `core_resp_o` 类型来自 `dut/rtl/common/data_bus_pkg.sv`：
+`core_req_i` 和 `core_resp_o` 类型来自 `data_bus_pkg.sv`：
 
 - `data_bus_pkg::data_req_t`
 - `data_bus_pkg::data_resp_t`
 
-`ready` 当前保持为离散信号，不在结构体内。
-
-response 侧没有 `resp_ready`。master 不能对 response 施加 backpressure，必须在 `core_resp_o.valid=1` 的采样点接收结果；DUT 也不能等待 master 的额外确认。
+`ready` 保持为离散信号。response 侧没有 `resp_ready`；master 不能对 response 施加
+backpressure，必须在 `core_resp_o.valid=1` 的采样点接收结果。
 
 ## 4. Simple Data Bus 协议
 
 ### 4.1 Request 接受
 
-一笔 request 在下列条件同时成立的时钟采样点被 DUT 接受：
+request 在以下时钟采样点被接受：
 
-```text
+~~~text
 req_accept = core_req_i.valid && core_req_ready_o
-```
+~~~
 
-UVM driver 应在 request 被接受前保持 request payload 稳定。payload 包括：
+request 被接受前，driver 必须保持以下 payload 稳定：
 
 - `write`
 - `be`
 - `addr`
 - `wdata`
 
-当 `core_req_i.valid=1` 且 `core_req_ready_o=0` 时，driver 不得改变上述 payload。
+当 `valid=1 && ready=0` 时，driver 不得改变 payload 或提前撤销 valid。
 
-master 可以在两笔 transaction 之间主动保持 request idle。对于非首笔 transaction，`idle_cycles` 定义为：上一笔 response 完成后，到本笔 `core_req_i.valid` 首次为 1 前，额外保持 `core_req_i.valid=0` 的完整采样拍数。第一笔 transaction 没有“上一笔 response”，其 `idle_cycles` 定义为 reset 释放锚点后、首个 `core_req_i.valid=1` 前的完整采样拍数，即 initial idle。
+### 4.2 Request idle gap
 
-`idle_cycles=0` 表示 driver 在上一笔 response 完成后的最早下一采样拍发起 request；首笔则表示 reset 释放后按最小时序发起 request。`idle_cycles=N` 且 `N>0` 表示额外保持 N 个完整采样拍 request idle。该间隔由 sequence 决定、driver 执行，不能由 driver 自行随机。sequence 不应在相邻 item 之间另外用时钟等待制造隐含 gap；所有有意的 request 间隔都通过 `idle_cycles` 表达。request idle 且没有 outstanding transaction 时，DUT 不应产生 response。
+对于非首笔 transaction，planned `idle_cycles` 定义为：上一笔 response 完成后，到本笔
+`core_req_i.valid` 首次为 1 前，额外保持 valid=0 的完整采样拍数。
 
-### 4.2 Response 完成
+第一笔 transaction 没有上一笔 response，其 planned `idle_cycles` 表示 reset 释放锚点后的
+initial idle。initial idle 受 test 启动和 clocking block 对齐影响，不进入 driver execution
+checker 的严格比较。
 
-一笔 transaction 在 `core_resp_o.valid=1` 的时钟上升沿采样点完成。
+`idle_cycles=0` 表示在协议允许的最早采样拍发起下一笔 request；`idle_cycles=N` 表示额外
+保持 N 个完整 idle 拍。sequence 产生计划值，driver 只执行；sequence 不使用额外
+`@(clock)` 隐式制造 gap。
 
-`data_subsystem` 支持 0 wait-state response：request 被接受的同一个采样点，`core_resp_o.valid` 可以同时为 1。
+monitor 独立统计 observed idle gap，并写入 transfer 的 `observed_idle_cycles`。非首笔
+transaction 的 planned/observed gap 必须由 driver execution checker 精确比较，不默认接受
+调度造成的 +1。
 
-非 0 wait-state 时，DUT 在 request accepted 后若干拍返回 `core_resp_o.valid=1`。在 response 返回前，`core_req_ready_o` 应保持为 0，避免接受第二笔 request。
+### 4.3 Response 完成与 delay
 
-### 4.3 Single Outstanding
+transaction 在 `core_resp_o.valid=1` 的时钟采样点完成。
 
-v6.0 simple data bus 只支持 single outstanding、in-order completion：
+- `observed_resp_delay=0`：request accepted 与 response valid 同拍。
+- `observed_resp_delay=N`：response 在 accepted request 后第 N 个采样间隔返回。
 
-- 同一时刻最多只有一笔 accepted 但未 response 的 transaction。
+在非 0 wait-state outstanding 期间，`core_req_ready_o` 必须保持为 0，避免接受第二笔
+request。
+
+### 4.4 Single Outstanding
+
+v6.0 simple bus 只支持 single outstanding、in-order completion：
+
+- 同一时刻最多一笔 accepted 但未 response 的 transaction。
 - 没有 transaction ID。
-- 每个 response 必须对应最近一笔尚未完成的 accepted request。
+- response 对应最近一笔未完成 request。
 - 不允许 orphan response。
-- 不允许在 outstanding 未完成时接受第二笔 request。
+- outstanding 未完成时不接受第二笔 request。
 
-UVM monitor 可以用一个 pending transaction 建模，不需要 queue。
+monitor 只需一个 pending transfer。driver、monitor 和 SVA 都应具有防御性检查，但协议
+invariant 的主要静态检查路径是 SVA。
 
-testbench 必须设置全局仿真 timeout，driver 也应对单笔 transaction 设置 response 等待上限。超时属于协议或 DUT 失败，应报告当前 request 的 addr、op、target 和已等待拍数，不能让回归永久挂起。等待上限应大于本次 test 允许配置的最大 target delay，并留有调度裕量。
+testbench 必须有全局 timeout，bus driver 必须有单 transaction response timeout。timeout
+上限大于最大 wrapper delay 127，并保留调度裕量；超时时打印 op、addr、target 和等待拍数。
 
-### 4.4 Reset 语义
+### 4.5 Reset
 
-复位期间，UVM driver 应驱动 request idle：
+reset 有效期间：
 
-```text
-core_req_i.valid = 0
-```
+- bus driver 驱动 request idle，即 `core_req_i.valid=0`。
+- DUT 不产生有效 response。
+- wrapper delay 配置初始化为 0。
+- 不启动 bus/config sequence。
 
-DUT 在 reset 有效期间不应对外产生有效 response。SVA 可以检查 reset quiet，但第一版若遇到初始化 X，可根据 VCS 实际表现调整断言使能时机。
+当前环境只要求仿真开始时 reset；运行中 reset 不属于 reference model 的强制场景。若后续加入
+mid-test reset，所有 agent、monitor pending state、checker expected state 和 reference model
+必须统一定义 reset 行为。
 
-### 4.5 Error 语义
+### 4.6 Error
 
-`core_resp_o.error=1` 表示该 transaction 访问失败。第一版 UVM 不需要模拟 CPU trap，只需要把 error 作为 transaction 结果检查。
+`core_resp_o.error=1` 表示 transaction 失败。UVM 不模拟 CPU trap，只检查 bus-visible
+error 和软件可见结果。
 
-error response 的 `rdata` 不作为软件可见有效数据检查对象。
+error response 的 `rdata` 不作为有效数据比较。DMEM window 内访问不应 error；MMIO known/
+unknown offset 和 unmapped address 按第 5、9 章检查。
 
 ## 5. 地址与 Target
 
@@ -159,341 +241,456 @@ error response 的 `rdata` 不作为软件可见有效数据检查对象。
 
 | 常量 | package | 说明 |
 |---|---|---|
-| `DMEM_BASE` | `core_pkg` | DMEM 起始地址。 |
-| `DMEM_SIZE_BYTES` | `core_pkg` | DMEM 窗口大小。 |
-| `GPIO0_BASE` | `soc_pkg` | GPIO0 实例基地址。 |
-| `GPIO0_SIZE_BYTES` | `soc_pkg` | GPIO0 窗口大小。 |
-| `UART0_BASE` | `soc_pkg` | UART0 实例基地址。 |
-| `UART0_SIZE_BYTES` | `soc_pkg` | UART0 窗口大小。 |
-| `TIMER0_BASE` | `soc_pkg` | TIMER0 实例基地址。 |
-| `TIMER0_SIZE_BYTES` | `soc_pkg` | TIMER0 窗口大小。 |
+| `DMEM_BASE` / `DMEM_SIZE_BYTES` | `core_pkg` | DMEM window。 |
+| `GPIO0_BASE` / `GPIO0_SIZE_BYTES` | `soc_pkg` | GPIO0 window。 |
+| `UART0_BASE` / `UART0_SIZE_BYTES` | `soc_pkg` | UART0 window。 |
+| `TIMER0_BASE` / `TIMER0_SIZE_BYTES` | `soc_pkg` | TIMER0 window。 |
 
 Target 译码：
 
 | Target | 地址范围 | 期望 |
 |---|---|---|
-| DMEM | `[DMEM_BASE, DMEM_BASE + DMEM_SIZE_BYTES)` | 命中外置 `simple_ram`，窗口内当前不产生 bus error。 |
-| GPIO0 | `[GPIO0_BASE, GPIO0_BASE + GPIO0_SIZE_BYTES)` | 命中 `mmio_gpio`。未知 offset 返回 error。 |
-| UART0 | `[UART0_BASE, UART0_BASE + UART0_SIZE_BYTES)` | 命中 `mmio_uart`。未知 offset 返回 error。 |
-| TIMER0 | `[TIMER0_BASE, TIMER0_BASE + TIMER0_SIZE_BYTES)` | 命中 `mmio_timer32`。未知 offset 返回 error。 |
-| undefined | 其它地址 | 同拍返回 error，`rdata=0`。 |
+| DMEM | `[DMEM_BASE, DMEM_BASE + DMEM_SIZE_BYTES)` | 外置 `simple_ram`，合法访问不产生 error。 |
+| GPIO0 | GPIO0 window | 命中 `mmio_gpio`；unknown offset 返回 error。 |
+| UART0 | UART0 window | 命中 `mmio_uart`；unknown offset 返回 error。 |
+| TIMER0 | TIMER0 window | 命中 `mmio_timer32`；unknown offset 返回 error。 |
+| undefined | 其它地址 | 不经过 target wrapper，同拍返回 error，`rdata=0`。 |
 
-MMIO 寄存器 offset、bit 定义、访问属性和副作用以 `dut/docs/periph_register_abi.md` 为准。本 spec 只规定 UVM 应引用这些 ABI 进行检查，不重复维护完整寄存器手册。
+MMIO offset、bit、访问属性和 side effect 以 `dut/docs/periph_register_abi.md` 为唯一 ABI
+来源。本 spec 规定验证边界，不复制维护完整寄存器手册。
 
-## 6. Transaction 抽象
+## 6. 数据对象、所有权与关联
 
-UVM item 应描述一笔完整 simple bus transaction，而不是只描述 request。
+### 6.1 simple_bus_item：planned command
 
-建议字段：
+`simple_bus_item` 只用于 sequence -> sequencer -> driver，表达 master 计划：
 
 | 字段 | 来源 | 说明 |
 |---|---|---|
-| `write` | driver/monitor | 1=write，0=read。 |
-| `addr` | driver/monitor | byte address。 |
-| `be` | driver/monitor | byte enable。 |
-| `wdata` | driver/monitor | write data。 |
-| `idle_cycles` | sequence/driver/monitor | 本笔 request 前由 master 插入的额外 idle 拍数；首笔表示 reset 释放后的 initial idle。 |
-| `rdata` | monitor | response read data。 |
-| `error` | monitor | response error。 |
-| `target` | monitor 或 scoreboard 推导 | DMEM/GPIO0/UART0/TIMER0/undefined。 |
-| `resp_delay` | driver/monitor | accepted request 到 response valid 的间隔拍数；monitor 观察值是 scoreboard/coverage 的主要来源。 |
+| `write` | sequence | 计划 read/write。 |
+| `addr` | sequence | 计划 byte address。 |
+| `be` | sequence | 计划 byte enable。 |
+| `wdata` | sequence | 计划 write data。 |
+| `idle_cycles` | sequence | 计划 request 前 idle gap；首笔为 initial idle。 |
 
-`resp_delay=0` 表示 request accepted 与 response valid 出现在同一个采样点。
+item 不保存 monitor 观察到的 response，不作为 scoreboard 或 coverage 的输入。driver 等到
+response 后调用 `item_done()`，但 observed bus truth 只来自 monitor transfer。
 
-sequence 为每笔 item 设置 `idle_cycles`，driver 按该值保持 request idle 后再发 request，并等待 response。driver 也可以把本笔实际 response 等待拍数回填到原始 item，供 sequence 做定向自检；monitor 独立观察总线，把 request 前实际出现的 idle 间隔、accepted request 和 response 合成为一笔 transaction，并通过 analysis port 提供给 scoreboard、coverage 或专用 checker 等订阅者。
+driver 在开始执行 item 前把 clone 发布到 `planned_item_ap`。不能广播后续仍可能复用或修改的
+原 item。
 
-item 中的 `idle_cycles` 是 sequence 计划值，driver 在取得该 item 后执行；monitor 中的 `idle_cycles` 是 interface 引脚上的实际观测值。正常 sequence 不在相邻 item 之间插入额外时间控制，按 clocking event 连续交付时两者必须一致。若未来某个 sequence 在相邻 clocking event 之间交付 item，request 只能在下一次 clocking output skew 生效，monitor 可能额外观察到一个用于对齐的完整 idle 拍；该情况属于验证平台调度偏差，不是当前测试的正常预期，也不归因于 DUT。DUT 功能检查和 coverage 仍以 monitor 观测值为准，计划值与实际值的精确比较由专用 driver idle-gap checker 诊断，不由通用 scoreboard 静默放宽。
+### 6.2 simple_bus_transfer：observed transaction
 
-`idle_cycles` 与 response delay 相互独立：前者模拟 CPU 在两次 data access 之间没有发起总线请求的周期，后者模拟 request accepted 后 DUT 返回 response 的等待周期。基础 smoke 固定 `idle_cycles=0`；定向 idle-gap test 覆盖若干固定间隔；constrained-random sequence 再逐笔随机合法间隔。
+`simple_bus_transfer` 只由 monitor 创建，表达 interface 上实际完成的 transaction：
 
-### 6.1 约束归属与激励分层
+| 字段 | 来源 | 说明 |
+|---|---|---|
+| `write/addr/be/wdata` | monitor | 实际 accepted request payload。 |
+| `rdata/error` | monitor | 实际 response payload。 |
+| `observed_idle_cycles` | monitor | interface 上实际 request idle gap。 |
+| `observed_resp_delay` | monitor | accepted request 到 response valid 的实际延迟。 |
+| `accept_cycle/response_cycle` | monitor | 可选 debug 时间戳，不作为跨 test 稳定接口。 |
+| target | transfer helper/checker | 根据实际 addr 推导。 |
 
-`simple_bus_item` 是协议级 transaction，通用约束只要求 `be != 0`，不在 item
-中加入 CPU access size、地址窗口、MMIO 寄存器 offset 或 target 权重。这样 generic
-bus-corner sequence 可以覆盖任意非零 byte-enable 组合，而不会被当前 RV32I core 的
-访存指令形状限制。
+monitor 不读取 item、cfg item 或 driver 内部状态。它在 request accepted 时建立 pending
+transfer，在 response 时完成并通过 `transfer_ap` 广播。0 wait-state 同拍 accept/response
+必须输出一笔完整 transfer。
 
-模拟当前 CPU 请求时，专属 sequence 对同一个 item 施加 access profile 约束：
+### 6.3 wrapper cfg item：applied configuration command
 
-| profile | `addr` / `be` 关系 |
+`data_subsystem_resp_delay_wrapper_cfg_item` 表达 wrapper 配置命令：
+
+| 字段 | 说明 |
 |---|---|
-| CPU byte | `be = 4'b0001 << addr[1:0]`。 |
-| CPU halfword | `addr[0] == 0`；`addr[1] == 0` 时 `be = 4'b0011`，否则 `be = 4'b1100`。 |
-| CPU word | `addr[1:0] == 0`，`be = 4'b1111`。 |
-| generic bus corner | 地址与任意非零 `be` 独立生成，不代表当前 CPU 一定会产生该请求。 |
+| `target` | DMEM/GPIO0/UART0/TIMER0。 |
+| `delay_cycles` | 7 bit，范围 0～127。 |
 
-因此，DMEM、known-MMIO、unknown-MMIO 和 unmapped-address 应由不同 sequence 或
-sequence mode 生成，而不是通过 item 子类区分。只有 simple bus 协议增加了新的
-transaction 字段时，才考虑新增 item 类型。
+该 item 只在 wrapper cfg agent 内流动，不进入 simple bus agent。cfg driver 实际调用
+`resp_delay_cfg_if.set_target_resp_delay()` 后，将 item clone 发布到 `applied_cfg_ap`。
 
-随机 sequence 先在 sequence 层选择 target，再约束 `addr`。legal traffic 的初始
-建议分布为 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%；窗口外地址由独立
-negative sequence 覆盖。对每个 MMIO target，必须再区分 ABI 已定义的 register
-word offset 和 unknown offset：正常功能流以 known offset 为主，unknown offset
-作为独立 error 流或较低权重 bucket。这样不会让大量未定义 offset 淹没有效 MMIO
-访问。
+### 6.4 三类数据来源不得混用
 
-MMIO known-register sequence 从 `dut/docs/periph_register_abi.md` 选择寄存器，
-再按其访问属性和 access profile 生成请求。对当前 `RTL-001`，已定义寄存器的
-`reg+1` byte 和 `reg+2` halfword 请求应先作为预期失败的定向用例；修复后再纳入
-正常的 known-MMIO byte-enable 随机流。
+| 数据流 | 表示 | 主要消费者 |
+|---|---|---|
+| planned bus item | sequence 要求 driver 执行什么 | driver execution checker |
+| applied wrapper cfg item | cfg driver 已执行什么配置 | wrapper delay checker |
+| observed bus transfer | interface 实际发生什么 | scoreboard、两类 checker、coverage |
 
-## 7. Response Delay 模型
+功能 scoreboard 不读取 planned item；wrapper checker 不读取 bus item；coverage 不采样
+sequence 计划。这样 DUT 错误、wrapper 错误和 testbench driver 错误能分别定位。
 
-`data_subsystem` 当前通过 wrapper 给固定响应 DMEM/MMIO target 注入 response delay。
+当前协议 single outstanding、in-order，因此 planned item 与 observed transfer 可以 FIFO 顺序
+配对；wrapper cfg state 可以按 target 保存最新 applied value。未来若支持多 outstanding，必须
+增加 transaction ID 或重新定义关联机制。
 
-每个 target 独立配置一个 7-bit delay：
+### 6.5 约束与激励分层
+
+`simple_bus_item` 的通用约束只要求 `be != 0` 和合法 idle 范围，不绑定 CPU access size、
+target、MMIO offset 或 target 权重。
+
+CPU-shaped profile：
+
+| profile | `addr/be` 关系 |
+|---|---|
+| byte | `be = 4'b0001 << addr[1:0]`。 |
+| halfword | `addr[0]=0`；按 `addr[1]` 选择 `0011/1100`。 |
+| word | `addr[1:0]=0` 且 `be=1111`。 |
+| generic bus corner | addr 与任意非零 be 独立，不代表 CPU 一定产生该形状。 |
+
+DMEM、known-MMIO、unknown-MMIO 和 unmapped-address 使用不同 sequence mode/virtual
+sequence。target 先在 sequence 层选择，再约束 addr；target 本身不成为 simple bus 协议字段。
+
+legal random traffic 的目标分布建议为 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%。
+unknown offset 和 unmapped address 使用独立 negative traffic bucket，不能淹没 known-register
+功能访问。
+
+对已记录 `RTL-001`，`reg+1` byte 和 `reg+2` halfword 先作为定向预期失败场景；RTL 修复后
+才进入 known-MMIO legal random traffic。
+
+## 7. Response-delay Wrapper 配置与检查
+
+### 7.1 DUT wrapper 语义
+
+`data_subsystem` 为固定响应 target 注入 per-target delay：
 
 | 输入 | 说明 |
 |---|---|
-| `dmem_resp_delay_cycles_i` | DMEM response delay。 |
-| `gpio0_resp_delay_cycles_i` | GPIO0 response delay。 |
-| `uart0_resp_delay_cycles_i` | UART0 response delay。 |
-| `timer0_resp_delay_cycles_i` | TIMER0 response delay。 |
+| `dmem_resp_delay_cycles_i` | DMEM delay。 |
+| `gpio0_resp_delay_cycles_i` | GPIO0 delay。 |
+| `uart0_resp_delay_cycles_i` | UART0 delay。 |
+| `timer0_resp_delay_cycles_i` | TIMER0 delay。 |
 
-语义：
+- delay 0：同拍 response。
+- delay N：request accepted 后延迟 N 拍 response。
+- undefined target 不经过 wrapper，固定同拍 error response。
+- wrapper 在 request accepted 时访问 target、锁存 data/error，再延迟 core-side response。
+- wrapper 是验证配套层，不表示外设本体是多拍 slave。
 
-- `delay=0`：同拍 response。
-- `delay=N` 且 `N>0`：request accepted 后延迟 N 拍返回 response。
-- undefined target 当前不经过 target delay，保持同拍 error response。
+### 7.2 wrapper cfg agent
 
-response delay wrapper 是验证配套层，不表示外设本体一定是多拍 slave。GPIO/UART/TIMER32 本体仍是固定响应寄存器块；wrapper 在 request accepted 当拍访问本体并锁存结果，再延迟返回给 core/simple bus master。
+完整环境使用独立 active agent：
 
-delay 配置通过独立的 `resp_delay_cfg_if` 连接到上述四个 DUT 输入。该 interface 由 UVM top 实例化，通过 `uvm_config_db` 把 virtual interface 句柄交给需要动态配置的 test/sequence；通用 simple bus driver 仍只负责 `req/req_ready/resp`，不直接拥有 DUT 专用 delay 配置。
+~~~text
+data_subsystem_resp_delay_wrapper_cfg_agent
+    +--> cfg sequencer
+    +--> cfg driver
+~~~
 
-delay 配置的生效和切换规则：
+cfg driver 独占 `resp_delay_cfg_if` virtual interface。top 只把 vif 配置给该 driver；test、
+virtual sequence、simple bus driver、monitor 和 scoreboard 不直接取得它。
 
-- top 在仿真开始时把所有 target delay 初始化为 0，plusarg 可以覆盖本次仿真的固定初值。
-- DUT 在 request accepted 的采样点选择本笔 target delay；配置必须在该采样点前稳定。
-- 动态 test 只在没有 outstanding transaction 时修改 delay。上一笔 response 完成后，才能为下一笔 transaction 设置新值。
-- transaction outstanding 期间不修改配置，避免把“本笔已锁存值”和“下一笔预配置值”混为一谈。
+cfg driver 在 reset 释放后执行命令；virtual sequence 保证配置不与 outstanding transaction
+重叠。配置完成后先发布 `applied_cfg_ap`，再结束 cfg item。
 
-wait-state 验证分三层保留：
+cfg channel 是 TB 专用控制侧带，不是待验证的 handshake protocol，因此不强制建立 cfg
+monitor。cfg driver 是否正确生效由 wrapper checker 通过后续实际 response delay 验证。
 
-| 层次 | delay 行为 | 主要用途 | 检查要求 |
-|---|---|---|---|
-| fixed smoke | 一次 test/run 全程固定为 0、1、3、7 等值 | 基础调试和单一 delay 失败定位。 | 独立 checker 自动比较 expected/observed delay。 |
-| deterministic dynamic | 单次 test 按 `0 -> 3 -> 1 -> 7 -> 0` 等序列逐笔切换 | 检查计数器清理、重新锁存和跨 transaction 污染。 | sequence 定向自检，同时经过独立 checker。 |
-| constrained random | 每笔 transaction 随机合法 delay | 扩展组合覆盖，放在确定性动态测试稳定之后。 | 独立 checker 自动比较，并采集 delay coverage。 |
+### 7.3 virtual sequence 协调规则
 
-### 7.1 Response Delay 检查要求
+需要 wrapper 配置的场景必须遵循：
 
-response delay wrapper 属于本环境需要验证的 DUT 行为。除 sequence 根据 driver 回填结果进行定向自检外，还应有一条独立的 expected/observed 检查路径；不能只依赖发起配置的 sequence 自己判断 wrapper 是否正确。
+~~~text
+apply cfg item
+  -> cfg driver applies value and item_done
+  -> send bus item
+  -> bus driver waits request/response completion and item_done
+  -> apply next cfg item
+~~~
 
-每笔 transaction 按以下口径检查：
+配置在下一笔 request accepted 前稳定，outstanding 期间不得修改。normal smoke 不发送 cfg
+item，使用 reset 默认 delay 0。
 
-| 检查信息 | 来源与时机 |
-|---|---|
-| `expected_delay` | request accepted 时，根据地址译码 target，并快照该 target 当拍生效的 delay 配置。 |
-| `observed_delay` | monitor 从 accepted request 到对应 response valid 独立统计得到的 `resp_delay`。 |
+固定、确定性动态和 constrained-random delay 统一走 cfg agent：
 
-response 完成后比较 `expected_delay == observed_delay`。undefined target 不经过 target delay wrapper，因此 `expected_delay` 固定为 0。当前协议是 single outstanding、in-order completion，expected 与 observed 可以按顺序关联，不需要 transaction ID。
+| 场景 | 配置方式 | 必须检查 |
+|---|---|---|
+| zero-delay smoke | reset 默认 0 | scoreboard + wrapper checker |
+| deterministic delay | 单 test 按 0/3/1/7/0 等序列 | scoreboard + wrapper checker + SVA |
+| boundary delay | 定向覆盖 0/1/3/7/127 | wrapper checker |
+| random delay | 每笔随机 0～127，边界加权 | wrapper checker + coverage |
 
-该检查与通用 simple bus 功能 scoreboard 并列：功能 scoreboard 负责 data/error/MMIO 结果，response-delay checker 负责 wrapper 的配置值与实际等待拍数。sequence 对原始 item 的比较可以保留用于快速定位，但不能替代这条独立检查。固定 delay、确定性 dynamic delay 和后续 random delay 都必须经过相同的 checker。
+命令行 `+DMEM_DELAY` 不作为主回归配置路径；如保留，仅用于 debug convenience，不能替代
+cfg agent 场景。
 
-动态 test 应自动比较本笔配置的 expected delay 和 driver/monitor 观察到的 `resp_delay`；日志仍保留 addr、target、configured delay 和 observed delay，便于定位 off-by-one 问题。
+### 7.4 wrapper delay checker
+
+`data_subsystem_resp_delay_wrapper_checker` 接收：
+
+- wrapper cfg driver 的 applied cfg item。
+- simple bus monitor 的 observed transfer。
+
+checker 为四个 target 保存当前 expected delay，初值均为 0。cfg item 更新对应 target；
+transfer 到达时按实际地址译码并比较：
+
+~~~text
+expected_delay[target] == transfer.observed_resp_delay
+~~~
+
+undefined target 的 expected 固定为 0。mismatch 报告 target、addr、expected、actual。
+
+checker 不驱动 interface、不读取 sequence 内部值、不检查 rdata/MMIO 状态。它与功能
+scoreboard 并列，固定、动态和随机 delay 都走同一检查路径。
 
 ## 8. DMEM 检查边界
 
-DMEM 使用 `simple_ram` 作为固定响应 memory model：
+DMEM 使用外置 `simple_ram`：
 
-- 读路径是组合读。
-- 写路径在时钟上升沿按 byte enable 更新 byte lane。
-- `DMEM_BASE` 映射到 `mem[0]`。
+- 组合 read。
+- 时钟上升沿按 byte enable 写 byte lane。
+- `DMEM_BASE` 映射 `mem[0]`。
+- 合法 DMEM window 访问不返回 error。
 
-UVM scoreboard 第一版至少应检查：
+DMEM reference model 必须支持：
 
-- word write 后，后续 word read 返回最后一次写入值。
-- 多个地址的写后读互不污染。
-- `delay=0` 和 `delay>0` 下数据结果一致。
-- DMEM 窗口内访问不应返回 error。
+- 多地址互不污染。
+- write 后 read 返回最后一次软件可见值。
+- byte/half/word 和 generic non-zero be 的逐 lane 更新。
+- delay 不影响最终数据结果。
+- error response 被报告为功能错误。
 
-byte enable 可以分阶段支持：
+reference model 按 word-aligned address 保存状态；未选 byte lane 保留旧值。未写地址若没有
+同步初始化来源，不比较 rdata，只记录跳过原因。若 UVM 启用 `+dmem`/`$readmemh`，reference
+model 必须加载同一镜像；不能一边预加载 DUT RAM、一边假设 reference 初值为 0。
 
-- 第一版 smoke 可以只检查 `be=4'hf` 的 word write/read。
-- 后续再扩展 `be` 组合，按 byte lane 更新 reference memory。
-
-未初始化地址读值如果依赖 `simple_ram` 初始清零，则 scoreboard 可以把未写地址期望为 0；若后续允许 `$readmemh` 初始化，则 reference model 也应同步初始化来源。
+word smoke 是基础回归，但不是完整环境对 byte enable 的最终限制。
 
 ## 9. MMIO 检查边界
 
-MMIO 检查应以软件可见 ABI 为准，而不是直接检查 RTL 内部实现细节。
+MMIO checker/reference model 以软件可见 ABI 为准，不复制 RTL 内部实现。
+
+bus monitor 提供寄存器访问 transfer；peripheral sideband monitor 提供输出、event 和 IRQ 的
+实际观察结果。需要外部事件的 testcase 通过 sideband sequence/driver 产生 GPIO input 或 UART
+RX，不允许 test、功能 scoreboard 或 reference model 直接驱动 interface。纯 bus 寄存器检查
+不依赖 sideband agent traffic，但涉及副作用的检查必须关联 bus transfer 与对应 sideband event。
 
 通用规则：
 
-- 未知 offset 应返回 error。
-- RO 写入当前忽略，不触发 error。
-- WO 读取当前返回 0，不触发 error。
-- 写保留 bit 当前不触发 error，但软件不应依赖保留 bit 读回值。
-- byte enable 对 RW/R/W1C 寄存器有意义，未选 byte 不应被更新或清除。
+- known offset 按寄存器属性检查 read/write。
+- unknown offset 返回 error。
+- RO write 当前忽略，不 error。
+- WO read 当前返回 0，不 error。
+- 写保留 bit 不 error，软件不依赖保留 bit 读回。
+- byte enable 对 RW/W1C 等寄存器有效，未选 byte 不更新或清除。
+- wait-state 下每笔访问和 side effect 只发生一次。
 
 ### 9.1 GPIO0
 
-第一版建议覆盖：
+应覆盖：
 
-- `OUT` 写后读一致，并反映到 `gpio0_out_o`。
-- `OE` 写后读一致，并反映到 `gpio0_oe_o`。
-- `IN` 读同步后的 `gpio0_in_i` 视图。
-- `IRQ_PENDING` W1C 清除语义。
-- `IRQ_STATUS = IRQ_PENDING & IRQ_EN`。
-- 未知 offset 返回 error。
+- OUT/OE 写后读及外部输出。
+- IN 同步后的输入视图。
+- IRQ_PENDING W1C。
+- IRQ_STATUS = IRQ_PENDING & IRQ_EN。
+- unknown offset error。
 
-GPIO 输入同步带来约两拍延迟。UVM 若直接驱动 `gpio0_in_i`，检查 `IN` 或中断触发时应等待同步链传播。
+GPIO input 同步约两拍；检查 IN/IRQ 时必须等待同步传播，不能把同步延迟当作 bus response
+delay。
 
 ### 9.2 UART0
 
-第一版建议覆盖：
+应覆盖：
 
-- `CTRL.tx_enable=1` 时写 `TXDATA[7:0]` 产生一拍 TX event。
-- `CTRL.tx_enable=0` 时写 `TXDATA` 不产生 TX event。
-- `STATUS.tx_ready` 当前固定为 1。
-- RX event 后 `STATUS.rx_valid=1`，`RXDATA[7:0]` 返回收到的 byte。
-- 读 `RXDATA` 清 `rx_valid` 和 `IRQ_PENDING[0]`。
-- `IRQ_PENDING` 支持 W1C；读 `IRQ_PENDING` 本身不清 pending。
-- 未知 offset 返回 error。
+- tx_enable=1 时 TXDATA write 产生单拍 event。
+- tx_enable=0 时 TXDATA write 不产生 event。
+- STATUS.tx_ready 固定为 1。
+- RX event 后 rx_valid/RXDATA。
+- RXDATA read-clear。
+- IRQ_PENDING W1C，读取本身不清 pending。
+- unknown offset error。
 
-当前 UART 是单拍事件模型，不是真实串口物理层；UVM 不验证 baud rate、start/stop bit、FIFO full/empty 或异步 RX CDC。
+UART 是寄存器/事件模型，不验证 baud、start/stop bit、FIFO 或异步串口 CDC。
 
 ### 9.3 TIMER0
 
-第一版建议覆盖：
+应覆盖：
 
-- `MTIME` 可读写。
-- 写 `MTIME` 的同拍不自增。
-- 写 `MTIMECMP` 不阻止 `MTIME` 自增。
-- `CTRL.enable=1` 后计数自增。
-- `STATUS.mtip` 与 `timer0_irq_o` 反映 `CTRL.enable && (MTIME >= MTIMECMP)`。
-- 未知 offset 返回 error。
+- MTIME/MTIMECMP/CTRL/STATUS 软件可见语义。
+- 写 MTIME 当拍不自增。
+- 写 MTIMECMP 不阻止 MTIME 自增。
+- enable 后计数。
+- mtip/irq 与 enable、mtime、mtimecmp 的关系。
+- unknown offset error。
 
-timer 是 free-running 类型外设。UVM 检查时应避免把精确拍数和总线 wait-state 混在一起；需要精确计数时，应明确扣除或固定 response delay。
+timer free-running 检查必须明确 transaction 时点，并区分 timer 自增拍与 wrapper wait-state。
 
-## 10. SVA 检查边界
+## 10. SVA 边界
 
-SVA 应检查协议级 invariant，不应写成具体 test case。
+SVA 检查引脚级协议 invariant，不实现具体 testcase 或功能 reference model。
 
-第一批推荐断言：
+`tb/sva/simple_bus_sva.svh` 在 `simple_bus_if` 内 include，所有 assertion/state 受
+`ASSERT_ON` 控制。SVA 不 import UVM package，不读取 item/transfer/checker 状态。
 
-| 断言 | 意义 |
+至少检查：
+
+| assertion | 意义 |
 |---|---|
-| payload stable when wait | `valid && !ready` 期间 request payload 不变。 |
-| single outstanding | outstanding response 返回前不接受第二笔 request。 |
-| response matched / no orphan response | 每个 response 都对应一笔未完成 request，或对应本拍刚 accepted 的 0 wait-state request。 |
-| reset quiet | reset 有效期间 request/response 不应有效。 |
+| reset outputs | reset 时 request idle、response quiet，ready 符合当前 DUT 口径。 |
+| control/payload known | 有效控制与 payload 无 X/Z。 |
+| payload stable on backpressure | valid && !ready 期间 request 不变。 |
+| single outstanding | pending response 返回前不接受第二笔 request。 |
+| no orphan response | response 对应 pending request 或本拍 0-delay accepted request。 |
 
-若断言放在 `simple_bus_if` 内，可由 VCS/UVM filelist 控制；若后续需要复用到 SoC directed TB，可考虑 bind 到 core/data_subsystem 观察口。
+action block 使用清晰 assertion label 和 `[SVA]` 日志。`run_test.sh` 把 assertion `$error`
+统计为 `SIM_ERROR`/FAIL。故障注入可用于调试 assertion infrastructure，但不是正常回归的
+强制用例。
 
-本阶段暂不要求用 SVA 验证 CPU 内部 trap 精确提交、CSR 原子性、branch flush 或 interrupt priority。这些属于 SoC/CPU 级验证，不是第一版 simple bus UVM 的主要边界。
+DUT 内部状态断言若有需要，使用 `tb/sva` 下独立 assertion module + bind；不放入 UVM
+class。CPU trap/CSR/flush/interrupt invariant 不属于本 simple bus spec。
 
-## 11. Scoreboard 与 Reference Model
+## 11. Checker 与 Reference Model 架构
 
-scoreboard 负责检查 transaction 结果，不负责驱动 DUT。
+### 11.1 功能 scoreboard
 
-第一版建议分层：
+`simple_bus_scoreboard` 只消费 observed transfer：
 
-```text
-simple_bus_monitor
-  -> observed transaction
-  -> simple_bus_scoreboard
-       - target decode
-       - DMEM reference memory
-       - selected MMIO register reference state
-       - error expectation
-```
+- target decode。
+- DMEM reference memory。
+- 不依赖外设侧带事件的 MMIO software-visible reference state，或向 target-specific checker
+  分发。
+- data/error expectation。
 
-DMEM reference model 可以先做 associative array：
+它不读取 planned item、wrapper cfg item 或 virtual sequence 状态。
 
-- write 时按地址记录期望值。
-- read 时比较 `rdata`。
-- 第一版只支持 word write/read，后续扩展 byte enable。
+GPIO/UART/TIMER target-specific checker 可以同时消费 observed bus transfer 和 peripheral
+sideband monitor event，用 reference state 关联寄存器访问、外部输入、输出事件及 IRQ。checker
+只消费 observed 数据；sideband sequence 的计划值若需检查，由独立 stimulus-execution checker
+处理，不能作为 DUT 实际行为替代品。
 
-MMIO reference model 可以逐步扩展：
+### 11.2 wrapper checker
 
-- 先检查 known/unknown offset 的 error 语义。
-- 再加入 GPIO OUT/OE。
-- 再加入 UART/TIMER 副作用。
+wrapper checker 按第 7.4 节消费 applied cfg + observed transfer，只检查配置与实际 delay，
+不检查功能数据。
 
-带副作用寄存器应在 spec 层定义“访问完成后软件可见状态”，scoreboard 决定用何种内部状态机建模。不要在 spec 中规定 scoreboard 的具体类结构。
+### 11.3 driver execution checker
+
+`simple_bus_driver_execution_checker` 消费：
+
+- bus driver 发布的 planned item clone。
+- monitor 发布的 observed transfer。
+
+在 single outstanding/in-order 条件下按 FIFO 配对，检查：
+
+- planned 与 observed `write/addr/be/wdata` 完全一致。
+- 非首笔 planned `idle_cycles` 与 `observed_idle_cycles` 完全一致。
+- 首笔 initial idle 不参与严格比较。
+- test 结束时两侧队列为空。
+
+该 checker 验证 UVM stimulus 执行正确性；mismatch 属于 testbench 错误，不归因于 DUT，也不
+进入功能 scoreboard。
+
+### 11.4 一对多 observation
+
+monitor transfer 是唯一 bus truth source，同一对象可以被多个 subscriber 同步消费。各
+subscriber 若需要保存对象，必须 clone，不能修改 monitor 发布的共享对象。
+
+checker/coverage 的职责不能重叠成互相替代：
+
+- scoreboard：功能结果。
+- wrapper checker：delay wrapper。
+- execution checker：driver 执行。
+- SVA：周期级 invariant。
+- coverage：场景是否发生。
 
 ## 12. Coverage 目标
 
-coverage 用于证明测试覆盖过关键组合，不替代 scoreboard/SVA。
+functional coverage 由 env 中的 UVM subscriber/collector 订阅 observed transfer；MMIO
+side-effect coverage 同时订阅 peripheral sideband monitor event。coverage 只采样实际完成的
+transaction/event，不采样 planned item、cfg item 或 sideband sequence 计划值。
 
-0835 完整环境的基础覆盖点：
+基础 coverpoints：
 
-| 覆盖点 | 取值 |
+| coverpoint | bins |
 |---|---|
 | target | DMEM/GPIO0/UART0/TIMER0/undefined |
 | op | read/write |
 | response | OK/error |
-| delay | 0 / small non-zero / larger non-zero |
-| request idle gap | 0 / small non-zero / larger non-zero |
-| byte enable | `4'hf`，后续扩展其它组合 |
-| access profile | word，后续扩展 CPU byte/halfword 与 generic bus corner |
+| observed delay | 0、1、small、medium、large、127 |
+| observed idle gap | 0、small、large |
+| byte enable/access profile | word、CPU byte/half、generic corner |
 | MMIO offset | known/unknown |
+| side effect | 各 ABI 定义事件 |
 
-后续可加入 cross：
+基础 crosses：
 
-- target x delay
-- target x request idle gap
-- request idle gap x delay
-- target x read/write
-- target x OK/error
-- MMIO register x read/write
-- target x access profile
-- MMIO known/unknown offset x read/write
-- GPIO/UART/TIMER side effect x delay
+- op x delay。
+- idle gap x delay。
+- target x delay。
+- target x idle gap。
+- target x read/write。
+- target x response。
+- target x access profile。
+- MMIO known/unknown x read/write。
+- MMIO register x read/write。
+- side effect x delay。
 
-0835 coverage 不追求完整闭合，重点是建立可运行的 covergroup 和覆盖报告入口。
+第一批 DMEM random 环境只要求 op/delay/idle 基础 bins 非空；target/MMIO/side-effect bins
+随对应 checker/reference model 接入后纳入 closure。不能为了提高覆盖率生成没有明确 expected
+行为的“legal”流量。
 
-## 13. UVM 与 Directed Test 的边界
+0835 不要求完整 coverage closure，但必须有可运行 covergroup、稳定采样源、非空报告入口和
+明确未覆盖项。若使用 `COVERAGE_ON` 编译/运行配置，必须与普通/ASSERT_ON build 隔离。
+
+SVA `cover property` 与 UVM functional coverage 是不同资产：前者放 `tb/sva`，后者放
+`tb/coverage`，两者不重复承担 PASS/FAIL 判断。
+
+## 13. UVM 与 Directed Test 边界
 
 UVM simple bus 环境不使用：
 
-- `.mem` 程序。
-- crt0。
-- C/ASM 自检测试。
-- TB mailbox DMEM command 协议。
+- `.mem` 程序执行流、crt0、trap handler。
+- C/ASM self-check 程序。
 - CPU commit trace。
-- trap handler。
+- TB mailbox DMEM command 协议。
+- ISA reference model。
 
-这些仍属于 Verilator SoC directed regression。
+这些属于 Verilator SoC directed regression。
 
-UVM 使用本工作区快照中的这些定义：
+UVM 使用 v6.0 snapshot 中的：
 
-- `dut/docs/periph_register_abi.md`：外设寄存器 ABI。
-- `dut/rtl/common/core_pkg.sv`：IMEM/DMEM 基本地址常量。
-- `dut/rtl/common/soc_pkg.sv`：MMIO 地址图和寄存器 offset 常量。
-- `dut/rtl/common/data_bus_pkg.sv`：simple data bus 结构体。
+- `dut/docs/periph_register_abi.md`。
+- `dut/rtl/common/core_pkg.sv`。
+- `dut/rtl/common/soc_pkg.sv`。
+- `dut/rtl/common/data_bus_pkg.sv`。
+- `data_subsystem`、`simple_ram` 和三个 MMIO peripheral RTL。
+
+Verilator 与 VCS 回归必须并行保留；任何 UVM 文件不进入 Verilator 默认 filelist。
 
 ## 14. Out of Scope
 
 本 spec 不覆盖：
 
-- AXI-Lite 协议。
-- AXI-Lite adapter/interconnect。
+- AXI-Lite 协议、adapter 或 interconnect。
 - full SoC/CPU UVM。
 - ISS lockstep。
 - random instruction generation。
 - RISC-V ISA reference model。
+- CPU 内部 GPR/CSR/trap/interrupt 精确提交。
 - 真实 UART 串口物理层。
 - FPGA 板级时序、PLL、外部 SRAM/Flash controller。
 
-这些内容可在后续阶段另写 spec。
+这些内容在对应后续 release 建立新的 spec。
 
-## 15. MVP 与阶段完成标准
+## 15. 完整环境完成标准
 
-第一阶段先达到可运行 MVP，至少满足：
+完整 v6.0 simple bus UVM 环境至少满足：
 
-- VCS 能编译并运行 `simple_bus_base_test`。
-- VCS 能运行一个 DMEM read/write smoke test。
-- monitor 能把 accepted request 和 response 合成为 transaction。
-- scoreboard 能自动判断 DMEM word write/read PASS/FAIL。
-- 能配置至少 DMEM 的 0 wait 和非 0 wait。
-- 一个定向 idle-gap test 能在相邻 transaction 之间插入 0/1/3/7 等不同间隔，且 monitor 能观察到对应 gap，scoreboard/SVA 仍通过。
-- 至少一个确定性动态 test 能在单次仿真中逐笔切换多个 delay，并自动检查 configured/observed delay 一致。
-- 独立 response-delay checker 能对固定和动态 delay 自动比较 expected/observed 拍数。
-- 至少有一组 simple bus SVA 处于可运行状态。
-- log 中能看出 transaction 的 addr、op、target、idle gap、response delay、error。
-- 全局 timeout 和单 transaction response timeout 能把无响应转换为明确失败，而不是永久挂起。
+- VCS 能编译并运行 base、DMEM smoke、SVA smoke、deterministic wrapper delay、
+  deterministic idle gap 和 fixed-seed random delay test。
+- `simple_bus_item`、wrapper cfg item、`simple_bus_transfer` 三类对象来源清楚且不混用。
+- bus agent 与 response-delay wrapper cfg agent 均进入 env；virtual sequence 能协调两者。
+- peripheral sideband stimulus/monitor 进入 env；GPIO input、UART RX 和外设输出/IRQ 不由 test
+  直接访问 virtual interface。
+- monitor 正确重建 0 wait-state 和非 0 wait-state transfer。
+- DMEM scoreboard 自动检查 word/byte/half/generic byte-enable 行为。
+- MMIO checker/reference model 按 ABI 检查 known/unknown offset、基础寄存器和规定 side effect。
+- wrapper checker 自动覆盖 0/1/3/7/127、确定性动态和逐笔随机 delay。
+- driver execution checker 自动检查 request payload 与非首笔 idle gap。
+- SVA 在固定和随机 wait-state 下不误报，协议错误能转为 `SIM_ERROR`/FAIL。
+- global/transaction timeout 能把无响应转为明确失败。
+- coverage 只采样 observed transfer，能生成非空报告，并明确未闭合 bins。
+- 日志能区分 planned item、applied wrapper cfg、observed transfer、功能 mismatch、
+  wrapper mismatch 和 testbench execution mismatch。
+- Verilator ASM/C directed regression 继续可运行。
+- 最终 DUT snapshot、filelist、README、仿真说明和本 spec 与实现一致。
 
-MVP 之后继续扩展 MMIO、byte enable、side effect、random idle gap、random delay 和 coverage。0835 阶段最终完成标准以 `docs/08xx/0835 wait-state验证收口、SVA与UVM入门demo规划.md` 第 13 章为准；扩展时仍应以本文为验证边界，避免把本环境扩大成 full CPU UVM。
+该环境验证 v6.0 simple bus/data_subsystem 边界，不扩大为 full CPU UVM。

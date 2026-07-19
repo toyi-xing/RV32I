@@ -280,7 +280,8 @@ vcs -full64 -sverilog -ntb_opts uvm \
 注意：
 
 - 如果你的 VCS 需要先 source 环境变量，不要写死在仓库脚本里；可以在 shell 环境里提前配置。
-- `EXTRA_ARGS` 只用于传 `+DMEM_DELAY=3` 这类运行期 plusarg。
+- `EXTRA_ARGS` 只用于传给 simv 的运行期 plusarg；第 11～16 章的 wrapper delay 主回归由
+  wrapper cfg agent 驱动，不再依赖 `+DMEM_DELAY`。
 - `+define+ASSERT_ON` 是 VCS 编译期选项，不能通过 simv 的运行期 `EXTRA_ARGS` 传入；第 10.3 节会把它加入 VCS 编译命令。
 - 如果 VCS 对 `-ntb_opts uvm` 版本口径不同，按本机 VCS 报错调整。
 
@@ -1580,10 +1581,10 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/sva/simple_bus_assert.svh
+uvm/v6_0/simple_bus/tb/sva/simple_bus_sva.svh
 ```
 
-`simple_bus_assert.svh` 不是独立 module，也不属于 `simple_bus_pkg`。它是由
+`simple_bus_sva.svh` 不是独立 module，也不属于 `simple_bus_pkg`。它是由
 `simple_bus_if.sv` 在 interface 内部文本 include 的代码片段；预处理后其中的
 property/assertion 与 interface 信号处于同一作用域，可以直接使用 `clk_i`、`rst_n_i`、
 `req_i`、`req_ready_o` 和 `resp_o`。`.svh` 不作为独立源文件加入 filelist。
@@ -1649,11 +1650,11 @@ uvm/v6_0/simple_bus/sim/filelist.f
 在 `simple_bus_if.sv` 的 `endinterface` 前加入：
 
 ```systemverilog
-`include "simple_bus_assert.svh"
+`include "simple_bus_sva.svh"
 ```
 
 并把当前 interface 内已有的 reset、X/Z、backpressure payload stable assertion 从
-`simple_bus_if.sv` 迁移到 `simple_bus_assert.svh`，不复制保留两份。这样 interface 只保留
+`simple_bus_if.sv` 迁移到 `simple_bus_sva.svh`，不复制保留两份。这样 interface 只保留
 总线信号、clocking block、modport 和 assertion include，所有 simple bus SVA 统一维护。
 
 `filelist.f` 增加：
@@ -1693,329 +1694,552 @@ ASSERT_ON=1 uvm/v6_0/simple_bus/sim/run_test.sh simple_bus_smoke_test 1
 - 若需要 `cover property` 统计协议场景，则与 assertion 一同放在 `tb/sva`。它与 UVM
   functional coverage 是两类覆盖，不应重复计数或相互依赖。
 
-coverage 的具体 collector 和随机激励仍放在第 15 章：先稳定确定性 DMEM、delay、error 和
-side-effect 检查，再让 coverage 报告具有可解释的输入分布；不要求等全部黄金模型完成才建立
-覆盖框架，但每个纳入 legal traffic/coverage 的场景必须已有明确 spec 和自动检查边界。
+coverage 的具体 collector 和第一批随机激励放在第 16 章：先稳定确定性 DMEM、wrapper
+delay 和 driver execution 检查，再让 coverage 报告具有可解释的输入分布；不要求等 MMIO
+和全部黄金模型完成才建立覆盖框架，但每个纳入 legal traffic/coverage 的场景必须已有明确
+spec 和自动检查边界。
 
 ### 10.5 验证节点 `已完成`
 
 本章完成标准：
 
 - `simple_bus_smoke_test` 在基础和状态型 SVA 同时打开时通过。
-- 人为制造一个简单协议错误时，至少一条 assertion 能以清晰名称报错，并被脚本计入
-  `SIM_ERROR`/FAIL。
+- assertion action block 使用清晰名称和 `[SVA]` 日志前缀；故障注入仅作为可选调试，不作为本章强制完成标准。
 - 关闭 `ASSERT_ON` 时不编译 assertion 状态逻辑，普通 smoke 仍可运行。
-- 不新增 UVM coverage collector；coverage 保持第 15 章实现。
+- 不新增 UVM coverage collector；coverage 保持第 16 章实现。
 
-## 11. wait-state smoke `执行中`
+## 11. bus item 与 observed transfer 分层 `已完成`
 
-目标：让 UVM 环境覆盖 0 wait-state 和非 0 wait-state。
+目标：先把“sequence/driver 计划执行的请求”和“monitor 从 interface 观察到的完整传输”
+拆成两种类型，为 wrapper 配置 agent、独立 checker 和 coverage 建立清晰的数据来源。
 
-### 11.1 UVM top 支持 plusarg 配置 delay
+### 11.1 明确两种对象的职责 `已完成`
 
-修改：
+`simple_bus_item` 继续作为 sequence 与 driver 之间的 command object，只表达 master 计划：
 
-```text
-uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
-```
-
-把第 8 章的 delay 默认值改成 plusarg 可配置：
-
-```systemverilog
-int unsigned delay_arg;
-
-initial begin
-    data_subsystem_cfg_vif.dmem_resp_delay_cycles   = 7'd0;
-    data_subsystem_cfg_vif.gpio0_resp_delay_cycles  = 7'd0;
-    data_subsystem_cfg_vif.uart0_resp_delay_cycles  = 7'd0;
-    data_subsystem_cfg_vif.timer0_resp_delay_cycles = 7'd0;
-
-    if ($value$plusargs("DMEM_DELAY=%d", delay_arg)) begin
-        data_subsystem_cfg_vif.dmem_resp_delay_cycles = delay_arg[6:0];
-    end
-    if ($value$plusargs("GPIO0_DELAY=%d", delay_arg)) begin
-        data_subsystem_cfg_vif.gpio0_resp_delay_cycles = delay_arg[6:0];
-    end
-    if ($value$plusargs("UART0_DELAY=%d", delay_arg)) begin
-        data_subsystem_cfg_vif.uart0_resp_delay_cycles = delay_arg[6:0];
-    end
-    if ($value$plusargs("TIMER0_DELAY=%d", delay_arg)) begin
-        data_subsystem_cfg_vif.timer0_resp_delay_cycles = delay_arg[6:0];
-    end
-end
-```
-
-第一版固定 wait-state smoke 只用 `DMEM_DELAY`。plusarg 负责一次仿真全程固定的初值；后面的 dynamic-delay test 在 reset 后通过 `cfg_vif` 逐笔覆盖该值。普通 `simple_bus_smoke_test` 不传 plusarg，因此保持 delay 0。
-
-### 11.2 新增 wait-state test
+- `write/be/addr/wdata`：计划驱动的 request payload。
+- `idle_cycles`：计划在本笔 request 前插入的完整空拍数。
+- 不再作为 scoreboard/coverage 的输入。
+- 不保存 monitor 观察结果；driver 等到 response 后调用 `item_done()` 即可。
 
 新增：
 
-```text
-uvm/v6_0/simple_bus/tb/simple_bus_wait_test.svh
-```
+~~~text
+uvm/v6_0/simple_bus/tb/transaction/simple_bus_transfer.svh
+~~~
 
-第一版可以直接继承 smoke test，不改 sequence：
+`simple_bus_transfer` 只由 monitor 创建，表达 interface 上实际完成的一笔 transaction：
 
-```systemverilog
-class simple_bus_wait_test extends simple_bus_smoke_test;
-    `uvm_component_utils(simple_bus_wait_test)
+- 实际 accepted request 的 `write/be/addr/wdata`。
+- 实际 response 的 `rdata/error`。
+- monitor 实测的 `observed_idle_cycles` 和 `observed_resp_delay`，与 item 中的计划字段明确区分。
+- 可保留 `accept_cycle/response_cycle` 作为日志和 off-by-one 定位信息，但 checker 不依赖
+  绝对仿真拍数。
+- target 仍由实际地址推导，不作为独立随机字段。
 
-    function new(string name = "simple_bus_wait_test", uvm_component parent = null);
-        super.new(name, parent);
-    endfunction
-endclass
-```
+monitor 不读取 sequence item，也不把“计划值”填入 transfer。计划值与观察值是否一致由后续
+driver execution checker 配对检查，不能在一个对象中混合两个来源。
 
-原因：
+### 11.2 调整 driver 输出边界 `已完成`
 
-- wait-state 由 top plusarg 控制，不需要 test class 先参与配置。
-- 先保持 UVM class 简单，确认 driver/monitor/scoreboard 能跨 delay 工作。
+`simple_bus_driver` 继续完成以下行为：
 
-### 11.3 接入 package
+- 从 sequencer 取得 `simple_bus_item`。
+- 按 `idle_cycles` 驱动 request。
+- 等待 accepted request 和对应 response。
+- response 完成后调用 `item_done()`，保证下一笔配置或 request 不会越过 outstanding 边界。
 
-修改 `simple_bus_pkg.sv`，最后加入：
+新增一个计划流 analysis port，例如：
 
-```systemverilog
-`include "simple_bus_wait_test.svh"
-```
+~~~systemverilog
+uvm_analysis_port #(simple_bus_item) planned_item_ap;
+~~~
 
-完整顺序应类似：
+driver 在开始执行 item 前发布该 item 的 clone，不能直接广播后续仍可能被修改的原对象。该
+analysis port 暂时可以无人订阅，第 15 章接入 driver execution checker。
 
-```systemverilog
-`include "simple_bus_item.svh"
-`include "simple_bus_sequencer.svh"
-`include "simple_bus_smoke_seq.svh"
-`include "simple_bus_driver.svh"
-`include "simple_bus_monitor.svh"
-`include "simple_bus_agent.svh"
-`include "simple_bus_scoreboard.svh"
-`include "simple_bus_env.svh"
-`include "simple_bus_base_test.svh"
-`include "simple_bus_smoke_test.svh"
-`include "simple_bus_wait_test.svh"
-```
+driver 的调试日志应明确是 planned/completed item；它不再承担 scoreboard 使用的“真实总线
+结果”来源。
 
-### 11.4 更新 run_all
+### 11.3 monitor 改为生成 transfer `已完成`
 
-修改：
+修改 `simple_bus_monitor`：
 
-```text
-uvm/v6_0/simple_bus/sim/run_all.sh
-```
+- 内部 pending 对象类型改为 `simple_bus_transfer`。
+- request accepted 时锁存实际 request payload 和 accept cycle。
+- response 到达时填写实际 response、`observed_idle_cycles`、`observed_resp_delay`，然后通过
+  `uvm_analysis_port #(simple_bus_transfer)` 广播。
+- 0 wait-state 同拍 accept/response 必须仍能生成一笔完整 transfer。
+- single outstanding/no orphan 的 monitor 防御性检查继续保留；协议 invariant 仍由 SVA
+  作为独立检查路径。
 
-加入固定 delay 组合：
+### 11.4 scoreboard 和 env 切换到 transfer `已完成`
 
-```bash
-./run_test.sh simple_bus_smoke_test 1
-./run_test.sh simple_bus_wait_test  1 +DMEM_DELAY=0
-./run_test.sh simple_bus_wait_test  2 +DMEM_DELAY=1
-./run_test.sh simple_bus_wait_test  3 +DMEM_DELAY=3
-./run_test.sh simple_bus_wait_test  4 +DMEM_DELAY=7
-```
+`simple_bus_scoreboard` 的 analysis imp 类型改为 `simple_bus_transfer`。DMEM 参考模型和
+read/write 检查只依赖 monitor transfer，不再接收 driver item。
 
-### 11.5 monitor 日志检查 delay
+env 连接保持一对多：
 
-确认 monitor 输出的 `resp_delay`：
+~~~text
+simple_bus_monitor.transfer_ap
+    -> simple_bus_scoreboard.transfer_imp
+    -> 后续 wrapper delay checker
+    -> 后续 driver execution checker
+    -> 后续 coverage
+~~~
 
-- `+DMEM_DELAY=0` 时，读写事务应看到 `delay=0`。
-- `+DMEM_DELAY=1` 时，读写事务应看到 `delay=1`。
-- `+DMEM_DELAY=3` 时，读写事务应看到 `delay=3`。
-- 如果实际差 1 拍，优先检查 monitor 计数方式，再检查 `data_subsystem` delay 定义，最后统一计划和实现口径。
+package include 顺序中，`simple_bus_transfer.svh` 必须在 monitor、scoreboard 和 checker
+之前。
 
-### 11.6 新增确定性 dynamic-delay sequence
+### 11.5 验证节点 `已完成`
 
-新增：
+- 普通 `simple_bus_smoke_test` 继续通过。
+- scoreboard 仍能检查两组 DMEM word write/read。
+- driver 日志显示 planned item，monitor 日志显示 observed transfer，二者类型和文案不混用。
+- monitor 的首笔 initial idle 口径和后续 transaction idle 口径保持 spec 当前定义。
+- `ASSERT_ON=1` 时 SVA 不误报。
 
-```text
-uvm/v6_0/simple_bus/tb/seq/simple_bus_dynamic_delay_seq.svh
-```
+## 12. response-delay wrapper 配置 agent `执行中`
 
-本 sequence 通过 `data_subsystem_cfg_if` 在相邻 transaction 之间切换 DMEM delay。它不修改通用 simple bus driver 的配置职责；driver 只把实际观察到的 `resp_delay` 回填到原始 item，供 sequence 在 `finish_item()` 返回后比较。delay 配置 task 不插入时钟等待，sequence 设置新值后立即交付下一笔 item，避免为 dynamic delay 引入额外 request idle 拍。
+目标：把 v6.0 `data_subsystem` response-delay wrapper 的配置动作做成独立 active agent，
+不让 test、simple bus item 或通用 bus driver 直接操作 DUT 专用配置 interface。
 
-建议骨架：
+### 12.1 保留并收敛 wrapper 配置 interface
 
-```systemverilog
-class simple_bus_dynamic_delay_seq extends uvm_sequence #(simple_bus_item);
-    `uvm_object_utils(simple_bus_dynamic_delay_seq)
+继续使用：
 
-    virtual data_subsystem_cfg_if cfg_vif;
+~~~text
+uvm/v6_0/simple_bus/tb/interfaces/data_subsystem_cfg_if.sv
+~~~
 
-    function new(string name = "simple_bus_dynamic_delay_seq");
-        super.new(name);
-    endfunction
+其中的 `resp_delay_cfg_if` 仍是 wrapper cfg driver 与 DUT 四组
+`*_resp_delay_cycles_i` 之间的物理连接，保留：
 
-    task body();
-        if (cfg_vif == null) begin
-            `uvm_fatal(get_type_name(), "cfg_vif is null")
-        end
+- `rst_resp_delay()`：所有 target delay 恢复为 0。
+- `set_target_resp_delay(target, delay_cycles)`：按 target 设置 delay。
+- `clk_i/rst_n_i`：供 cfg driver 等待 reset 释放并约束配置时机。
 
-        wait (cfg_vif.rst_n_i === 1'b1);
-        run_one_delay(7'd0, core_pkg::DMEM_BASE + 32'h40, 32'h1111_0000);
-        run_one_delay(7'd3, core_pkg::DMEM_BASE + 32'h44, 32'h3333_0003);
-        run_one_delay(7'd1, core_pkg::DMEM_BASE + 32'h48, 32'h1111_0001);
-        run_one_delay(7'd7, core_pkg::DMEM_BASE + 32'h4c, 32'h7777_0007);
-        run_one_delay(7'd0, core_pkg::DMEM_BASE + 32'h50, 32'h0000_0000);
-    endtask
+该 interface 不是 simple bus 协议的一部分，不进入 `simple_bus_item` 或
+`simple_bus_transfer`。文件名和 interface 类型名是否进一步加入 wrapper 前缀，可在实现时
+统一，但本阶段优先保持现有接口可用，避免无功能收益的重命名扩散。
 
-    task automatic run_one_delay(
-        logic [6:0]                 delay,
-        logic [core_pkg::XLEN-1:0] addr,
-        logic [core_pkg::XLEN-1:0] data
-    );
-        cfg_vif.set_target_delay(soc_pkg::TARGET_DMEM, delay);
-        send_and_check(1'b1, addr, data, delay);
-        send_and_check(1'b0, addr, '0,   delay);
-    endtask
+top 继续在仿真开始时调用 `rst_resp_delay()`，并通过 `uvm_config_db` 只把 virtual interface
+提供给 wrapper cfg driver。test、virtual sequence 和 simple bus driver 不直接取得该 vif。
 
-    task automatic send_and_check(
-        bit                         write,
-        logic [core_pkg::XLEN-1:0] addr,
-        logic [core_pkg::XLEN-1:0] data,
-        logic [6:0]                 expected_delay
-    );
-        simple_bus_item tr;
+### 12.2 新增 wrapper 配置 transaction 与 sequencer
 
-        tr = simple_bus_item::type_id::create("tr");
-        start_item(tr);
-        tr.write = write;
-        tr.addr  = addr;
-        tr.wdata = data;
-        tr.be    = 4'hf;
-        tr.idle_cycles = 0;
-        finish_item(tr);
+新增目录：
 
-        if (tr.resp_delay != expected_delay) begin
-            `uvm_error(get_type_name(),
-                $sformatf("delay mismatch expected=%0d actual=%0d: %s",
-                          expected_delay, tr.resp_delay, tr.convert2string()))
-        end
-    endtask
-endclass
-```
+~~~text
+uvm/v6_0/simple_bus/tb/agent/wrapper_cfg
+~~~
 
-`finish_item()` 返回时 driver 已经调用 `item_done()`，按本计划 driver 只有在 response 完成后才调用 `item_done()`，因此下一次 `set_target_delay()` 不会发生在 outstanding transaction 中。配置在同一仿真时刻立即更新，随后交付的下一笔 item 仍由 clocking block 在 output skew 驱动；到下一采样点时 delay 已稳定，不需要额外等待半拍。
+新增类：
 
-### 11.7 新增 dynamic-delay test
+~~~text
+data_subsystem_resp_delay_wrapper_cfg_item.svh
+data_subsystem_resp_delay_wrapper_cfg_sequence.svh
+data_subsystem_resp_delay_wrapper_cfg_sequencer.svh
+~~~
+
+`data_subsystem_resp_delay_wrapper_cfg_item` 至少包含：
+
+~~~systemverilog
+rand soc_pkg::target_e target;
+rand logic [6:0]       delay_cycles;
+~~~
+
+基础约束：
+
+- target 只允许 DMEM/GPIO0/UART0/TIMER0；undefined target 不配置 wrapper。
+- delay 范围与 RTL 的 7 bit 输入一致，即 0～127。
+- 固定值、确定性序列和随机分布由派生 sequence/test 施加，item 只保留通用合法范围。
+
+cfg sequence 负责构造并提交 cfg item，不直接访问 virtual interface。
+
+### 12.3 新增 wrapper cfg driver 与 agent
 
 新增：
 
-```text
-uvm/v6_0/simple_bus/tb/tests/simple_bus_dynamic_delay_test.svh
-```
+~~~text
+data_subsystem_resp_delay_wrapper_cfg_driver.svh
+data_subsystem_resp_delay_wrapper_cfg_agent.svh
+~~~
 
-test 在 `build_phase` 获取独立配置 interface，在 `run_phase` 把句柄交给 sequence：
+cfg driver：
 
-```systemverilog
-class simple_bus_dynamic_delay_test extends simple_bus_base_test;
-    `uvm_component_utils(simple_bus_dynamic_delay_test)
+- 从 cfg sequencer 取得 cfg item。
+- reset 未释放时等待，不在 reset 中修改 wrapper 配置。
+- 调用 `resp_delay_cfg_if.set_target_resp_delay()` 实际驱动配置。
+- 完成配置后发布 cfg item 的 clone 到 `applied_cfg_ap`，再调用 `item_done()`。
+- 不驱动 simple bus request，也不等待 bus response。
 
-    virtual data_subsystem_cfg_if cfg_vif;
+`applied_cfg_ap` 表示“cfg driver 已实际执行过的计划配置”，供后续 wrapper checker 建立
+expected state。发布 clone 是为了防止 sequence 复用对象导致历史配置被修改。
 
-    function new(string name = "simple_bus_dynamic_delay_test",
-                 uvm_component parent = null);
-        super.new(name, parent);
-    endfunction
+第一版 cfg agent 只需 sequencer + driver，不强制建立 cfg monitor。该配置通道是 TB 到 DUT
+的专用控制侧带，不是待验证的 request/response 协议；wrapper checker 会通过实际 response
+delay 间接验证配置是否真正生效。
 
-    function void build_phase(uvm_phase phase);
-        super.build_phase(phase);
-        if (!uvm_config_db #(virtual data_subsystem_cfg_if)::get(
-                this, "", "cfg_vif", cfg_vif)) begin
-            `uvm_fatal(get_type_name(), "failed to get data_subsystem cfg_vif")
-        end
-    endfunction
+### 12.4 env/top/package 接入
 
-    task run_phase(uvm_phase phase);
-        simple_bus_dynamic_delay_seq seq;
+env 新增：
 
-        phase.raise_objection(this);
-        seq = simple_bus_dynamic_delay_seq::type_id::create("seq");
-        seq.cfg_vif = cfg_vif;
-        seq.start(env.agent.sequencer);
-        phase.drop_objection(this);
-    endtask
-endclass
-```
+~~~text
+data_subsystem_resp_delay_wrapper_cfg_agent wrapper_cfg_agent;
+~~~
 
-### 11.8 接入 package 和 run_all
+top 的 config_db 路径改为 wrapper cfg driver，例如：
 
-package 按依赖顺序加入：
+~~~text
+uvm_test_top.env.wrapper_cfg_agent.driver
+~~~
 
-```systemverilog
-`include "simple_bus_dynamic_delay_seq.svh"
-// env/base test 等已有 include
-`include "simple_bus_dynamic_delay_test.svh"
-```
+package/filelist 按依赖顺序加入新目录和 class。普通 `simple_bus_smoke_test` 不启动 cfg
+sequence，继续使用 top 初始化的 0 delay。
 
-`run_all.sh` 增加：
+### 12.5 验证节点
 
-```bash
-./run_test.sh simple_bus_dynamic_delay_test 5
-```
+- cfg item/sequence/sequencer/driver/agent 能编译并进入 UVM topology。
+- wrapper cfg driver 能将四个 target 分别配置为确定值。
+- 普通 smoke 不使用 cfg agent traffic 时仍保持 0 wait-state。
+- simple bus driver、monitor、scoreboard 中不出现 `resp_delay_cfg_if` 依赖。
 
-固定 delay test 继续保留。确定性动态 test 通过后，第 15 章再让每笔 transaction constrained-random delay，并增加 delay coverage。
+## 13. virtual sequencer 与确定性 wrapper-delay 测试
 
-### 11.9 新增确定性 idle-gap sequence/test
+目标：由 virtual sequence 协调 wrapper cfg agent 和 simple bus agent，保证每笔 delay 配置
+先完成、随后才发对应 bus request，并且只在没有 outstanding transaction 时切换配置。
+
+### 13.1 新增 virtual sequencer
 
 新增：
 
-```text
-uvm/v6_0/simple_bus/tb/seq/simple_bus_idle_gap_seq.svh
+~~~text
+uvm/v6_0/simple_bus/tb/virtual/simple_bus_virtual_sequencer.svh
+~~~
+
+virtual sequencer 不驱动 interface，只保存两个 sequencer 句柄：
+
+~~~systemverilog
+simple_bus_sequencer bus_sequencer;
+data_subsystem_resp_delay_wrapper_cfg_sequencer wrapper_cfg_sequencer;
+~~~
+
+env 创建 virtual sequencer，并在 `connect_phase` 将两个 agent 的 sequencer 句柄赋给它。
+virtual sequencer 作为跨 agent 场景的统一入口；普通只访问 bus 的 smoke 仍可直接启动在
+`bus_sequencer` 上。
+
+### 13.2 新增 virtual sequence 基类
+
+新增：
+
+~~~text
+uvm/v6_0/simple_bus/tb/virtual/simple_bus_virtual_sequence_base.svh
+~~~
+
+基类提供两个 helper：
+
+- `apply_wrapper_delay(target, delay)`：在 wrapper cfg sequencer 上提交一笔 cfg item，阻塞
+  等待 cfg driver 完成。
+- `send_bus_item(...)`：在 bus sequencer 上提交一笔 bus item，阻塞等待 bus driver 收到
+  response 并 `item_done()`。
+
+确定性场景统一采用：
+
+~~~text
+apply wrapper config
+    -> cfg driver item_done
+    -> send bus item
+    -> bus driver waits response and item_done
+    -> next wrapper config
+~~~
+
+sequence 不直接操作 cfg vif，也不在两个 item 之间插入隐含时钟等待。同步关系由两个 driver
+的 `item_done()` 建立。
+
+### 13.3 新增确定性 delay virtual sequence/test
+
+新增：
+
+~~~text
+uvm/v6_0/simple_bus/tb/virtual/simple_bus_wrapper_delay_vseq.svh
+uvm/v6_0/simple_bus/tb/tests/simple_bus_wrapper_delay_test.svh
+~~~
+
+第一版只访问 DMEM word，并在一次 test 内按以下顺序配置：
+
+~~~text
+delay 0 -> write/read
+delay 3 -> write/read
+delay 1 -> write/read
+delay 7 -> write/read
+delay 0 -> write/read
+~~~
+
+每组使用不同地址/数据，scoreboard 必须继续验证数据正确性。test 只创建并启动 virtual
+sequence，不取得 `resp_delay_cfg_if`。
+
+不再把 `+DMEM_DELAY=N` 作为第 11～16 章的主验证入口。命令行固定 delay 可在以后作为
+debug convenience 添加，但固定、动态和随机回归统一走 wrapper cfg agent，避免形成两套核心
+配置路径。
+
+### 13.4 package、filelist 和 run_all 接入
+
+增加 `tb/transaction`、`tb/agent/wrapper_cfg` 和 `tb/virtual` include path，并按以下依赖顺序
+组织 package：
+
+~~~text
+bus item/transfer
+wrapper cfg item
+bus/wrapper sequences and sequencers
+bus/wrapper drivers and agents
+virtual sequencer
+scoreboard/checkers
+env
+virtual sequences
+tests
+~~~
+
+`run_all.sh` 增加 `simple_bus_wrapper_delay_test`。正常 smoke、SVA smoke 和 wrapper delay
+test 分开保留，失败时能快速区分基础 bus、协议 invariant 和 wrapper 配置问题。
+
+### 13.5 验证节点
+
+- virtual sequence 能协调两个 sequencer，不直接访问任何 vif。
+- 每次 wrapper 配置都发生在上一笔 bus response 完成之后。
+- monitor 观察到的 `observed_resp_delay` 按 0/3/1/7/0 变化。
+- scoreboard 在所有 delay 下仍通过。
+- SVA 不出现 second outstanding、orphan response 或 payload stable 误报。
+
+## 14. 独立 response-delay wrapper checker
+
+目标：建立与 bus 功能 scoreboard 并列的 checker，自动比较 wrapper cfg agent 已执行的
+配置和 monitor 观察到的实际 response delay。
+
+### 14.1 checker 输入与状态
+
+新增：
+
+~~~text
+uvm/v6_0/simple_bus/tb/checker/data_subsystem_resp_delay_wrapper_checker.svh
+~~~
+
+checker 接收两路 analysis stream：
+
+~~~text
+wrapper_cfg_agent.driver.applied_cfg_ap
+    -> wrapper checker cfg input
+
+simple_bus_monitor.transfer_ap
+    -> wrapper checker transfer input
+~~~
+
+checker 为 DMEM/GPIO0/UART0/TIMER0 分别维护当前 expected delay，reset 初值均为 0。
+收到 applied cfg item 时，只更新对应 target；收到 bus transfer 时，根据实际 addr 译码 target，
+比较：
+
+~~~text
+expected_delay[target] == transfer.observed_resp_delay
+~~~
+
+undefined target 不经过 wrapper，期望 delay 固定为 0。
+
+可使用两个带后缀的 `uvm_analysis_imp`，或两个 `uvm_tlm_analysis_fifo`；具体写法以 VCS
+兼容性和代码可读性为准，但必须保留两路输入的来源区分。
+
+### 14.2 独立性边界
+
+wrapper checker：
+
+- 不信任 virtual sequence 自己计算的 actual 值。
+- 不读取 simple bus item 的计划字段。
+- 不驱动 cfg interface 或 simple bus。
+- 只把 cfg driver 已执行的配置作为 expected，把 monitor transfer 作为 observed。
+- 不检查 DMEM/MMIO 数据值；数据/error 仍由功能 scoreboard 负责。
+
+如果 cfg driver 配错 target/value，但仍发布原 cfg item，wrapper 的实际 response delay 会与
+expected 不一致，checker 能暴露该问题。single outstanding 和 virtual sequence 的顺序约束使
+cfg event 与后续 transfer 可按当前 target state 关联，不需要 transaction ID。
+
+### 14.3 env 接入与验证
+
+env 创建 wrapper checker，并连接 cfg AP 与 transfer AP。确定性 wrapper delay test 必须自动
+产生 match 日志或统计；mismatch 使用 `uvm_error`，打印 target、addr、expected、actual。
+
+验证节点：
+
+- 0/1/3/7 delay 都由 checker 自动判断，不依赖人工读 monitor log。
+- 故意在本地调试时改变一个 expected 值能够看到 checker mismatch；该故障注入不进入正式
+  回归和完成标准。
+- scoreboard 与 wrapper checker 同时订阅同一 transfer，检查职责不重叠。
+- 普通 0 delay smoke 也经过 checker，默认 expected state 为 0。
+
+## 15. driver execution checker 与 idle-gap 定向验证
+
+目标：把 UVM master 自身的“计划 item 是否如实出现在 interface”做成独立 testbench
+self-checker，避免把 driver 调度错误误判为 DUT 功能错误。
+
+### 15.1 新增 driver execution checker
+
+新增：
+
+~~~text
+uvm/v6_0/simple_bus/tb/checker/simple_bus_driver_execution_checker.svh
+~~~
+
+输入：
+
+~~~text
+simple_bus_driver.planned_item_ap
+simple_bus_monitor.transfer_ap
+~~~
+
+checker 分别排队 planned item 和 observed transfer，并按顺序一一配对。当前总线 single
+outstanding、in-order completion，因此不需要 transaction ID；若以后允许多 outstanding，
+本 checker 必须重新设计关联方式。
+
+每对对象检查：
+
+- `write/be/addr/wdata` 计划值与实际 accepted request 完全一致。
+- 非首笔 transaction 的 `item.idle_cycles` 与 `transfer.observed_idle_cycles` 完全一致。
+- 首笔 initial idle 不参与严格比较，避免把 reset 释放到首笔 request 的启动约定混入普通
+  transaction gap。
+- 结构性缺项、仿真结束仍有未配对对象属于 testbench 错误，在 `check_phase` 明确报告。
+
+checker 只验证 UVM stimulus 执行，不检查 rdata/error，也不把 mismatch 归因于 DUT。
+
+### 15.2 新增确定性 idle-gap virtual sequence/test
+
+新增：
+
+~~~text
+uvm/v6_0/simple_bus/tb/virtual/simple_bus_idle_gap_vseq.svh
 uvm/v6_0/simple_bus/tb/tests/simple_bus_idle_gap_test.svh
-```
+~~~
 
-本测试固定 target response delay 为 0，只改变相邻 transaction 的 `idle_cycles`，避免和 DUT response wait 混在一起定位。sequence 先发送一笔 `idle_cycles=0` 的 warm-up transaction，再按 `0 -> 1 -> 3 -> 7 -> 0` 发送 DMEM write/read transaction；每笔访问都显式设置 `idle_cycles`，不依赖 driver 内部随机行为。
+virtual sequence 先通过 wrapper cfg agent 把 DMEM delay 设为 0，再发送一笔 warm-up
+transaction；随后按 0/1/3/7/0 设置 bus item 的 `idle_cycles`。sequence 不额外使用
+`@(clock)` 制造 gap，所有计划间隔只来自 item 字段。
 
-当前阶段不比较 driver 计划值与实际 idle gap。scoreboard 继续检查 DMEM 数据结果，SVA 检查 idle 期间没有 orphan response。`run_all.sh` 增加一个固定 seed 的 `simple_bus_idle_gap_test`，用于确认不同 master 空拍场景下 DUT 仍正常响应；driver gap 执行的精确比较保留为第 15 章可选测试平台自检。本测试先证明确定性边界，随机 gap 仍放在第 15 章。
+验证节点：
 
-### 11.10 新增独立 response-delay checker
-
-新增一个 v6.0 DUT 专用的 `data_subsystem_delay_checker`，与通用 `simple_bus_scoreboard` 并列接入 env。前者验证 response delay wrapper，后者继续检查 DMEM/MMIO 功能结果；不要把 `data_subsystem_cfg_if` 引入通用 simple bus agent 或通用 scoreboard。
-
-checker 被动获取 `simple_bus_if.monitor` 和 `data_subsystem_cfg_if`。每次 request accepted 时按地址译码 target，并快照当拍对应的 delay 配置；对应 response valid 时独立计数并比较 configured delay 与 observed delay。undefined target 固定期望 0。checker 不驱动 request、response 或 delay 配置，也不信任 sequence 传入的 expected 值。
-
-现有 dynamic-delay sequence 保留 `finish_item()` 后的自检，作为定位方便的第一层检查；checker 是独立的第二层检查，覆盖固定 plusarg、dynamic-delay 和后续 random-delay test。具体类名以外的 analysis port/monitor 组织在实现时确定，计划不在此锁死。
-
-### 11.11 验证节点
-
-本章完成标准：
-
-- 0/1/3/7 delay 下 DMEM smoke 都通过。
-- monitor log 能显示不同 response delay。
-- 定向 idle-gap test 能执行 `0/1/3/7` 拍 master 空闲间隔，且 DMEM 数据检查和 SVA 均通过。
-- 单次 dynamic-delay test 能按 `0 -> 3 -> 1 -> 7 -> 0` 切换，且 sequence 自动比较 configured/observed delay。
-- 独立 delay checker 能在 request accepted 时快照 target delay，并在 response valid 时比较实际 delay；固定、dynamic delay 均不出现 mismatch。
-- scoreboard 仍能检查 read data。
+- execution checker 对非首笔 transaction 精确比较，不默认允许调度造成的 +1。
+- scoreboard 继续验证 DMEM 数据。
+- wrapper checker 确认 delay 仍为 0。
 - SVA 不误报。
+- checker 的 planned/observed 队列在 test 结束时为空。
 
-## 12. 后续章节占位：MMIO register smoke
+## 16. 逐笔随机 wrapper delay、idle gap 与基础 coverage
+
+目标：在确定性路径稳定后，让每笔 transaction 都能通过两个 agent 独立随机配置
+`idle_cycles` 和 wrapper delay，并建立第一版可运行 functional coverage。
+
+### 16.1 constrained-random virtual sequence
+
+新增：
+
+~~~text
+uvm/v6_0/simple_bus/tb/virtual/simple_bus_random_delay_vseq.svh
+uvm/v6_0/simple_bus/tb/tests/simple_bus_random_delay_test.svh
+~~~
+
+第一版仍限定为合法 DMEM word traffic：
+
+- 每组先随机一个 0～127 的 wrapper delay，再由 cfg agent 应用。
+- delay 分布提高 0、1、最大值 127 和若干中间值的命中权重。
+- 每笔 bus item 独立随机合法 `idle_cycles`。
+- 使用 write/read pair，保证 DMEM scoreboard 有确定的 expected value。
+- 每次修改 wrapper 配置前必须等上一笔 bus item `finish_item()` 返回。
+- 固定 seed 回归保留；后续可增加多个 seed，但不能替代 0/1/3/7/127 定向边界。
+
+wrapper checker 自动比较 expected/observed delay，execution checker 自动比较 planned/observed
+request 和 idle gap；random sequence 本身不重复实现 checker 逻辑。
+
+### 16.2 新增基础 functional coverage
+
+新增目录和组件：
+
+~~~text
+uvm/v6_0/simple_bus/tb/coverage/simple_bus_coverage.svh
+~~~
+
+`simple_bus_coverage` 订阅 monitor 的 `simple_bus_transfer`，只采样实际完成的 transaction。
+第一版 coverpoints：
+
+- op：read/write。
+- observed response delay：0、1、短延迟、中间延迟、127。
+- observed idle gap：0、短 gap、长 gap。
+- response：OK/error。
+- op x delay。
+- idle gap x delay。
+
+当前 traffic 只覆盖 DMEM，因此不以 target coverage 百分比作为本章完成门槛。后续加入 MMIO
+后扩展 target、register、side effect 和 error crosses。coverage 证明场景发生过，不替代
+scoreboard/SVA/checker。
+
+env 创建 coverage subscriber，并将同一 monitor transfer AP 连接给它。VCS coverage 数据库
+和报告入口在实现时按本机版本固化到 sim 脚本；`COVERAGE_ON` 若作为编译/运行配置开关，必须
+像 `ASSERT_ON` 一样使用独立 build 目录，避免增量缓存串配置。
+
+### 16.3 回归与完成标准
+
+`run_all.sh` 保留：
+
+- base/smoke。
+- ASSERT_ON smoke。
+- deterministic wrapper delay。
+- deterministic idle gap。
+- fixed-seed random delay/idle。
+
+本轮 wait-state UVM 主目标完成标准：
+
+- 功能 scoreboard、wrapper checker、driver execution checker 同时通过。
+- random sequence 能逐笔切换 delay，不需要命令行 `+DMEM_DELAY`。
+- SVA 在固定和随机 wait-state 下不误报。
+- coverage 能生成非空报告，并命中 0/1/127 delay、read/write、0/nonzero idle gap 等基础 bins。
+- 日志能区分 planned item、observed transfer、功能 mismatch、wrapper mismatch 和
+  testbench execution mismatch。
+
+## 17. 后续章节占位：MMIO register smoke
 
 后续根据实际 UVM MVP 完成情况展开。
 
 计划方向：
 
+- 为 GPIO/UART/TIMER32 分别建立最小软件可见参考模型或专用 checker，不能只看日志。
 - GPIO OUT/OE 基本读写。
 - UART TXDATA write event。
 - TIMER32 MTIME/MTIMECMP/CTRL/STATUS 基本读写。
 - unknown offset error。
-- 以 `dut/docs/periph_register_abi.md` 为唯一寄存器 ABI 来源。known-register smoke 和 unknown-offset error 使用不同的定向 sequence；不要依赖无约束随机地址偶然命中寄存器。
+- 以 `dut/docs/periph_register_abi.md` 为唯一寄存器 ABI 来源。
+- known-register smoke 和 unknown-offset error 使用不同定向 virtual sequence。
+- wrapper cfg agent 为对应 target 配置 delay；wrapper checker 继续复用，不新增第二套 bus
+  monitor。
 
-## 13. 后续章节占位：byte enable 和 error
+## 18. 后续章节占位：byte enable 和 error
 
 后续根据实际 UVM MVP 完成情况展开。
 
 计划方向：
 
-- DMEM byte/half/word write strobe。
+- 扩展 DMEM reference model，支持 byte/half/word write strobe。
 - unaligned 地址是否由当前 DUT 定义处理。
 - 未映射地址 error。
 - 外设 unknown offset error。
-- 新增 CPU-shaped byte-enable sequence：同一 `simple_bus_item` 按 access profile 施加 `addr`/`be` 联合约束。byte profile 使用 `be = 4'b0001 << addr[1:0]`；halfword profile 要求 `addr[0] == 0`，并按 `addr[1]` 选择 `4'b0011` 或 `4'b1100`；word profile 要求 `addr[1:0] == 0` 且 `be == 4'b1111`。
-- CPU-shaped sequence 与 generic bus-corner sequence 分开。后者可以产生任意非零 `be` 组合，用于验证 simple bus 的通用 byte-lane 行为；前者用于模拟当前 core 实际可能发出的请求，二者的预期结果不得混用。
-- 对 MMIO，先从 ABI 中选择已定义的 word-aligned register offset，再按 access profile 生成 byte offset。`RTL-001` 的 `reg+1` byte 和 `reg+2` halfword 用例在当前 DUT 上应先稳定复现 error，随后才进入 RTL 修复和回归。
-- 未定义 MMIO offset、窗口外地址和当前未定义的 misaligned access 各自使用专门的 negative sequence，不与已定义 MMIO 寄存器访问混在同一“legal”随机流中。
+- 新增 CPU-shaped byte-enable sequence：同一 `simple_bus_item` 按 access profile 施加
+  `addr/be` 联合约束。byte profile 使用 `be = 4'b0001 << addr[1:0]`；halfword profile
+  要求 `addr[0] == 0`，并按 `addr[1]` 选择 `4'b0011` 或 `4'b1100`；word profile 要求
+  `addr[1:0] == 0` 且 `be == 4'b1111`。
+- CPU-shaped sequence 与 generic bus-corner sequence 分开。后者可以产生任意非零 be 组合，
+  前者模拟当前 core 实际可能发出的请求，二者预期不得混用。
+- 对 MMIO，先从 ABI 中选择已定义的 word-aligned register offset，再按 access profile 生成
+  byte offset。
+- `RTL-001` 的 `reg+1` byte 和 `reg+2` halfword 用例应先稳定复现 error，随后进入 RTL 修复
+  和回归。
+- 未定义 MMIO offset、窗口外地址和当前未定义的 misaligned access 分别使用专门 negative
+  virtual sequence，不混入 legal random traffic。
 
-## 14. 后续章节占位：side effect scoreboard
+## 19. 后续章节占位：side effect scoreboard
 
 后续根据实际 UVM MVP 完成情况展开。
 
@@ -2026,43 +2250,25 @@ checker 被动获取 `simple_bus_if.monitor` 和 `data_subsystem_cfg_if`。每�
 - UART IRQ_PENDING W1C。
 - TIMER32 compare/pending。
 - wait-state 下副作用只发生一次。
+- side-effect reference model 只按软件可见 ABI 建模，不复制 RTL 内部实现。
 
-## 15. 后续章节占位：random sequence 和 coverage
+## 20. 后续章节占位：扩展 random sequence 和 coverage
 
-后续根据实际 UVM MVP 完成情况展开。
+后续根据 MMIO、byte/error 和 side-effect checker 的完成情况展开。
 
 计划方向：
 
-- random target。
-- random read/write。
-- 每笔 item constrained-random `idle_cycles`；随机值由 sequence 产生，driver 只按值插入 request 前空拍。
-- 通过 `data_subsystem_cfg_if` 为每笔 transaction 随机合法 delay；只在上一笔 response 完成后切换。
-- random legal/illegal offset。
-- target x access type。
-- target x delay。
-- target x idle gap。
-- idle gap x delay。
-- target x response。
-- side effect x delay。
+- random target、read/write、legal/illegal offset。
+- legal traffic 初始分布建议 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%。
+- known-register、unknown-offset、unmapped-address 使用不同 traffic bucket。
+- random sequence 在 sequence/virtual sequence 层先选择 target，再约束 item 地址；target
+  仍由最终 observed transfer 的地址推导。
+- 扩展 coverage：target x access-profile、MMIO known/unknown x read/write、
+  target x response、target x delay、target x idle gap、side effect x delay。
+- coverage 只采样 monitor transfer，不以 sequence 计划值代替实际覆盖。
+- 每个进入 legal random traffic 的场景必须已有明确 spec 和自动 checker/reference model。
 
-约束分层和随机分布：
-
-- random sequence 在 sequence 层先选择 target，再约束 item 的地址范围；`simple_bus_item.decode_target()` 继续只根据最终地址推导 target，不把 target 变成 item 的随机协议字段。
-- legal traffic 的初始分布建议为 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%；窗口外 undefined 地址不放入 legal traffic，而是由独立 negative sequence 定向覆盖。具体比例可以在 sequence 配置中调整，但必须避免 32-bit 无权重地址随机。
-- 每个 MMIO target 再分 known-register 和 unknown-offset 两类 bucket。正常功能随机应以 known-register 为主；unknown-offset 作为独立 error 流或较低权重 bucket，确保不会因外设窗口大、已定义寄存器少而压倒正常访问。
-- known-register bucket 从 ABI 列出的寄存器 offset 中选择，再选择 read/write 访问和 access profile。访问属性、保留 bit 和 side effect 的约束以 ABI 为准，不能只按地址窗口随机。
-- generic bus-corner、CPU-shaped、known-MMIO、unknown-MMIO 和 unmapped-address sequence 分别统计 coverage。至少增加 target x access-profile、MMIO known/unknown x read/write、target x response，以及 target x access-profile x delay；coverage 只反映实际采样 transaction，不以 sequence 计划值替代。
-
-可选的测试平台自检：
-
-- 在 basic driver/monitor 和确定性 idle-gap test 稳定后，可新增 driver idle-gap checker，验证 sequence item 的 `idle_cycles` 是否真实反映在 interface 引脚上。
-- checker 只验证 UVM stimulus 执行正确性，不连接 DUT 功能 scoreboard，也不将 mismatch 归因于 DUT。
-- 以 warm-up transaction 为起点；从上一笔 response valid 后开始，统计到下一笔 `req.valid` 首次出现前的完整空拍数，并与对应的非首笔 item `idle_cycles` 严格比较。正常 sequence 不插入额外时间控制，不默认允许调度造成的 `+1`；首笔 initial idle 不参与比较。
-- 该功能可复用 monitor 的被动采样或独立 analysis/checker 组织；具体实现届时根据 agent/env 结构确定，不在当前阶段提前锁死。
-
-固定 delay、确定性 idle-gap test 和确定性 dynamic-delay test 继续保留；random idle gap/random delay 用于扩大覆盖，不替代可重复的基础回归。
-
-## 16. 后续章节占位：SoC directed 回归保持
+## 21. 后续章节占位：SoC directed 回归保持
 
 后续根据实际 UVM MVP 完成情况展开。
 
@@ -2073,7 +2279,7 @@ checker 被动获取 `simple_bus_if.monitor` 和 `data_subsystem_cfg_if`。每�
 - UVM 文件不进入 Verilator 默认编译路径。
 - README 说明 Verilator/VCS 分工。
 
-## 17. 后续章节占位：文档与阶段收口
+## 22. 后续章节占位：文档与阶段收口
 
 后续根据实际 UVM MVP 完成情况展开。
 
@@ -2083,4 +2289,5 @@ checker 被动获取 `simple_bus_if.monitor` 和 `data_subsystem_cfg_if`。每�
 - `docs/08xx/0835` 若实现口径变化再补充。
 - `uvm/v6_0/simple_bus/tb` 使用说明。
 - `uvm/v6_0/simple_bus/sim` 脚本说明。
+- 最终保存 v6.0 DUT RTL snapshot，并把 UVM filelist 从开发期主工程 RTL 切回归档镜像。
 - 阶段完成标准检查。

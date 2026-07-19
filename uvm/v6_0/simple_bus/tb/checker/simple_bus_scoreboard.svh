@@ -16,7 +16,7 @@ class simple_bus_scoreboard extends uvm_scoreboard;
 
     `uvm_component_utils(simple_bus_scoreboard)
 
-    uvm_analysis_imp #(simple_bus_item, simple_bus_scoreboard) transfer_imp;
+    uvm_analysis_imp #(simple_bus_transfer, simple_bus_scoreboard) transfer_imp;
 
     bit [core_pkg::XLEN-1:0] ref_dmem  [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]];
     bit                      ref_valid [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]];
@@ -30,14 +30,14 @@ class simple_bus_scoreboard extends uvm_scoreboard;
         transfer_imp = new("scoreboard_transfer_imp", this);
     endfunction
 
-    // analysis imp收到 T 后回调
-    function void write(simple_bus_item tr);
-        if (is_dmem_addr(tr.addr)) begin
-            dmem_ref_model(tr);
+    // analysis imp 收到 T 后回调
+    function void write(simple_bus_transfer tr);
+        if (is_dmem_addr(tr.observed_item.addr)) begin
+            dmem_ref_model(tr.observed_item);
             check_dmem(tr);
         end
         else begin
-            `uvm_info(get_type_name(), {"skip non-DMEM item: ", tr.item2string("transfer")}, UVM_MEDIUM)
+            `uvm_info(get_type_name(), {"skip non-DMEM item: ", tr.transfer2string("transfer")}, UVM_MEDIUM)
         end
     endfunction
 
@@ -57,32 +57,32 @@ class simple_bus_scoreboard extends uvm_scoreboard;
     endfunction
 
     // dmem 的 gold model
-    function void dmem_ref_model(simple_bus_item tr);
-        bit [core_pkg::DMEM_ADDR_WIDTH-1:0] word_addr = addr_2_dmem_word_addr(tr.addr);
+    function void dmem_ref_model(simple_bus_item item);
+        bit [core_pkg::DMEM_ADDR_WIDTH-1:0] word_addr = addr_2_dmem_word_addr(item.addr);
         // dmem 的参考行为
-        if (tr.write) begin
+        if (item.write) begin
             if (!ref_valid.exists(word_addr)) begin     // 当前不考虑测试中复位导致的 write 过无效情况，只要首次 write 过就认为有效
                 ref_valid[word_addr] = 1'b1;
                 ref_dmem[word_addr]  = '0;
             end
-            ref_dmem[word_addr] [7:0]   = tr.be[0] ? tr.wdata[7:0]   : ref_dmem[word_addr] [7:0];
-            ref_dmem[word_addr] [15:8]  = tr.be[1] ? tr.wdata[15:8]  : ref_dmem[word_addr] [15:8];
-            ref_dmem[word_addr] [23:16] = tr.be[2] ? tr.wdata[23:16] : ref_dmem[word_addr] [23:16];
-            ref_dmem[word_addr] [31:24] = tr.be[3] ? tr.wdata[31:24] : ref_dmem[word_addr] [31:24];
+            ref_dmem[word_addr] [7:0]   = item.be[0] ? item.wdata[7:0]   : ref_dmem[word_addr] [7:0];
+            ref_dmem[word_addr] [15:8]  = item.be[1] ? item.wdata[15:8]  : ref_dmem[word_addr] [15:8];
+            ref_dmem[word_addr] [23:16] = item.be[2] ? item.wdata[23:16] : ref_dmem[word_addr] [23:16];
+            ref_dmem[word_addr] [31:24] = item.be[3] ? item.wdata[31:24] : ref_dmem[word_addr] [31:24];
         end
     endfunction
 
     // 利用 dmem_ref_model 的状态进行对比
-    function void check_dmem(simple_bus_item tr);
-        bit [core_pkg::DMEM_ADDR_WIDTH-1:0] word_addr = addr_2_dmem_word_addr(tr.addr);
+    function void check_dmem(simple_bus_transfer tr);
+        bit [core_pkg::DMEM_ADDR_WIDTH-1:0] word_addr = addr_2_dmem_word_addr(tr.observed_item.addr);
         // 第一版 uvm seq 只生成 write32、read32 的 item
-        if (tr.be != 4'hf) begin
-            `uvm_fatal(get_type_name(), {"first scoreboard only supports word access: ", tr.item2string("transfer")})
+        if (tr.observed_item.be != 4'hf) begin
+            `uvm_fatal(get_type_name(), {"first scoreboard only supports word access: ", tr.transfer2string()})
         end
         if (tr.error) begin         // 访问 dmem 时，dut 不应 resp error
-            `uvm_error(get_type_name(), {"DMEM access returned error:",tr.item2string("transfer")})
+            `uvm_error(get_type_name(), {"DMEM access returned error:",tr.transfer2string()})
         end
-        else if (!tr.write) begin   // read dmem 是需要 check 返回值与 gold model 是否一样
+        else if (!tr.observed_item.write) begin   // read dmem 是需要 check 返回值与 gold model 是否一样
             if (!ref_valid.exists(word_addr)) begin
                 `uvm_info(get_type_name(),     // uvm 未写 dmem 就进行读取，spec 未规定这种情况，因此不做对比，但允许（如 dmem 初始化）
                     $sformatf("read a DMEM word but never write it, dmem word addr=0x%08x", word_addr), UVM_MEDIUM)
@@ -101,7 +101,7 @@ class simple_bus_scoreboard extends uvm_scoreboard;
             end
         end
         else begin
-            // write response 的 rdata 语义不在 spec 内；response/error 已在 monitor 和上方检查
+            // write response 的 rdata 语义不在 spec 内；response/error 已在上方检查
         end
     endfunction
 

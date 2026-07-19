@@ -5,15 +5,16 @@
 // 规范：
 //   - 通过 `master_drv_cb` 驱动 request 并采样 ready/response，避免与 DUT 产生时钟沿竞争。
 //   - 当前总线只允许 single outstanding；一笔 request 收到 response 后才获取下一笔 item。
-//   - `idle_cycles` 由 sequence 决定，driver 只负责执行；response 观察结果回填item，最终功能
-//     检查仍以 monitor/scoreboard 为准。
+//   - `idle_cycles` 由 sequence 决定，driver 只负责执行；response 仅用于完成和超时判断，
+//     实际 response 结果由 monitor 记录到 observed transfer。
+//   - driver 在执行前发布 planned item 的 clone，供后续 execution checker 与 monitor
+//     观测值进行独立配对。
 //   - 正常 sequence 不在相邻 item 间插入额外时间控制，计划 idle 与 monitor 观测值应一致；
 //     若 item 在 clocking event 之间交付，实际 gap 可能包含额外对齐拍，属于平台调度偏差。
 //
 // 功能：
 //   - 等待 reset 释放，按 item 产生 request，并在 backpressure 期间保持 payload。
-//   - 支持 accepted 同拍 response 和延迟 response，记录 `rdata`、`error` 与 `resp_delay`，
-//     并用 watchdog 防止验证平台无限等待。
+//   - 支持 accepted 同拍 response 和延迟 response，并用本地 watchdog 防止验证平台无限等待。
 //------------------------------------------------------------------------------
 
 class simple_bus_driver extends uvm_driver #(simple_bus_item);
@@ -21,6 +22,8 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
     `uvm_component_utils(simple_bus_driver)
 
     virtual simple_bus_if.master_drv_mp vif;
+    simple_bus_item planned_item;
+    uvm_analysis_port #(simple_bus_item) planned_item_ap;   // 计划 item 可以广播出去待后续使用
     localparam int MAX_REQ_WAIT_CYCLES   = 256; // master req 等待 slave ready 的最大时长
     localparam int MAX_RESP_DELAY_CYCLES = 127; // req 被接受后 slave resp 的最大时长，应与 bus wrapper 最大延迟一致
 
@@ -30,8 +33,10 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
-        if(!uvm_config_db #(virtual simple_bus_if.master_drv_mp)::get(this,"","vif",vif))
+        if(!uvm_config_db #(virtual simple_bus_if.master_drv_mp)::get(this,"","vif",vif)) begin
             `uvm_fatal(get_type_name(), "failed to get master driver vif")
+        end
+        planned_item_ap = new("planned_item_ap", this);
     endfunction
 
     task run_phase(uvm_phase phase);
@@ -41,6 +46,8 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
         // 不断发送 seq 例化的 item
         forever begin
             seq_item_port.get_next_item(req);   // 直接使用 drv 自带的 req 语柄
+            $cast(planned_item, req.clone());   // 方法 clone 在基类 uvm_object 中定义，因此 req.clone 返回类型是 uvm_object，使用 cast 进行句柄转换
+            planned_item_ap.write(planned_item);
             drive_item(req);
             seq_item_port.item_done();
         end
@@ -75,7 +82,7 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
 
     // 驱动 driver 发一个 item 给 dut
     protected task automatic drive_item(simple_bus_item item);
-        int unsigned wait_cycles;
+        int unsigned wait_cycles, resp_delay_cycles;
         bit accepted, got_resp;  // 根据实际握手而不单纯看 ready 或 resp valid,因为可能存在 item 在非 posedge 交付时导致误判
         // 上一笔 response 完成后的空拍
         repeat (item.idle_cycles) begin
@@ -99,21 +106,18 @@ class simple_bus_driver extends uvm_driver #(simple_bus_item);
         end
         // req 发送完毕，等待 resp
         drive_idle();
-        item.resp_delay = 0;
+        resp_delay_cycles = 0;
         got_resp = accepted && (vif.master_drv_cb.resp_o.valid === 1'b1);   // 可能握手当拍 resp
         while (!got_resp) begin
             @(vif.master_drv_cb);
             got_resp = accepted && (vif.master_drv_cb.resp_o.valid === 1'b1);
-            item.resp_delay++;   // 与 wait_cycles 不同，got_resp 初始化策略不同，这里不会多记 1
-            if (item.resp_delay > MAX_RESP_DELAY_CYCLES) begin  // 仅负责超时保护，不负责协议检查
+            resp_delay_cycles++;   // 与 wait_cycles 不同，got_resp 初始化策略不同，这里不会多记 1
+            if (resp_delay_cycles > MAX_RESP_DELAY_CYCLES) begin  // 仅负责超时保护，不负责协议检查
                 `uvm_fatal(get_type_name(),
                            $sformatf("resp delay timeout after %0d cycles, item: %s",
-                           item.resp_delay, item.item2string()));
+                           resp_delay_cycles, item.item2string()));
             end
         end
-        // 收到 resp，回填 item
-        item.rdata = vif.master_drv_cb.resp_o.rdata;
-        item.error = vif.master_drv_cb.resp_o.error;
         `uvm_info(get_type_name(), {"driver completed a item:", item.item2string()}, UVM_MEDIUM);
     endtask
 endclass
