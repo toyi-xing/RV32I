@@ -24,7 +24,7 @@ class simple_bus_smoke_test extends simple_bus_base_test;
         seq = simple_bus_smoke_seq::type_id::create("seq");
 
         phase.raise_objection(this);
-        seq.start(env.agent.sequencer);
+        seq.start(env.bus_agent.sequencer);
         phase.drop_objection(this);
     endtask
 endclass

@@ -27,6 +27,6 @@
 
 // UVM package 先于导入它的静态 testbench top 编译。
 ../tb/interfaces/simple_bus_if.sv
-../tb/interfaces/data_subsystem_cfg_if.sv
+../tb/interfaces/resp_delay_cfg_if.sv
 ../tb/pkg/simple_bus_pkg.sv
 ../tb/top/tb_simple_bus_uvm_top.sv

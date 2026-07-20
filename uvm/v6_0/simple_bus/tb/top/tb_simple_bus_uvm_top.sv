@@ -96,23 +96,22 @@ module tb_simple_bus_uvm_top;
     initial begin
         uvm_config_db#(virtual simple_bus_if.master_drv_mp)::set(
             null,
-            "uvm_test_top.env.agent.driver",
+            "uvm_test_top.env.bus_agent.driver",
             "vif",
             simple_bus_vif.master_drv_mp
         );
         uvm_config_db#(virtual simple_bus_if.mon_mp)::set(
             null,
-            "uvm_test_top.env.agent.monitor",
+            "uvm_test_top.env.bus_agent.monitor",
             "vif",
             simple_bus_vif.mon_mp
         );
         uvm_config_db#(virtual resp_delay_cfg_if)::set(
             null,
-            "uvm_test_top",
+            "uvm_test_top.env.wrapper_agent.driver",
             "resp_delay_cfg_vif",
             resp_delay_cfg_vif
         );
-        resp_delay_cfg_vif.rst_resp_delay();
         uvm_top.set_timeout(1ms,1'b0);
         run_test();
     end

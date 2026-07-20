@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// 文件      : uvm/v6_0/simple_bus/tb/interfaces/data_subsystem_cfg_if.sv
+// 文件      : uvm/v6_0/simple_bus/tb/interfaces/resp_delay_cfg_if.sv
 // 用途      : v6.0 data_subsystem response delay 的 UVM 专用配置接口。
 //
 // 规范：
@@ -9,7 +9,7 @@
 //
 // 功能：
 //   - 保存 DMEM、GPIO0、UART0、TIMER0 的 response delay 配置。
-//   - 提供全 target 清零和按 target 更新 delay 的 task，供 top/test/sequence 使用。
+//   - 提供全 target 清零和按 target 更新 delay 的 task，供 wrapper cfg driver 使用。
 //------------------------------------------------------------------------------
 
 `default_nettype none

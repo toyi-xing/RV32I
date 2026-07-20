@@ -30,7 +30,7 @@ class simple_bus_base_seq extends uvm_sequence #(simple_bus_item);
     // 0 空拍的写 word master 指令
     protected task automatic send_write32(logic [core_pkg::XLEN-1:0] addr,
                                 logic [core_pkg::XLEN-1:0] data);
-        req = simple_bus_item::type_id::create("smoke_write32");
+        req = simple_bus_item::type_id::create("req_write32");
         start_item(req);    // 直接使用 seq 自带的 req 语柄
         req.write = 1'b1;
         req.be    = 4'b1111;
@@ -42,7 +42,7 @@ class simple_bus_base_seq extends uvm_sequence #(simple_bus_item);
     
     // 0 空拍的读 word master 指令
     protected task automatic send_read32(logic [core_pkg::XLEN-1:0] addr);
-        req = simple_bus_item::type_id::create("smoke_read32");
+        req = simple_bus_item::type_id::create("req_read32");
         start_item(req);
         req.write = 1'b0;
         req.be    = 4'b1111;

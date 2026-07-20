@@ -1799,17 +1799,17 @@ package include 顺序中，`simple_bus_transfer.svh` 必须在 monitor、scoreb
 - monitor 的首笔 initial idle 口径和后续 transaction idle 口径保持 spec 当前定义。
 - `ASSERT_ON=1` 时 SVA 不误报。
 
-## 12. response-delay wrapper 配置 agent `执行中`
+## 12. response-delay wrapper 配置 agent `已完成`
 
 目标：把 v6.0 `data_subsystem` response-delay wrapper 的配置动作做成独立 active agent，
 不让 test、simple bus item 或通用 bus driver 直接操作 DUT 专用配置 interface。
 
-### 12.1 保留并收敛 wrapper 配置 interface
+### 12.1 保留并收敛 wrapper 配置 interface `无需改动`
 
 继续使用：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/interfaces/data_subsystem_cfg_if.sv
+uvm/v6_0/simple_bus/tb/interfaces/resp_delay_cfg_if.sv
 ~~~
 
 其中的 `resp_delay_cfg_if` 仍是 wrapper cfg driver 与 DUT 四组
@@ -1817,16 +1817,18 @@ uvm/v6_0/simple_bus/tb/interfaces/data_subsystem_cfg_if.sv
 
 - `rst_resp_delay()`：所有 target delay 恢复为 0。
 - `set_target_resp_delay(target, delay_cycles)`：按 target 设置 delay。
-- `clk_i/rst_n_i`：供 cfg driver 等待 reset 释放并约束配置时机。
+- `clk_i/rst_n_i`：供 cfg driver 在 reset 期间施加默认值，并在 reset 释放后开始
+  执行普通配置命令。
 
 该 interface 不是 simple bus 协议的一部分，不进入 `simple_bus_item` 或
 `simple_bus_transfer`。文件名和 interface 类型名是否进一步加入 wrapper 前缀，可在实现时
 统一，但本阶段优先保持现有接口可用，避免无功能收益的重命名扩散。
 
-top 继续在仿真开始时调用 `rst_resp_delay()`，并通过 `uvm_config_db` 只把 virtual interface
-提供给 wrapper cfg driver。test、virtual sequence 和 simple bus driver 不直接取得该 vif。
+top 只负责例化该 interface、连接 DUT 并通过 `uvm_config_db` 将 virtual interface 提供给
+wrapper cfg driver；`rst_resp_delay()` 由 cfg driver 调用。test、virtual sequence 和 simple
+bus driver 不直接取得该 vif。
 
-### 12.2 新增 wrapper 配置 transaction 与 sequencer
+### 12.2 新增 wrapper 配置 transaction 与 sequencer `已完成`
 
 新增目录：
 
@@ -1836,11 +1838,9 @@ uvm/v6_0/simple_bus/tb/agent/wrapper_cfg
 
 新增类：
 
-~~~text
-data_subsystem_resp_delay_wrapper_cfg_item.svh
-data_subsystem_resp_delay_wrapper_cfg_sequence.svh
-data_subsystem_resp_delay_wrapper_cfg_sequencer.svh
-~~~
+data_subsystem_resp_delay_wrapper_cfg_item.svh `已完成`
+data_subsystem_resp_delay_wrapper_cfg_sequence.svh `已完成`
+data_subsystem_resp_delay_wrapper_cfg_sequencer.svh `已完成`
 
 `data_subsystem_resp_delay_wrapper_cfg_item` 至少包含：
 
@@ -1857,7 +1857,7 @@ rand logic [6:0]       delay_cycles;
 
 cfg sequence 负责构造并提交 cfg item，不直接访问 virtual interface。
 
-### 12.3 新增 wrapper cfg driver 与 agent
+### 12.3 新增 wrapper cfg driver 与 agent `已完成`
 
 新增：
 
@@ -1869,7 +1869,13 @@ data_subsystem_resp_delay_wrapper_cfg_agent.svh
 cfg driver：
 
 - 从 cfg sequencer 取得 cfg item。
-- reset 未释放时等待，不在 reset 中修改 wrapper 配置。
+- `run_phase` 开始时调用 `rst_resp_delay()`，在 reset 期间将所有 target delay 置为 0；随后
+  等待 reset 释放。该 reset 默认动作不是普通 cfg item。
+- reset 未释放时不从 sequencer 取得或执行普通 cfg item；reset 释放后才开始处理 sequence
+  提交的配置命令。
+- 对手动赋值绕过 random constraint 的 `delay_cycles` 做最终合法性检查：负数（包括
+  `-1` 未初始化哨兵）报 `uvm_fatal`；大于 127 时报告 `uvm_warning` 并饱和为 127。
+  调用 interface 和发布 `applied_cfg_ap` 时均使用规范化后的 clone，保证 checker 记录的 expected state 与实际施加给 DUT 的值一致。
 - 调用 `resp_delay_cfg_if.set_target_resp_delay()` 实际驱动配置。
 - 完成配置后发布 cfg item 的 clone 到 `applied_cfg_ap`，再调用 `item_done()`。
 - 不驱动 simple bus request，也不等待 bus response。
@@ -1881,7 +1887,7 @@ expected state。发布 clone 是为了防止 sequence 复用对象导致历史�
 的专用控制侧带，不是待验证的 request/response 协议；wrapper checker 会通过实际 response
 delay 间接验证配置是否真正生效。
 
-### 12.4 env/top/package 接入
+### 12.4 env/top/package 接入 `已完成`
 
 env 新增：
 
@@ -1896,16 +1902,16 @@ uvm_test_top.env.wrapper_cfg_agent.driver
 ~~~
 
 package/filelist 按依赖顺序加入新目录和 class。普通 `simple_bus_smoke_test` 不启动 cfg
-sequence，继续使用 top 初始化的 0 delay。
+sequence，继续使用 cfg driver 在 reset 期间初始化的 0 delay。
 
-### 12.5 验证节点
+### 12.5 验证节点 `已完成`
 
 - cfg item/sequence/sequencer/driver/agent 能编译并进入 UVM topology。
 - wrapper cfg driver 能将四个 target 分别配置为确定值。
 - 普通 smoke 不使用 cfg agent traffic 时仍保持 0 wait-state。
 - simple bus driver、monitor、scoreboard 中不出现 `resp_delay_cfg_if` 依赖。
 
-## 13. virtual sequencer 与确定性 wrapper-delay 测试
+## 13. virtual sequencer 与确定性 wrapper-delay 测试 `执行中`
 
 目标：由 virtual sequence 协调 wrapper cfg agent 和 simple bus agent，保证每笔 delay 配置
 先完成、随后才发对应 bus request，并且只在没有 outstanding transaction 时切换配置。
