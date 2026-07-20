@@ -24,9 +24,9 @@
   - `sw/asm`
   - `sw/c`
 - 新增独立、可复现的 VCS/UVM 工作区：
-  - `uvm/v6_0/simple_bus/dut`：v6.0 最小 DUT RTL 与 ABI 快照。
-  - `uvm/v6_0/simple_bus/tb`：UVM interface、class、assertion 和 harness。
-  - `uvm/v6_0/simple_bus/sim`：本版本独立 filelist 和 VCS 脚本。
+  - `uvm/v6_0/data_subsystem/dut`：v6.0 最小 DUT RTL 与 ABI 快照。
+  - `uvm/v6_0/data_subsystem/tb`：UVM interface、class、assertion 和 harness。
+  - `uvm/v6_0/data_subsystem/sim`：本版本独立 filelist 和 VCS 脚本。
 - 第一版 UVM 不实例化整颗 `rv32i_soc`，而是实例化 simple data bus harness。
 - 第一版 UVM master 直接驱动 simple data bus，不使用 `.mem`、crt0、C/ASM 测试程序。
 - 第一版 DUT 优先选择 `data_subsystem` 加必要 memory/peripheral 连接。
@@ -44,9 +44,9 @@
 执行原则：
 
 - Verilator 路径和 VCS/UVM 路径并行存在，互不强制依赖。
-- 新增 UVM 文件默认只进入 `uvm/v6_0/simple_bus/sim/filelist.f`。
+- 新增 UVM 文件默认只进入 `uvm/v6_0/data_subsystem/sim/filelist.f`。
 - VCS filelist 只编译本工作区 `dut/rtl` 快照，不引用根目录主线 `rtl/`，保证后续主线切换 AXI-Lite 后本环境仍可运行。
-- 现有 RTL 不为了 UVM 大改接口；若需要 harness 适配，优先在 `uvm/v6_0/simple_bus/tb` 下完成。
+- 现有 RTL 不为了 UVM 大改接口；若需要 harness 适配，优先在 `uvm/v6_0/data_subsystem/tb` 下完成。
 - UVM 若发现真实 RTL bug，先修根目录主线并跑 Verilator directed regression，再同步到开发期 DUT 快照并记录；0835 完成后冻结快照。
 - 每完成一个可运行节点，先跑一次最小 VCS test，再继续扩展。
 - 本计划中的代码块是建议骨架；实现时可以按 VCS 报错、现有代码风格和个人理解微调，但类名、端口语义、连接方向尽量保持一致。
@@ -77,7 +77,7 @@ uvm/
       sim/
 ```
 
-`dut/rtl` 已从 `c2f7d82` / `v6.0-data-side-variable-delay` 复制 `data_subsystem` 的最小编译闭包；`dut/docs/periph_register_abi.md` 保存匹配的外设 ABI。具体文件映射、开发期同步和冻结规则见 `uvm/v6_0/simple_bus/dut/README.md`。
+`dut/rtl` 已从 `c2f7d82` / `v6.0-data-side-variable-delay` 复制 `data_subsystem` 的最小编译闭包；`dut/docs/periph_register_abi.md` 保存匹配的外设 ABI。具体文件映射、开发期同步和冻结规则见 `uvm/v6_0/data_subsystem/dut/README.md`。
 
 本步骤不改现有 `rtl/`、`tb/sv`、`sim/soc_asm`、`sim/soc_c`。工作区建立时 `tb/` 和 `sim/` 留空，后续 UVM 源码和脚本由本计划逐步创建。
 
@@ -86,7 +86,7 @@ uvm/
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/pkg/simple_bus_pkg.sv
+uvm/v6_0/data_subsystem/tb/pkg/data_subsystem_pkg.sv
 ```
 
 第一版先只 include base test，后续每新增 class 文件就追加 include。
@@ -94,7 +94,7 @@ uvm/v6_0/simple_bus/tb/pkg/simple_bus_pkg.sv
 建议骨架：
 
 ```systemverilog
-package simple_bus_pkg;
+package data_subsystem_pkg;
     import uvm_pkg::*;
     `include "uvm_macros.svh"
 
@@ -102,7 +102,7 @@ package simple_bus_pkg;
     import soc_pkg::*;
     import data_bus_pkg::*;
 
-    `include "simple_bus_base_test.svh"
+    `include "data_subsystem_base_test.svh"
 endpackage
 ```
 
@@ -117,7 +117,7 @@ endpackage
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.svh
+uvm/v6_0/data_subsystem/tb/tests/data_subsystem_base_test.svh
 ```
 
 第一版只验证 UVM test 能启动。
@@ -125,10 +125,10 @@ uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.svh
 建议骨架：
 
 ```systemverilog
-class simple_bus_base_test extends uvm_test;
-    `uvm_component_utils(simple_bus_base_test)
+class data_subsystem_base_test extends uvm_test;
+    `uvm_component_utils(data_subsystem_base_test)
 
-    function new(string name = "simple_bus_base_test", uvm_component parent = null);
+    function new(string name = "data_subsystem_base_test", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
@@ -149,7 +149,7 @@ endclass
 后续第 7 章会在本类中增加：
 
 ```systemverilog
-simple_bus_env env;
+data_subsystem_env env;
 ```
 
 ### 1.4 新增最小 UVM top `已完成`
@@ -157,7 +157,7 @@ simple_bus_env env;
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
+uvm/v6_0/data_subsystem/tb/top/tb_data_subsystem_uvm_top.sv
 ```
 
 第一版只提供 clock/reset、全局 timeout 和 `run_test()`。
@@ -168,9 +168,9 @@ uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
 `timescale 1ns/1ps
 `default_nettype none
 
-module tb_simple_bus_uvm_top;
+module tb_data_subsystem_uvm_top;
     import uvm_pkg::*;
-    import simple_bus_pkg::*;
+    import data_subsystem_pkg::*;
 
     logic clk;
     logic rst_n;
@@ -202,7 +202,7 @@ endmodule
 新增：
 
 ```text
-uvm/v6_0/simple_bus/sim/filelist.f
+uvm/v6_0/data_subsystem/sim/filelist.f
 ```
 
 第一版按顺序加入：
@@ -214,22 +214,22 @@ uvm/v6_0/simple_bus/sim/filelist.f
 ../dut/rtl/common/soc_pkg.sv
 ../dut/rtl/common/data_bus_pkg.sv
 
-../tb/pkg/simple_bus_pkg.sv
-../tb/top/tb_simple_bus_uvm_top.sv
+../tb/pkg/data_subsystem_pkg.sv
+../tb/top/tb_data_subsystem_uvm_top.sv
 ```
 
 注意：
 
-- 这里假设脚本从 `uvm/v6_0/simple_bus/sim` 目录执行；DUT 快照和 UVM testbench 分别使用 `../dut`、`../tb` 相对路径。
+- 这里假设脚本从 `uvm/v6_0/data_subsystem/sim` 目录执行；DUT 快照和 UVM testbench 分别使用 `../dut`、`../tb` 相对路径。
 - `soc_pkg.sv`、`data_bus_pkg.sv` 都依赖 `core_pkg.sv`，因此 `core_pkg.sv` 放最前。
-- 后续第 2 章新增 interface 后，`simple_bus_if.sv` 应放在 `simple_bus_pkg.sv` 前，因为 driver/monitor class 会声明对应 modport 类型的 virtual interface。
+- 后续第 2 章新增 interface 后，`simple_bus_if.sv` 应放在 `data_subsystem_pkg.sv` 前，因为 driver/monitor class 会声明对应 modport 类型的 virtual interface。
 
 ### 1.6 新增 VCS 单测脚本 `已完成`
 
 新增：
 
 ```text
-uvm/v6_0/simple_bus/sim/run_test.sh
+uvm/v6_0/data_subsystem/sim/run_test.sh
 ```
 
 脚本第一版建议支持：
@@ -244,7 +244,7 @@ uvm/v6_0/simple_bus/sim/run_test.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-TEST_NAME="${1:-simple_bus_base_test}"
+TEST_NAME="${1:-data_subsystem_base_test}"
 SEED="${2:-1}"
 
 if [ "$#" -gt 0 ]; then
@@ -264,7 +264,7 @@ mkdir -p "$BUILD_DIR" "$LOG_DIR"
 
 vcs -full64 -sverilog -ntb_opts uvm \
     -timescale=1ns/1ps \
-    -top tb_simple_bus_uvm_top \
+    -top tb_data_subsystem_uvm_top \
     -f filelist.f \
     -Mdir="${BUILD_DIR}/csrc" \
     -o "${BUILD_DIR}/simv" \
@@ -292,7 +292,7 @@ vcs -full64 -sverilog -ntb_opts uvm \
 新增：
 
 ```text
-uvm/v6_0/simple_bus/sim/run_all.sh
+uvm/v6_0/data_subsystem/sim/run_all.sh
 ```
 
 第一版只调用一次 base test。
@@ -306,7 +306,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$SCRIPT_DIR"
 
-./run_test.sh simple_bus_base_test 1
+./run_test.sh data_subsystem_base_test 1
 ```
 
 后续每新增一个 test，就在这里加一行。
@@ -318,15 +318,15 @@ cd "$SCRIPT_DIR"
 至少覆盖：
 
 ```text
-uvm/v6_0/simple_bus/sim/build/
-uvm/v6_0/simple_bus/sim/logs/
-uvm/v6_0/simple_bus/sim/csrc/
-uvm/v6_0/simple_bus/sim/simv
-uvm/v6_0/simple_bus/sim/simv.daidir/
-uvm/v6_0/simple_bus/sim/ucli.key
-uvm/v6_0/simple_bus/sim/vcs.log
-uvm/v6_0/simple_bus/sim/*.vpd
-uvm/v6_0/simple_bus/sim/*.fsdb
+uvm/v6_0/data_subsystem/sim/build/
+uvm/v6_0/data_subsystem/sim/logs/
+uvm/v6_0/data_subsystem/sim/csrc/
+uvm/v6_0/data_subsystem/sim/simv
+uvm/v6_0/data_subsystem/sim/simv.daidir/
+uvm/v6_0/data_subsystem/sim/ucli.key
+uvm/v6_0/data_subsystem/sim/vcs.log
+uvm/v6_0/data_subsystem/sim/*.vpd
+uvm/v6_0/data_subsystem/sim/*.fsdb
 ```
 
 如果本仓库已有更通用 VCS 忽略规则，优先沿用已有风格。
@@ -335,7 +335,7 @@ uvm/v6_0/simple_bus/sim/*.fsdb
 
 本章完成标准：
 
-- `uvm/v6_0/simple_bus/sim/run_test.sh simple_bus_base_test` 可以编译并运行。
+- `uvm/v6_0/data_subsystem/sim/run_test.sh data_subsystem_base_test` 可以编译并运行。
 - log 中能看到 `UVM_INFO`。
 - 全局 UVM timeout 已启用，test 不会因永久等待而无限运行。
 - 没有引入 Verilator directed regression 依赖。
@@ -350,7 +350,7 @@ uvm/v6_0/simple_bus/sim/*.fsdb
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_if.sv
+uvm/v6_0/data_subsystem/tb/simple_bus_if.sv
 ```
 
 建议骨架：
@@ -413,7 +413,7 @@ endinterface
 修改：
 
 ```text
-uvm/v6_0/simple_bus/sim/filelist.f
+uvm/v6_0/data_subsystem/sim/filelist.f
 ```
 
 把 interface 放在 package 前：
@@ -424,8 +424,8 @@ uvm/v6_0/simple_bus/sim/filelist.f
 ../dut/rtl/common/data_bus_pkg.sv
 
 ../tb/simple_bus_if.sv
-../tb/pkg/simple_bus_pkg.sv
-../tb/top/tb_simple_bus_uvm_top.sv
+../tb/pkg/data_subsystem_pkg.sv
+../tb/top/tb_data_subsystem_uvm_top.sv
 ```
 
 原因：后续 package 里的 driver/monitor 会声明对应 modport 类型的 virtual interface，所以 interface 类型要先被编译。
@@ -435,7 +435,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
+uvm/v6_0/data_subsystem/tb/top/tb_data_subsystem_uvm_top.sv
 ```
 
 在 clock/reset 后增加：
@@ -456,7 +456,7 @@ simple_bus_if simple_bus_vif (
 本章完成标准：
 
 - VCS 能编译 `simple_bus_if.sv`。
-- `simple_bus_base_test` 仍能运行。
+- `data_subsystem_base_test` 仍能运行。
 - DUT 尚未接入时不启用 `ASSERT_ON`，不检查悬空的 slave 输出。
 - 没有真实 bus transaction。
 
@@ -469,7 +469,7 @@ simple_bus_if simple_bus_vif (
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_item.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_item.svh
 ```
 
 建议骨架：
@@ -572,19 +572,19 @@ endclass
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/pkg/simple_bus_pkg.sv
+uvm/v6_0/data_subsystem/tb/pkg/data_subsystem_pkg.sv
 ```
 
 include 顺序改为：
 
 ```systemverilog
 `include "simple_bus_item.svh"
-`include "simple_bus_base_test.svh"
+`include "data_subsystem_base_test.svh"
 ```
 
 ### 3.3 在 base test 中临时打印 item `已完成`
 
-临时修改 `simple_bus_base_test.run_phase`：
+临时修改 `data_subsystem_base_test.run_phase`：
 
 ```systemverilog
 simple_bus_item tr;
@@ -620,7 +620,7 @@ phase.drop_objection(this);
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_sequencer.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_sequencer.svh
 ```
 
 建议骨架：
@@ -640,7 +640,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_smoke_seq.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_smoke_seq.svh
 ```
 
 建议骨架：
@@ -699,13 +699,13 @@ endclass
 
 ### 4.3 接入 package `已完成`
 
-修改 `simple_bus_pkg.sv`：
+修改 `data_subsystem_pkg.sv`：
 
 ```systemverilog
 `include "simple_bus_item.svh"
 `include "simple_bus_sequencer.svh"
 `include "simple_bus_smoke_seq.svh"
-`include "simple_bus_base_test.svh"
+`include "data_subsystem_base_test.svh"
 ```
 
 ### 4.4 base test 临时启动 sequence `已完成`
@@ -737,7 +737,7 @@ seq = simple_bus_smoke_seq::type_id::create("seq");
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_driver.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_driver.svh
 ```
 
 建议骨架：
@@ -852,14 +852,14 @@ endclass
 
 ### 5.2 接入 package `已完成`
 
-修改 `simple_bus_pkg.sv`：
+修改 `data_subsystem_pkg.sv`：
 
 ```systemverilog
 `include "simple_bus_item.svh"
 `include "simple_bus_sequencer.svh"
 `include "simple_bus_smoke_seq.svh"
 `include "simple_bus_driver.svh"
-`include "simple_bus_base_test.svh"
+`include "data_subsystem_base_test.svh"
 ```
 
 ### 5.3 验证节点 `已完成`
@@ -879,7 +879,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_monitor.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_monitor.svh
 ```
 
 建议骨架：
@@ -967,7 +967,7 @@ endclass
 
 ### 6.2 接入 package `已完成`
 
-修改 `simple_bus_pkg.sv`：
+修改 `data_subsystem_pkg.sv`：
 
 ```systemverilog
 `include "simple_bus_item.svh"
@@ -975,7 +975,7 @@ endclass
 `include "simple_bus_smoke_seq.svh"
 `include "simple_bus_driver.svh"
 `include "simple_bus_monitor.svh"
-`include "simple_bus_base_test.svh"
+`include "data_subsystem_base_test.svh"
 ```
 
 ### 6.3 验证节点 `已完成`
@@ -995,7 +995,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_agent.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_agent.svh
 ```
 
 建议骨架：
@@ -1034,18 +1034,18 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_env.svh
+uvm/v6_0/data_subsystem/tb/data_subsystem_env.svh
 ```
 
 建议骨架：
 
 ```systemverilog
-class simple_bus_env extends uvm_env;
-    `uvm_component_utils(simple_bus_env)
+class data_subsystem_env extends uvm_env;
+    `uvm_component_utils(data_subsystem_env)
 
     simple_bus_agent agent;
 
-    function new(string name = "simple_bus_env", uvm_component parent = null);
+    function new(string name = "data_subsystem_env", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
@@ -1067,24 +1067,24 @@ agent.monitor.item_ap.connect(scoreboard.item_export);
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/tests/simple_bus_base_test.svh
+uvm/v6_0/data_subsystem/tb/tests/data_subsystem_base_test.svh
 ```
 
 建议更新为：
 
 ```systemverilog
-class simple_bus_base_test extends uvm_test;
-    `uvm_component_utils(simple_bus_base_test)
+class data_subsystem_base_test extends uvm_test;
+    `uvm_component_utils(data_subsystem_base_test)
 
-    simple_bus_env env;
+    data_subsystem_env env;
 
-    function new(string name = "simple_bus_base_test", uvm_component parent = null);
+    function new(string name = "data_subsystem_base_test", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
-        env = simple_bus_env::type_id::create("env", this);
+        env = data_subsystem_env::type_id::create("env", this);
     endfunction
 
     task run_phase(uvm_phase phase);
@@ -1101,7 +1101,7 @@ endclass
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/top/tb_simple_bus_uvm_top.sv
+uvm/v6_0/data_subsystem/tb/top/tb_data_subsystem_uvm_top.sv
 ```
 
 在 `run_test()` 前分别设置 driver 和 monitor 使用的 virtual interface。两者使用不同 modport 类型，因此 `set/get` 的参数化类型必须完全一致：
@@ -1135,7 +1135,7 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 
 ### 7.5 接入 package `已完成`
 
-修改 `simple_bus_pkg.sv` include 顺序：
+修改 `data_subsystem_pkg.sv` include 顺序：
 
 ```systemverilog
 `include "simple_bus_item.svh"
@@ -1144,8 +1144,8 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 `include "simple_bus_driver.svh"
 `include "simple_bus_monitor.svh"
 `include "simple_bus_agent.svh"
-`include "simple_bus_env.svh"
-`include "simple_bus_base_test.svh"
+`include "data_subsystem_env.svh"
+`include "data_subsystem_base_test.svh"
 ```
 
 ### 7.6 验证节点 `已完成`
@@ -1165,7 +1165,7 @@ uvm_config_db #(virtual simple_bus_if.monitor)::set(null, "*", "vif", simple_bus
 修改：
 
 ```text
-uvm/v6_0/simple_bus/sim/filelist.f
+uvm/v6_0/data_subsystem/sim/filelist.f
 ```
 
 建议顺序：
@@ -1186,8 +1186,8 @@ uvm/v6_0/simple_bus/sim/filelist.f
 
 ../tb/interfaces/simple_bus_if.sv
 ../tb/interfaces/data_subsystem_cfg_if.sv
-../tb/pkg/simple_bus_pkg.sv
-../tb/top/tb_simple_bus_uvm_top.sv
+../tb/pkg/data_subsystem_pkg.sv
+../tb/top/tb_data_subsystem_uvm_top.sv
 ```
 
 `simple_bus_if` 是通用 bus 协议 interface；`data_subsystem_cfg_if` 只承载 v6.0 DUT 的 per-target delay 配置。两者分开，避免 simple bus agent 绑定 `data_subsystem` 的验证专用端口。
@@ -1197,7 +1197,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/interfaces/data_subsystem_cfg_if.sv
+uvm/v6_0/data_subsystem/tb/interfaces/data_subsystem_cfg_if.sv
 ```
 
 建议骨架：
@@ -1237,7 +1237,7 @@ endinterface
 
 ### 8.3 UVM top 增加 DUT 连接信号和配置 interface `已完成`
 
-在 `tb/top/tb_simple_bus_uvm_top.sv` 中声明：
+在 `tb/top/tb_data_subsystem_uvm_top.sv` 中声明：
 
 ```systemverilog
 logic                      dmem_we;
@@ -1366,16 +1366,16 @@ simple_ram u_simple_ram (
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_smoke_test.svh
+uvm/v6_0/data_subsystem/tb/data_subsystem_simple_bus_smoke_test.svh
 ```
 
 建议骨架：
 
 ```systemverilog
-class simple_bus_smoke_test extends simple_bus_base_test;
-    `uvm_component_utils(simple_bus_smoke_test)
+class data_subsystem_simple_bus_smoke_test extends data_subsystem_base_test;
+    `uvm_component_utils(data_subsystem_simple_bus_smoke_test)
 
-    function new(string name = "simple_bus_smoke_test", uvm_component parent = null);
+    function new(string name = "data_subsystem_simple_bus_smoke_test", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
@@ -1392,7 +1392,7 @@ endclass
 
 ### 8.7 接入 package `已完成`
 
-修改 `simple_bus_pkg.sv` include 顺序：
+修改 `data_subsystem_pkg.sv` include 顺序：
 
 ```systemverilog
 `include "simple_bus_item.svh"
@@ -1401,24 +1401,24 @@ endclass
 `include "simple_bus_driver.svh"
 `include "simple_bus_monitor.svh"
 `include "simple_bus_agent.svh"
-`include "simple_bus_env.svh"
-`include "simple_bus_base_test.svh"
-`include "simple_bus_smoke_test.svh"
+`include "data_subsystem_env.svh"
+`include "data_subsystem_base_test.svh"
+`include "data_subsystem_simple_bus_smoke_test.svh"
 ```
 
 ### 8.8 更新 run_all `已完成`
 
-`uvm/v6_0/simple_bus/sim/run_all.sh` 增加：
+`uvm/v6_0/data_subsystem/sim/run_all.sh` 增加：
 
 ```bash
-./run_test.sh simple_bus_smoke_test 1
+./run_test.sh data_subsystem_simple_bus_smoke_test 1
 ```
 
 ### 8.9 验证节点 `已完成`
 
 本章完成标准：
 
-- VCS 能跑 `simple_bus_smoke_test`。
+- VCS 能跑 `data_subsystem_simple_bus_smoke_test`。
 - driver 发出 DMEM write/read。
 - monitor 能观察到 request/response。
 - `data_subsystem_cfg_if` 默认值为 0，普通 smoke 保持 0 wait-state。
@@ -1433,7 +1433,7 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_scoreboard.svh
+uvm/v6_0/data_subsystem/tb/simple_bus_scoreboard.svh
 ```
 
 建议骨架：
@@ -1517,19 +1517,19 @@ endclass
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/simple_bus_env.svh
+uvm/v6_0/data_subsystem/tb/data_subsystem_env.svh
 ```
 
 建议更新：
 
 ```systemverilog
-class simple_bus_env extends uvm_env;
-    `uvm_component_utils(simple_bus_env)
+class data_subsystem_env extends uvm_env;
+    `uvm_component_utils(data_subsystem_env)
 
     simple_bus_agent      agent;
     simple_bus_scoreboard scoreboard;
 
-    function new(string name = "simple_bus_env", uvm_component parent = null);
+    function new(string name = "data_subsystem_env", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
@@ -1548,7 +1548,7 @@ endclass
 
 ### 9.3 接入 package  `已完成`
 
-修改 `simple_bus_pkg.sv` include 顺序：
+修改 `data_subsystem_pkg.sv` include 顺序：
 
 ```systemverilog
 `include "simple_bus_item.svh"
@@ -1558,16 +1558,16 @@ endclass
 `include "simple_bus_monitor.svh"
 `include "simple_bus_agent.svh"
 `include "simple_bus_scoreboard.svh"
-`include "simple_bus_env.svh"
-`include "simple_bus_base_test.svh"
-`include "simple_bus_smoke_test.svh"
+`include "data_subsystem_env.svh"
+`include "data_subsystem_base_test.svh"
+`include "data_subsystem_simple_bus_smoke_test.svh"
 ```
 
 ### 9.4 验证节点 `已完成`
 
 本章完成标准：
 
-- `simple_bus_smoke_test` 能自动 PASS/FAIL。
+- `data_subsystem_simple_bus_smoke_test` 能自动 PASS/FAIL。
 - 错误时 scoreboard 打印 addr、expected、actual。
 - DMEM 基本 word write/read 通过。
 
@@ -1581,10 +1581,10 @@ endclass
 新增：
 
 ```text
-uvm/v6_0/simple_bus/tb/sva/simple_bus_sva.svh
+uvm/v6_0/data_subsystem/tb/sva/simple_bus_sva.svh
 ```
 
-`simple_bus_sva.svh` 不是独立 module，也不属于 `simple_bus_pkg`。它是由
+`simple_bus_sva.svh` 不是独立 module，也不属于 `data_subsystem_pkg`。它是由
 `simple_bus_if.sv` 在 interface 内部文本 include 的代码片段；预处理后其中的
 property/assertion 与 interface 信号处于同一作用域，可以直接使用 `clk_i`、`rst_n_i`、
 `req_i`、`req_ready_o` 和 `resp_o`。`.svh` 不作为独立源文件加入 filelist。
@@ -1643,8 +1643,8 @@ property/assertion 与 interface 信号处于同一作用域，可以直接使�
 修改：
 
 ```text
-uvm/v6_0/simple_bus/tb/interfaces/simple_bus_if.sv
-uvm/v6_0/simple_bus/sim/filelist.f
+uvm/v6_0/data_subsystem/tb/interfaces/simple_bus_if.sv
+uvm/v6_0/data_subsystem/sim/filelist.f
 ```
 
 在 `simple_bus_if.sv` 的 `endinterface` 前加入：
@@ -1663,7 +1663,7 @@ uvm/v6_0/simple_bus/sim/filelist.f
 +incdir+../tb/sva
 ```
 
-断言应放在 interface 内，而非 `tb_simple_bus_uvm_top.sv`：它们描述的是可复用的 simple
+断言应放在 interface 内，而非 `tb_data_subsystem_uvm_top.sv`：它们描述的是可复用的 simple
 bus 协议，使用 interface 作用域信号；top 只负责实例化 interface、DUT 和 testbench model。
 未来若要检查 `data_subsystem` 内部实现状态，再在 `tb/sva` 新增独立 assertion module 和
 bind 文件，本章不提前建立。
@@ -1673,7 +1673,7 @@ bind 文件，本章不提前建立。
 `run_test.sh` 已支持通过 shell 环境变量控制 VCS 编译宏：
 
 ```bash
-ASSERT_ON=1 uvm/v6_0/simple_bus/sim/run_test.sh simple_bus_smoke_test 1
+ASSERT_ON=1 uvm/v6_0/data_subsystem/sim/run_test.sh data_subsystem_simple_bus_smoke_test 1
 ```
 
 该变量只对本条命令生效；脚本在 `ASSERT_ON=1` 时加入 `+define+ASSERT_ON`，并使用与未开启
@@ -1703,7 +1703,7 @@ spec 和自动检查边界。
 
 本章完成标准：
 
-- `simple_bus_smoke_test` 在基础和状态型 SVA 同时打开时通过。
+- `data_subsystem_simple_bus_smoke_test` 在基础和状态型 SVA 同时打开时通过。
 - assertion action block 使用清晰名称和 `[SVA]` 日志前缀；故障注入仅作为可选调试，不作为本章强制完成标准。
 - 关闭 `ASSERT_ON` 时不编译 assertion 状态逻辑，普通 smoke 仍可运行。
 - 不新增 UVM coverage collector；coverage 保持第 16 章实现。
@@ -1725,7 +1725,7 @@ spec 和自动检查边界。
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/transaction/simple_bus_transfer.svh
+uvm/v6_0/data_subsystem/tb/transaction/simple_bus_transfer.svh
 ~~~
 
 `simple_bus_transfer` 只由 monitor 创建，表达 interface 上实际完成的一笔 transaction：
@@ -1793,7 +1793,7 @@ package include 顺序中，`simple_bus_transfer.svh` 必须在 monitor、scoreb
 
 ### 11.5 验证节点 `已完成`
 
-- 普通 `simple_bus_smoke_test` 继续通过。
+- 普通 `data_subsystem_simple_bus_smoke_test` 继续通过。
 - scoreboard 仍能检查两组 DMEM word write/read。
 - driver 日志显示 planned item，monitor 日志显示 observed transfer，二者类型和文案不混用。
 - monitor 的首笔 initial idle 口径和后续 transaction idle 口径保持 spec 当前定义。
@@ -1809,10 +1809,10 @@ package include 顺序中，`simple_bus_transfer.svh` 必须在 monitor、scoreb
 继续使用：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/interfaces/resp_delay_cfg_if.sv
+uvm/v6_0/data_subsystem/tb/interfaces/wrapper_if.sv
 ~~~
 
-其中的 `resp_delay_cfg_if` 仍是 wrapper cfg driver 与 DUT 四组
+其中的 `wrapper_if` 仍是 wrapper cfg driver 与 DUT 四组
 `*_resp_delay_cycles_i` 之间的物理连接，保留：
 
 - `rst_resp_delay()`：所有 target delay 恢复为 0。
@@ -1833,16 +1833,16 @@ bus driver 不直接取得该 vif。
 新增目录：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/agent/wrapper_cfg
+uvm/v6_0/data_subsystem/tb/agent/wrapper
 ~~~
 
 新增类：
 
-data_subsystem_resp_delay_wrapper_cfg_item.svh `已完成`
-data_subsystem_resp_delay_wrapper_cfg_sequence.svh `已完成`
-data_subsystem_resp_delay_wrapper_cfg_sequencer.svh `已完成`
+wrapper_item.svh `已完成`
+wrapper_sequence.svh `已完成`
+wrapper_sequencer.svh `已完成`
 
-`data_subsystem_resp_delay_wrapper_cfg_item` 至少包含：
+`wrapper_item` 至少包含：
 
 ~~~systemverilog
 rand soc_pkg::target_e target;
@@ -1862,8 +1862,8 @@ cfg sequence 负责构造并提交 cfg item，不直接访问 virtual interface�
 新增：
 
 ~~~text
-data_subsystem_resp_delay_wrapper_cfg_driver.svh
-data_subsystem_resp_delay_wrapper_cfg_agent.svh
+wrapper_driver.svh
+wrapper_agent.svh
 ~~~
 
 cfg driver：
@@ -1876,7 +1876,7 @@ cfg driver：
 - 对手动赋值绕过 random constraint 的 `delay_cycles` 做最终合法性检查：负数（包括
   `-1` 未初始化哨兵）报 `uvm_fatal`；大于 127 时报告 `uvm_warning` 并饱和为 127。
   调用 interface 和发布 `applied_cfg_ap` 时均使用规范化后的 clone，保证 checker 记录的 expected state 与实际施加给 DUT 的值一致。
-- 调用 `resp_delay_cfg_if.set_target_resp_delay()` 实际驱动配置。
+- 调用 `wrapper_if.set_target_resp_delay()` 实际驱动配置。
 - 完成配置后发布 cfg item 的 clone 到 `applied_cfg_ap`，再调用 `item_done()`。
 - 不驱动 simple bus request，也不等待 bus response。
 
@@ -1892,16 +1892,16 @@ delay 间接验证配置是否真正生效。
 env 新增：
 
 ~~~text
-data_subsystem_resp_delay_wrapper_cfg_agent wrapper_cfg_agent;
+wrapper_agent wrapper_agent;
 ~~~
 
 top 的 config_db 路径改为 wrapper cfg driver，例如：
 
 ~~~text
-uvm_test_top.env.wrapper_cfg_agent.driver
+uvm_test_top.env.wrapper_agent.driver
 ~~~
 
-package/filelist 按依赖顺序加入新目录和 class。普通 `simple_bus_smoke_test` 不启动 cfg
+package/filelist 按依赖顺序加入新目录和 class。普通 `data_subsystem_simple_bus_smoke_test` 不启动 cfg
 sequence，继续使用 cfg driver 在 reset 期间初始化的 0 delay。
 
 ### 12.5 验证节点 `已完成`
@@ -1909,26 +1909,26 @@ sequence，继续使用 cfg driver 在 reset 期间初始化的 0 delay。
 - cfg item/sequence/sequencer/driver/agent 能编译并进入 UVM topology。
 - wrapper cfg driver 能将四个 target 分别配置为确定值。
 - 普通 smoke 不使用 cfg agent traffic 时仍保持 0 wait-state。
-- simple bus driver、monitor、scoreboard 中不出现 `resp_delay_cfg_if` 依赖。
+- simple bus driver、monitor、scoreboard 中不出现 `wrapper_if` 依赖。
 
 ## 13. virtual sequencer 与确定性 wrapper-delay 测试 `执行中`
 
 目标：由 virtual sequence 协调 wrapper cfg agent 和 simple bus agent，保证每笔 delay 配置
 先完成、随后才发对应 bus request，并且只在没有 outstanding transaction 时切换配置。
 
-### 13.1 新增 virtual sequencer
+### 13.1 新增 virtual sequencer `已完成`
 
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/virtual/simple_bus_virtual_sequencer.svh
+uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_virtual_sequencer.svh
 ~~~
 
 virtual sequencer 不驱动 interface，只保存两个 sequencer 句柄：
 
 ~~~systemverilog
 simple_bus_sequencer bus_sequencer;
-data_subsystem_resp_delay_wrapper_cfg_sequencer wrapper_cfg_sequencer;
+wrapper_sequencer wrapper_sequencer;
 ~~~
 
 env 创建 virtual sequencer，并在 `connect_phase` 将两个 agent 的 sequencer 句柄赋给它。
@@ -1940,7 +1940,7 @@ virtual sequencer 作为跨 agent 场景的统一入口；普通只访问 bus �
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/virtual/simple_bus_virtual_sequence_base.svh
+uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_virtual_sequence_base.svh
 ~~~
 
 基类提供两个 helper：
@@ -1968,8 +1968,8 @@ sequence 不直接操作 cfg vif，也不在两个 item 之间插入隐含时钟
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/virtual/simple_bus_wrapper_delay_vseq.svh
-uvm/v6_0/simple_bus/tb/tests/simple_bus_wrapper_delay_test.svh
+uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_wrapper_delay_vseq.svh
+uvm/v6_0/data_subsystem/tb/tests/data_subsystem_wrapper_delay_test.svh
 ~~~
 
 第一版只访问 DMEM word，并在一次 test 内按以下顺序配置：
@@ -1983,7 +1983,7 @@ delay 0 -> write/read
 ~~~
 
 每组使用不同地址/数据，scoreboard 必须继续验证数据正确性。test 只创建并启动 virtual
-sequence，不取得 `resp_delay_cfg_if`。
+sequence，不取得 `wrapper_if`。
 
 不再把 `+DMEM_DELAY=N` 作为第 11～16 章的主验证入口。命令行固定 delay 可在以后作为
 debug convenience 添加，但固定、动态和随机回归统一走 wrapper cfg agent，避免形成两套核心
@@ -1991,7 +1991,7 @@ debug convenience 添加，但固定、动态和随机回归统一走 wrapper cf
 
 ### 13.4 package、filelist 和 run_all 接入
 
-增加 `tb/transaction`、`tb/agent/wrapper_cfg` 和 `tb/virtual` include path，并按以下依赖顺序
+增加 `tb/transaction`、`tb/agent/wrapper` 和 `tb/virtual` include path，并按以下依赖顺序
 组织 package：
 
 ~~~text
@@ -2006,7 +2006,7 @@ virtual sequences
 tests
 ~~~
 
-`run_all.sh` 增加 `simple_bus_wrapper_delay_test`。正常 smoke、SVA smoke 和 wrapper delay
+`run_all.sh` 增加 `data_subsystem_wrapper_delay_test`。正常 smoke、SVA smoke 和 wrapper delay
 test 分开保留，失败时能快速区分基础 bus、协议 invariant 和 wrapper 配置问题。
 
 ### 13.5 验证节点
@@ -2027,13 +2027,13 @@ test 分开保留，失败时能快速区分基础 bus、协议 invariant 和 wr
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/checker/data_subsystem_resp_delay_wrapper_checker.svh
+uvm/v6_0/data_subsystem/tb/checker/data_subsystem_resp_delay_wrapper_checker.svh
 ~~~
 
 checker 接收两路 analysis stream：
 
 ~~~text
-wrapper_cfg_agent.driver.applied_cfg_ap
+wrapper_agent.driver.applied_cfg_ap
     -> wrapper checker cfg input
 
 simple_bus_monitor.transfer_ap
@@ -2090,7 +2090,7 @@ self-checker，避免把 driver 调度错误误判为 DUT 功能错误。
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/checker/simple_bus_driver_execution_checker.svh
+uvm/v6_0/data_subsystem/tb/checker/simple_bus_driver_execution_checker.svh
 ~~~
 
 输入：
@@ -2119,8 +2119,8 @@ checker 只验证 UVM stimulus 执行，不检查 rdata/error，也不把 mismat
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/virtual/simple_bus_idle_gap_vseq.svh
-uvm/v6_0/simple_bus/tb/tests/simple_bus_idle_gap_test.svh
+uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_idle_gap_vseq.svh
+uvm/v6_0/data_subsystem/tb/tests/data_subsystem_idle_gap_test.svh
 ~~~
 
 virtual sequence 先通过 wrapper cfg agent 把 DMEM delay 设为 0，再发送一笔 warm-up
@@ -2145,8 +2145,8 @@ transaction；随后按 0/1/3/7/0 设置 bus item 的 `idle_cycles`。sequence �
 新增：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/virtual/simple_bus_random_delay_vseq.svh
-uvm/v6_0/simple_bus/tb/tests/simple_bus_random_delay_test.svh
+uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_random_delay_vseq.svh
+uvm/v6_0/data_subsystem/tb/tests/data_subsystem_random_delay_test.svh
 ~~~
 
 第一版仍限定为合法 DMEM word traffic：
@@ -2166,7 +2166,7 @@ request 和 idle gap；random sequence 本身不重复实现 checker 逻辑。
 新增目录和组件：
 
 ~~~text
-uvm/v6_0/simple_bus/tb/coverage/simple_bus_coverage.svh
+uvm/v6_0/data_subsystem/tb/coverage/simple_bus_coverage.svh
 ~~~
 
 `simple_bus_coverage` 订阅 monitor 的 `simple_bus_transfer`，只采样实际完成的 transaction。
@@ -2293,7 +2293,7 @@ env 创建 coverage subscriber，并将同一 monitor transfer AP 连接给它�
 
 - README 当前特性同步。
 - `docs/08xx/0835` 若实现口径变化再补充。
-- `uvm/v6_0/simple_bus/tb` 使用说明。
-- `uvm/v6_0/simple_bus/sim` 脚本说明。
+- `uvm/v6_0/data_subsystem/tb` 使用说明。
+- `uvm/v6_0/data_subsystem/sim` 脚本说明。
 - 最终保存 v6.0 DUT RTL snapshot，并把 UVM filelist 从开发期主工程 RTL 切回归档镜像。
 - 阶段完成标准检查。

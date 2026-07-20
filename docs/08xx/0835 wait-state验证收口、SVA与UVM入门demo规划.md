@@ -172,9 +172,9 @@ Verilator 的优势是快。它适合每次 RTL 修改后快速确认“CPU 还�
 0835 新增的验证能力建议放在 VCS 路径：
 
 ```text
-uvm/v6_0/simple_bus/dut
-uvm/v6_0/simple_bus/sim
-uvm/v6_0/simple_bus/tb
+uvm/v6_0/data_subsystem/dut
+uvm/v6_0/data_subsystem/sim
+uvm/v6_0/data_subsystem/tb
 ```
 
 当前 simple data bus 语义绑定项目 v6.0 release，因此保存最小 DUT RTL/ABI 快照，并让验证源码和仿真脚本使用同一个版本化工作区。不同 release 若接口或协议语义发生变化，应建立独立目录和 verification spec，不应把同名 package/class/module 混入同一个 filelist。
@@ -647,17 +647,17 @@ uvm/
       tb/
         simple_bus_if.sv
         simple_bus_assert.svh
-        simple_bus_pkg.sv
+        data_subsystem_pkg.sv
         simple_bus_item.svh
         simple_bus_sequencer.svh
         simple_bus_driver.svh
         simple_bus_monitor.svh
         simple_bus_agent.svh
         simple_bus_scoreboard.svh
-        simple_bus_env.svh
-        simple_bus_base_test.svh
-        simple_bus_smoke_test.svh
-        simple_bus_random_wait_test.svh
+        data_subsystem_env.svh
+        data_subsystem_base_test.svh
+        data_subsystem_simple_bus_smoke_test.svh
+        data_subsystem_simple_bus_random_wait_test.svh
         tb_data_subsystem_uvm.sv
       sim/
         filelist.f
@@ -715,7 +715,7 @@ sim/soc_c
 新目录只负责：
 
 ```text
-uvm/v6_0/simple_bus/sim
+uvm/v6_0/data_subsystem/sim
 ```
 
 不要把 UVM 编译选项塞进现有 Verilator 脚本，也不要让现有 directed test 依赖 VCS。
