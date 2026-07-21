@@ -8,6 +8,7 @@
 +incdir+../tb/seq
 +incdir+../tb/sva
 +incdir+../tb/tests
++incdir+../tb/virtual
 
 // DUT 公共 package 必须先于使用它们的 UVM package 编译。
 ../dut/rtl/common/core_pkg.sv

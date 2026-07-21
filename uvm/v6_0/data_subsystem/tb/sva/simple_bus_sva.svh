@@ -93,7 +93,7 @@
         @(posedge clk_i) disable iff (!rst_n_i)
             (item_pending_q) |-> !item_accept_fire;
     endproperty
-    ap__no_second_outstanding: assert property(p_no_second_outstanding)
+    ap_no_second_outstanding: assert property(p_no_second_outstanding)
         else $error("[SVA] Bus accepts a new req while there is an outstanding req");
     
     // resp 一定有对应的 req,负责为 orphan

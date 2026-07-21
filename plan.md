@@ -1911,7 +1911,7 @@ sequence，继续使用 cfg driver 在 reset 期间初始化的 0 delay。
 - 普通 smoke 不使用 cfg agent traffic 时仍保持 0 wait-state。
 - simple bus driver、monitor、scoreboard 中不出现 `wrapper_if` 依赖。
 
-## 13. virtual sequencer 与确定性 wrapper-delay 测试 `执行中`
+## 13. virtual sequencer 与确定性 wrapper-delay 测试 `已完成`
 
 目标：由 virtual sequence 协调 wrapper cfg agent 和 simple bus agent，保证每笔 delay 配置
 先完成、随后才发对应 bus request，并且只在没有 outstanding transaction 时切换配置。
@@ -1935,35 +1935,35 @@ env 创建 virtual sequencer，并在 `connect_phase` 将两个 agent 的 sequen
 virtual sequencer 作为跨 agent 场景的统一入口；普通只访问 bus 的 smoke 仍可直接启动在
 `bus_sequencer` 上。
 
-### 13.2 新增 virtual sequence 基类
+### 13.2 新增 virtual sequence 基类 `已完成`
 
 新增：
 
 ~~~text
-uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_virtual_sequence_base.svh
+uvm/v6_0/data_subsystem/tb/seq/data_subsystem_base_virtual_sequence.svh
 ~~~
 
-基类提供两个 helper：
+基类声明 `p_sequencer` 为 `data_subsystem_virtual_sequencer`，并在 `body()` 中检查 virtual sequencer 及两个物理 sequencer 句柄均已连接。派生 virtual sequence 必须先调用 `super.body()`。
 
-- `apply_wrapper_delay(target, delay)`：在 wrapper cfg sequencer 上提交一笔 cfg item，阻塞
-  等待 cfg driver 完成。
-- `send_bus_item(...)`：在 bus sequencer 上提交一笔 bus item，阻塞等待 bus driver 收到
-  response 并 `item_done()`。
+基类不封装 wrapper 或 bus transaction 的启动。派生 virtual sequence 应按场景显式创建并启动
+`wrapper_set_seq` 与已有的 multi-item simple bus sequence；这样跨 agent 的时序关系保持可见，且
+不引入与 physical sequence 重叠的 helper。
 
-确定性场景统一采用：
+固定 delay 场景的时序为：
 
 ~~~text
-apply wrapper config
-    -> cfg driver item_done
-    -> send bus item
-    -> bus driver waits response and item_done
+start wrapper_set_seq
+    -> wrapper driver item_done
+    -> start an existing multi-item bus sequence
+    -> bus driver completes all items in that sequence
     -> next wrapper config
 ~~~
 
-sequence 不直接操作 cfg vif，也不在两个 item 之间插入隐含时钟等待。同步关系由两个 driver
-的 `item_done()` 建立。
+virtual sequence 不直接操作 wrapper vif，也不在 item 之间插入隐含时钟等待。同步关系由两个 driver
+的 `item_done()` 和子 sequence 的 `start()` 返回建立。后续需要逐笔随机改变 delay 时，再按逐笔
+配置与逐笔 bus 激励的实际需求扩展专用 sequence，不提前引入与现有 multi-item sequence 重叠的抽象。
 
-### 13.3 新增确定性 delay virtual sequence/test
+### 13.3 新增 somoke delay virtual sequence/test `已完成`
 
 新增：
 
@@ -1989,7 +1989,7 @@ sequence，不取得 `wrapper_if`。
 debug convenience 添加，但固定、动态和随机回归统一走 wrapper cfg agent，避免形成两套核心
 配置路径。
 
-### 13.4 package、filelist 和 run_all 接入
+### 13.4 package、filelist 和 run_all 接入 `已完成`
 
 增加 `tb/transaction`、`tb/agent/wrapper` 和 `tb/virtual` include path，并按以下依赖顺序
 组织 package：
@@ -2009,7 +2009,7 @@ tests
 `run_all.sh` 增加 `data_subsystem_wrapper_delay_test`。正常 smoke、SVA smoke 和 wrapper delay
 test 分开保留，失败时能快速区分基础 bus、协议 invariant 和 wrapper 配置问题。
 
-### 13.5 验证节点
+### 13.5 验证节点 `已完成`
 
 - virtual sequence 能协调两个 sequencer，不直接访问任何 vif。
 - 每次 wrapper 配置都发生在上一笔 bus response 完成之后。
@@ -2017,7 +2017,7 @@ test 分开保留，失败时能快速区分基础 bus、协议 invariant 和 wr
 - scoreboard 在所有 delay 下仍通过。
 - SVA 不出现 second outstanding、orphan response 或 payload stable 误报。
 
-## 14. 独立 response-delay wrapper checker
+## 14. 独立 response-delay wrapper checker `执行中`
 
 目标：建立与 bus 功能 scoreboard 并列的 checker，自动比较 wrapper cfg agent 已执行的
 配置和 monitor 观察到的实际 response delay。

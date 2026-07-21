@@ -1,5 +1,5 @@
 //------------------------------------------------------------------------------
-// 文件      : uvm/v6_0/data_subsystem/tb/env/data_subsystem_virtual_sequencer.svh
+// 文件      : uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_virtual_sequencer.svh
 // 用途      : data_subsystem 跨 agent virtual sequence 的统一 sequencer 入口。
 //
 // 说明：
@@ -20,4 +20,5 @@ class data_subsystem_virtual_sequencer extends uvm_sequencer;
     function new(string name = "data_subsystem_virtual_sequencer", uvm_component parent);
         super.new(name, parent);
     endfunction
+
 endclass

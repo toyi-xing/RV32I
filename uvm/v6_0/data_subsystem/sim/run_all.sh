@@ -23,6 +23,7 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 TESTS=(
     data_subsystem_base_test
     simple_bus_smoke_test
+    data_subsystem_smoke_test
 )
 
 SEED=1
