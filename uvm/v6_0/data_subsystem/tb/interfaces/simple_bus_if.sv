@@ -3,13 +3,13 @@
 // 用途      : v6.0 simple data bus UVM driver/monitor 与 DUT 共用的协议接口。
 //
 // 规范：
-//   - request 由 master driver 驱动，ready/response 由 DUT 驱动。
+//   - request 由 driver 驱动，ready/response 由 DUT 驱动。
 //   - driver 和 monitor 通过独立 clocking block 统一驱动与采样时序。
-//   - modport 限制 active master 和 passive monitor 的可见方向。
+//   - modport 限制 active driver 和 passive monitor 的可见方向。
 //
 // 功能：
 //   - 聚合 simple data bus 的 request、ready 和 response 信号。
-//   - 提供 master driver 和 monitor 的 clocking block。
+//   - 提供 driver 和 monitor 的 clocking block。
 //   - 在 ASSERT_ON 打开时检查 reset、X/Z 和 backpressure payload stable。
 //------------------------------------------------------------------------------
 `default_nettype none
@@ -30,7 +30,7 @@ interface simple_bus_if (
     logic  req_valid_observed;
     assign req_valid_observed = req_i.valid;
 
-    clocking master_drv_cb @(posedge clk_i);
+    clocking drv_cb @(posedge clk_i);
         default input #1step output #1ns;
         input  req_ready_o;
         input  req_valid_observed;
@@ -45,8 +45,8 @@ interface simple_bus_if (
         input  resp_o;
     endclocking
 
-    modport master_drv_mp (
-        clocking master_drv_cb,
+    modport drv_mp (
+        clocking drv_cb,
         input    clk_i,
         input    rst_n_i
     );

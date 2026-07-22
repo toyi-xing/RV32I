@@ -17,7 +17,7 @@ class data_subsystem_virtual_sequencer extends uvm_sequencer;
     simple_bus_sequencer bus_sequencer;
     wrapper_sequencer    wrp_sequencer;
 
-    function new(string name = "data_subsystem_virtual_sequencer", uvm_component parent);
+    function new(string name = "data_subsystem_virtual_sequencer", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 

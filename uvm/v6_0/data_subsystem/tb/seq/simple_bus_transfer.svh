@@ -53,8 +53,8 @@ class simple_bus_transfer extends uvm_sequence_item;
     //-----------------------------------------------------------------------
 
     function string transfer2string(string object_kind = "simple_bus_transfer");
-    return $sformatf({observed_item.item2string(object_kind)," req_cycle=%0d, accept_cycle=%0d",
-                      "\n[%s]  slave: rdata=0x%08x error=%0d resp_delay=%0d resp_cycle=%0d"},
+    return $sformatf({observed_item.item2string(object_kind),", req_cycle=%0d, accept_cycle=%0d",
+                      "\n[%s]  slave: rdata=0x%08x error=%0d resp_delay=%0d, resp_cycle=%0d"},
                       req_cycle, accept_cycle,
                       object_kind, rdata, error, resp_delay, resp_cycle);
     endfunction

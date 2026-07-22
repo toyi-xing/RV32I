@@ -4,8 +4,8 @@
 //
 // 规范：
 //   - 只接收 monitor 观察到的完整 transfer，不驱动 DUT 或参与 sequence 仲裁。
-//   - 第一版只检查 DMEM 的 word write/read；MMIO 与 response-delay 由后续专用
-//     checker 覆盖。
+//   - 当前只检查 DMEM 的 word write/read；MMIO 由后续专用 checker 覆盖，
+//     response-delay 由 wrapper_scoreboard 检查。
 //
 // 功能：
 //   - 维护 DMEM 的参考状态，并比较已写地址的后续读响应。
@@ -16,7 +16,7 @@ class simple_bus_scoreboard extends uvm_scoreboard;
 
     `uvm_component_utils(simple_bus_scoreboard)
 
-    uvm_analysis_imp #(simple_bus_transfer, simple_bus_scoreboard) transfer_imp;
+    uvm_analysis_imp #(simple_bus_transfer, simple_bus_scoreboard) tr_imp;
 
     bit [core_pkg::XLEN-1:0] ref_dmem  [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]];
     bit                      ref_valid [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]];
@@ -27,7 +27,7 @@ class simple_bus_scoreboard extends uvm_scoreboard;
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
-        transfer_imp = new("scoreboard_transfer_imp", this);
+        tr_imp = new("bus_tr_imp", this);
     endfunction
 
     // analysis imp 收到 T 后回调

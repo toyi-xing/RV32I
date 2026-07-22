@@ -5,7 +5,8 @@
 // 规范：
 //   - reset 期间将所有 response delay 初始化为 0；reset 释放后才执行普通 cfg item。
 //   - 对 sequence 提交的 delay 进行最终范围检查，并将超过 RTL 范围的值饱和为 127。
-//   - 发布实际应用配置的独立 clone，供后续 wrapper checker 与 observed transfer 配对。
+//   - 发布实际应用配置的独立 clone，供后续配置执行 checker 或 coverage 订阅；当前
+//     wrapper checker 只使用 monitor 观察到的实际配置状态。
 //
 // 功能：
 //   - 通过 `wrapper_if` 配置 DMEM、GPIO0、UART0、TIMER0 的 response delay。
@@ -16,17 +17,17 @@ class wrapper_driver extends uvm_driver #(wrapper_item);
 
     `uvm_component_utils(wrapper_driver)
 
-    virtual wrapper_if vif;
+    virtual wrapper_if.drv_mp vif;
     wrapper_item applied_item;
     uvm_analysis_port #(wrapper_item) applied_item_ap;
 
-    function new(string name = "wrapper_driver", uvm_component parent);
+    function new(string name = "wrapper_driver", uvm_component parent = null);
         super.new(name, parent);
     endfunction
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
-        if (!uvm_config_db#(virtual wrapper_if)::get(this,"","wrapper_vif",vif)) begin
+        if (!uvm_config_db#(virtual wrapper_if.drv_mp)::get(this,"","wrapper_vif",vif)) begin
             `uvm_fatal(get_type_name(), "failed to get wrapper vif")
         end
         applied_item_ap = new("applied_item_ap", this);

@@ -11,8 +11,8 @@
 // 功能：
 //   - 汇总 data_subsystem UVM 环境所需的公共 package 和宏依赖。
 //   - 当前已接入 bus/wrapper transaction、sequence、agent、virtual sequencer、DMEM
-//     scoreboard、env、base test 和 smoke test；后续继续加入 wrapper checker、coverage
-//     与更多派生 test。
+//     scoreboard、wrapper scoreboard、env、base test 和 smoke test；后续继续加入
+//     coverage 与更多派生 test。
 //------------------------------------------------------------------------------
 
 package data_subsystem_pkg;
@@ -27,6 +27,7 @@ package data_subsystem_pkg;
     `include "simple_bus_item.svh"
     `include "simple_bus_transfer.svh"
     `include "wrapper_item.svh"
+    `include "wrapper_transfer.svh"
 
     // seq
     `include "simple_bus_base_sequence.svh"
@@ -36,15 +37,17 @@ package data_subsystem_pkg;
 
     // agent
     `include "simple_bus_sequencer.svh"
-    `include "wrapper_sequencer.svh"
     `include "simple_bus_driver.svh"
-    `include "wrapper_driver.svh"
     `include "simple_bus_monitor.svh"
     `include "simple_bus_agent.svh"
+    `include "wrapper_sequencer.svh"
+    `include "wrapper_driver.svh"
+    `include "wrapper_monitor.svh"
     `include "wrapper_agent.svh"
 
     // checker
     `include "simple_bus_scoreboard.svh"
+    `include "wrapper_scoreboard.svh"
 
     // virtual
     `include "data_subsystem_virtual_sequencer.svh"

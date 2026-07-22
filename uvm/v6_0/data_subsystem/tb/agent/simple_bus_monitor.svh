@@ -18,7 +18,6 @@ class simple_bus_monitor extends uvm_component;
     `uvm_component_utils(simple_bus_monitor)
 
     virtual simple_bus_if.mon_mp vif;
-    simple_bus_transfer tr;                                 // transfer 语柄
     uvm_analysis_port #(simple_bus_transfer) transfer_ap;   // monitor 使用一对多广播端口，scoreboard/coverage 都可以订阅
 
     function new(string name = "simple_bus_monitor", uvm_component parent = null);
@@ -27,14 +26,15 @@ class simple_bus_monitor extends uvm_component;
 
     function void build_phase(uvm_phase phase);
         super.build_phase(phase);
-        if (!uvm_config_db #(virtual simple_bus_if.mon_mp)::get(this,"","vif",vif)) begin
-            `uvm_fatal(get_type_name(), "failed to get monitor vif")
+        if (!uvm_config_db #(virtual simple_bus_if.mon_mp)::get(this,"","simple_bus_vif",vif)) begin
+            `uvm_fatal(get_type_name(), "failed to get bus monitor vif")
         end
         transfer_ap = new("transfer_ap", this);
     endfunction
 
 
     task run_phase(uvm_phase phase);
+        simple_bus_transfer tr;     // transfer 语柄
         bit pending;
         int unsigned cycle_cnt;     // 记录当前拍数
         int unsigned last_resp_cycle; // 记录上一个 transfer 的响应时间
@@ -45,15 +45,15 @@ class simple_bus_monitor extends uvm_component;
             @(posedge vif.clk_i);
             cycle_cnt ++;
         end
-        tr            = simple_bus_transfer::type_id::create("", this); // 创建一个 transfer 对象给 tr 语柄，供第一个 transaction 使用
+        tr            = simple_bus_transfer::type_id::create("tr", this); // 创建一个 transfer 对象给 tr 语柄，供第一个 transaction 使用
         last_resp_cycle = cycle_cnt;
         // rst 后每拍监控 dut 端口情况
         forever begin
             @(vif.mon_cb);
-            cycle_cnt++;
+            cycle_cnt ++;
             if(vif.rst_n_i !== 1'b1) begin  // 测试过程中再次复位，这里复位不清 cycle_cnt
                 pending       = 1'b0;
-                tr            = simple_bus_transfer::type_id::create("", this);
+                tr            = simple_bus_transfer::type_id::create("tr", this);
                 last_resp_cycle = cycle_cnt;
                 continue;
             end
@@ -92,7 +92,7 @@ class simple_bus_monitor extends uvm_component;
                 `uvm_info(get_type_name(), {"monitor observed a bus transfer:",tr.transfer2string()}, UVM_MEDIUM)
                 // 创建一个新的 transfer 对象并记录本次 resp 拍数，供下一个 transaction 使用
                 pending    = 1'b0;
-                tr         = simple_bus_transfer::type_id::create("", this);
+                tr         = simple_bus_transfer::type_id::create("tr", this);
                 last_resp_cycle = cycle_cnt;
             end
         end

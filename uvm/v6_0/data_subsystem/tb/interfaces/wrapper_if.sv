@@ -26,6 +26,27 @@ interface wrapper_if(
     logic [6:0] uart0_resp_delay_cycles;
     logic [6:0] timer0_resp_delay_cycles;
 
+    clocking mon_cb @(posedge clk_i);
+        default input #1step output #1ns;
+        input dmem_resp_delay_cycles;
+        input gpio0_resp_delay_cycles;
+        input uart0_resp_delay_cycles;
+        input timer0_resp_delay_cycles;
+    endclocking
+
+    modport drv_mp (
+        input  clk_i,
+        input  rst_n_i,
+        import rst_resp_delay,  // 把 if 里面定义的 task/function 暴露给使用这个 modport 的模块或类
+        import set_target_resp_delay
+    );
+
+    modport mon_mp (
+        clocking mon_cb,
+        input    clk_i,
+        input    rst_n_i
+    );
+
     task automatic rst_resp_delay();
         dmem_resp_delay_cycles   = '0;
         gpio0_resp_delay_cycles  = '0;

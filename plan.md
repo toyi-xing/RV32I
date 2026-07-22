@@ -2017,12 +2017,12 @@ test 分开保留，失败时能快速区分基础 bus、协议 invariant 和 wr
 - scoreboard 在所有 delay 下仍通过。
 - SVA 不出现 second outstanding、orphan response 或 payload stable 误报。
 
-## 14. 独立 response-delay wrapper checker `执行中`
+## 14. 独立 response-delay wrapper checker `已完成`
 
 目标：建立与 bus 功能 scoreboard 并列的 checker，自动比较 wrapper cfg agent 已执行的
 配置和 monitor 观察到的实际 response delay。
 
-### 14.1 checker 输入与状态
+### 14.1 checker 输入与状态 `已完成`
 
 新增：
 
@@ -2053,7 +2053,7 @@ undefined target 不经过 wrapper，期望 delay 固定为 0。
 可使用两个带后缀的 `uvm_analysis_imp`，或两个 `uvm_tlm_analysis_fifo`；具体写法以 VCS
 兼容性和代码可读性为准，但必须保留两路输入的来源区分。
 
-### 14.2 独立性边界
+### 14.2 独立性边界 `无需改动`
 
 wrapper checker：
 
@@ -2067,7 +2067,7 @@ wrapper checker：
 expected 不一致，checker 能暴露该问题。single outstanding 和 virtual sequence 的顺序约束使
 cfg event 与后续 transfer 可按当前 target state 关联，不需要 transaction ID。
 
-### 14.3 env 接入与验证
+### 14.3 env 接入与验证 `已完成`
 
 env 创建 wrapper checker，并连接 cfg AP 与 transfer AP。确定性 wrapper delay test 必须自动
 产生 match 日志或统计；mismatch 使用 `uvm_error`，打印 target、addr、expected、actual。
@@ -2080,7 +2080,7 @@ env 创建 wrapper checker，并连接 cfg AP 与 transfer AP。确定性 wrappe
 - scoreboard 与 wrapper checker 同时订阅同一 transfer，检查职责不重叠。
 - 普通 0 delay smoke 也经过 checker，默认 expected state 为 0。
 
-## 15. driver execution checker 与 idle-gap 定向验证
+## 15. driver execution checker 与 idle-gap 定向验证 `执行中`
 
 目标：把 UVM master 自身的“计划 item 是否如实出现在 interface”做成独立 testbench
 self-checker，避免把 driver 调度错误误判为 DUT 功能错误。
