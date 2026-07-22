@@ -15,11 +15,13 @@ class data_subsystem_base_vseq extends uvm_sequence;
 
     `uvm_object_utils(data_subsystem_base_vseq)
 
+    int signed num_items;
     // 声明一个 data_subsystem_virtual_sequencer 句柄 "p_sequencer"
     `uvm_declare_p_sequencer(data_subsystem_virtual_sequencer)
 
     function new(string name = "data_subsystem_base_vseq");
         super.new(name);
+        num_items = 1;
     endfunction
 
     task body();

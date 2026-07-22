@@ -24,13 +24,14 @@ class simple_bus_base_seq extends uvm_sequence #(simple_bus_item);
     endfunction
 
     //-----------------------------------------------------------------------
-    // helper
+    // helper 基类提供的通用 helper
     //-----------------------------------------------------------------------
 
-    // 0 空拍的写 word master 指令
+    // 写 word master 指令
     protected task automatic send_write32(
         logic [core_pkg::XLEN-1:0] addr,
-        logic [core_pkg::XLEN-1:0] data
+        logic [core_pkg::XLEN-1:0] data,
+        int unsigned idle_cycles = 0
     );
         req = simple_bus_item::type_id::create("req_write32");
         start_item(req);    // 直接使用 seq 自带的 req 语柄
@@ -38,13 +39,14 @@ class simple_bus_base_seq extends uvm_sequence #(simple_bus_item);
         req.be    = 4'b1111;
         req.addr  = addr;
         req.wdata = data;
-        req.idle_cycles = 0;
+        req.idle_cycles = idle_cycles;
         finish_item(req);
     endtask
     
-    // 0 空拍的读 word master 指令
+    // 读 word master 指令
     protected task automatic send_read32(
-        logic [core_pkg::XLEN-1:0] addr
+        logic [core_pkg::XLEN-1:0] addr,
+        int unsigned idle_cycles = 0
     );
         req = simple_bus_item::type_id::create("req_read32");
         start_item(req);
@@ -52,7 +54,7 @@ class simple_bus_base_seq extends uvm_sequence #(simple_bus_item);
         req.be    = 4'b1111;
         req.addr  = addr;
         req.wdata = '0;
-        req.idle_cycles = 0;
+        req.idle_cycles = idle_cycles;
         finish_item(req);
     endtask
 

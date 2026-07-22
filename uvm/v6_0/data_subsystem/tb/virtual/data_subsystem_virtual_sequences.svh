@@ -61,3 +61,32 @@ class data_subsystem_smoke_vseq extends data_subsystem_base_vseq;
     endtask
 
 endclass
+
+
+//
+class data_subsystem_dmem_random_vseq extends data_subsystem_base_vseq;
+
+    `uvm_object_utils(data_subsystem_dmem_random_vseq)
+
+    simple_bus_dmem_random_access_seq bus_seq;
+    wrapper_dmem_cfg_random_seq       wrp_seq;
+
+
+    function new(string name = "data_subsystem_dmem_random_vseq");
+        super.new(name);
+        num_items = 200;
+    endfunction
+
+    task body();
+        super.body();
+        repeat (num_items) begin
+            bus_seq = simple_bus_dmem_random_access_seq::type_id::create("bus_seq");
+            wrp_seq = wrapper_dmem_cfg_random_seq::type_id::create("wrp_seq");
+            bus_seq.num_items = 1;
+            wrp_seq.num_items = 1;
+            wrp_seq.start(p_sequencer.wrp_sequencer);   // 由 seq 新建 item 对象，seq 保持为本身
+            bus_seq.start(p_sequencer.bus_sequencer);   // 维护同一个地址池，因此 bus_seq 需要保持同一个对象
+        end
+    endtask
+    
+endclass

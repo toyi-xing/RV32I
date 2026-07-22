@@ -25,3 +25,36 @@ class apply_wrapper_cfg_seq extends wrapper_base_seq;
     endtask
 
 endclass
+
+class wrapper_dmem_cfg_random_seq extends wrapper_base_seq;
+
+    `uvm_object_utils(wrapper_dmem_cfg_random_seq)
+
+    function new(string name = "wrapper_dmem_cfg_random_seq");
+        super.new(name);
+        num_items = 200;
+    endfunction
+
+    task body();
+        repeat (num_items) begin
+            req = wrapper_item::type_id::create("req");
+            start_item(req);
+            if (!req.randomize() with {
+                delay_cycles dist {
+                    0:=        10,
+                    1:=        10,
+                    127:=      5,
+                    [2:7]:/    50,
+                    [8:15]:/   10,
+                    [16:63]:/  5,
+                    [64:126]:/ 5
+                };
+                target inside {TARGET_DMEM};
+            }) begin
+                `uvm_fatal(get_type_name(), "failed to randomize wrapper cfg item")
+            end
+            finish_item(req);
+        end
+    endtask
+
+endclass

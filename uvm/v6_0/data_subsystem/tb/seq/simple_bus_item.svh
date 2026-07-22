@@ -36,6 +36,15 @@ class simple_bus_item extends uvm_sequence_item;
         be != 4'b0000;
     }
 
+    // wdata 分布
+    constraint c_wdata_distribution{
+        wdata dist {
+            '0 := 5,
+            '1 := 5,
+            [32'h0000_0001 : 32'hffff_fffe] :/ 90
+        };
+    }
+
     // idle_cycles 范围及分布
     constraint c_idle_cycles_range {
         idle_cycles inside {[0:15]};

@@ -22,6 +22,7 @@ class data_subsystem_env extends uvm_env;
     data_subsystem_virtual_sequencer vseqr;
     simple_bus_scoreboard            bus_scoreboard;
     wrapper_scoreboard               wrp_scoreboard;
+    data_subsystem_coverage          coverage;
 
     function new(string name = "data_subsystem_env", uvm_component parent = null);
         super.new(name, parent);
@@ -34,6 +35,7 @@ class data_subsystem_env extends uvm_env;
         vseqr           = data_subsystem_virtual_sequencer::type_id::create("vseqr",            this);
         bus_scoreboard  = simple_bus_scoreboard::           type_id::create("bus_scoreboard",   this);
         wrp_scoreboard  = wrapper_scoreboard::              type_id::create("wrp_scoreboard",   this);
+        coverage        = data_subsystem_coverage::         type_id::create("coverage",         this);
     endfunction
 
     function void connect_phase(uvm_phase phase);
@@ -43,6 +45,7 @@ class data_subsystem_env extends uvm_env;
         bus_agent.monitor.transfer_ap.connect(bus_scoreboard.tr_imp);
         bus_agent.monitor.transfer_ap.connect(wrp_scoreboard.bus_tr_fifo.analysis_export);
         wrp_agent.monitor.transfer_ap.connect(wrp_scoreboard.wrp_tr_fifo.analysis_export);
+        bus_agent.monitor.transfer_ap.connect(coverage.analysis_export);
     endfunction
 
 endclass

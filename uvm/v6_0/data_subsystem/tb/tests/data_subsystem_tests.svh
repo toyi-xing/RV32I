@@ -28,6 +28,7 @@ class simple_bus_smoke_test extends data_subsystem_base_test;
         seq.start(env.bus_agent.sequencer);
         phase.drop_objection(this);
     endtask
+
 endclass
 
 // data_subsystem smoke，通过 virtual sequencer 启动 wrapper/bus 协同场景。
@@ -47,4 +48,67 @@ class data_subsystem_smoke_test extends data_subsystem_base_test;
         vseq.start(env.vseqr);
         phase.drop_objection(this);
     endtask
+
+endclass
+
+
+// 
+class DS_dmem_random_test extends data_subsystem_base_test;
+
+    `uvm_component_utils(DS_dmem_random_test)
+
+    function new(string name = "DS_dmem_random_test", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        data_subsystem_dmem_random_vseq vseq;
+        vseq = data_subsystem_dmem_random_vseq::type_id::create("vseq");
+        vseq.num_items = 200;
+
+        phase.raise_objection(this);
+        vseq.start(env.vseqr);
+        phase.drop_objection(this);
+    endtask
+
+endclass
+
+class DS_dmem_random_test_200 extends data_subsystem_base_test;
+
+    `uvm_component_utils(DS_dmem_random_test_200)
+
+    function new(string name = "DS_dmem_random_test_200", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        data_subsystem_dmem_random_vseq vseq;
+        vseq = data_subsystem_dmem_random_vseq::type_id::create("vseq");
+        vseq.num_items = 200;
+
+        phase.raise_objection(this);
+        vseq.start(env.vseqr);
+        phase.drop_objection(this);
+    endtask
+
+endclass
+
+class DS_dmem_random_test_2000 extends data_subsystem_base_test;
+
+    `uvm_component_utils(DS_dmem_random_test_2000)
+
+    function new(string name = "DS_dmem_random_test_2000", uvm_component parent = null);
+        super.new(name, parent);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        data_subsystem_dmem_random_vseq vseq;
+        vseq = data_subsystem_dmem_random_vseq::type_id::create("vseq");
+        vseq.num_items = 2000;
+
+        phase.raise_objection(this);
+        vseq.start(env.vseqr);
+        phase.drop_objection(this);
+    endtask
+
 endclass

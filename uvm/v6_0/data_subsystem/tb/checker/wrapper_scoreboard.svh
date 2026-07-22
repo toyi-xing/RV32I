@@ -26,11 +26,13 @@ class wrapper_scoreboard extends uvm_scoreboard;
     uvm_tlm_analysis_fifo #(wrapper_transfer   ) wrp_tr_fifo;
     // 统计信息，用于 check/report 阶段判断测试是否真正完成。
     int unsigned compare_count;
+    int unsigned correct_count;
     int unsigned error_count;
 
     function new(string name = "wrapper_scoreboard", uvm_component parent = null);
         super.new(name, parent);
         compare_count = 0;
+        correct_count = 0;
         error_count   = 0;
     endfunction
 
@@ -63,6 +65,8 @@ class wrapper_scoreboard extends uvm_scoreboard;
                               bus_tr.observed_item.target_name(), bus_tr.accept_cycle, bus_tr.resp_cycle,
                               resp_delay_got, resp_delay_exp,
                               wrp_tr.transfer2string("wrapper cfg")))
+            end else begin
+                correct_count ++;
             end
         end
     endtask
@@ -79,8 +83,8 @@ class wrapper_scoreboard extends uvm_scoreboard;
     function void report_phase(uvm_phase phase);
         super.report_phase(phase);
         `uvm_info(get_type_name(),
-            $sformatf("wrapper check finish, result: check_num=%0d, error_num=%0d",
-                compare_count, error_count), UVM_MEDIUM)
+            $sformatf("wrapper check finish, result: check_num=%0d including correct_num=%0d and error_num=%0d",
+                compare_count, correct_count, error_count), UVM_MEDIUM)
     endfunction
 
     //-----------------------------------------------------------------------

@@ -55,6 +55,7 @@ package data_subsystem_pkg;
     `include "data_subsystem_virtual_sequences.svh"
 
     // env
+    `include "data_subsystem_coverage.svh"
     `include "data_subsystem_env.svh"
 
     // test

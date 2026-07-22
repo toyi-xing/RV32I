@@ -68,9 +68,7 @@ byte enable 和 error 阶段重新处理本问题。
 
 - 对可读写 MMIO 寄存器执行 `SB reg+1`，检查对应 byte lane 更新且不报错。
 - 对可读写 MMIO 寄存器执行 `SH reg+2`，检查高两个 byte lane 更新且不报错。
-- 用 CPU-shaped byte/halfword bus request 读取非零 byte offset，检查 response 的
-  `rdata/error`。load 数据选择和符号扩展属于 core `mem_stage`，继续由 SoC directed
-  regression 覆盖，不属于本 data_subsystem 级 UVM harness 的职责。
+- 用 CPU-shaped byte/halfword bus request 读取非零 byte offset，检查 response 的 `rdata/error`。load 数据选择和符号扩展属于 core `mem_stage`，继续由 SoC directed regression 覆盖，不属于本 data_subsystem 级 UVM harness 的职责。
 - 检查真正未定义的寄存器 word offset 仍然返回 access fault。
 - 在固定延迟和可变延迟配置下重复关键场景，确保修复不破坏 request/response 和 backpressure 语义。
 
@@ -111,3 +109,57 @@ byte enable 和 error 阶段重新处理本问题。
 ### 验证与关闭依据
 
 修复后的回归入口会把 PASS/FAIL/TIMEOUT 文本结果纳入统计，失败测试不再仅因进程返回码而误报成功。相关 GPIO 用例已按 TB 的实际驱动语义更新，修复提交已随 v5.6 及后续 release 保留。
+
+## UVM-001：DMEM scoreboard 截断地址导致随机回归误报
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `Open` |
+| 发现日期 | 2026-07-23 |
+| 影响范围 | `uvm/v6_0/data_subsystem` 的 DMEM 随机测试及其 scoreboard 结果 |
+| 相关文件 | `uvm/v6_0/data_subsystem/tb/checker/simple_bus_scoreboard.svh`、`uvm/v6_0/data_subsystem/tb/seq/simple_bus_sequences.svh`、`uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_virtual_sequences.svh` |
+| 关联 RTL | `rtl/mem/simple_ram.sv`（本问题中未发现 RTL 读写错误） |
+
+### 问题说明
+
+`DS_dmem_random_test_200` 通过，但 `DS_dmem_random_test_2000` 失败并报告 108 个 DMEM read mismatch。根因是 scoreboard 的 `addr_2_dmem_word_addr()` 以 `{addr[DMEM_ADDR_WIDTH-3:2], 2'b00}` 生成参考模型 key。当前 `DMEM_ADDR_WIDTH = 16`，该表达式没有先减去 `DMEM_BASE`，并且丢弃了 DMEM offset 的高两位，导致相隔 `0x4000` 字节的不同 DMEM 地址发生别名。
+
+首个误报可由日志直接确认：
+
+- 先前写 `0x0004_6a81`，`be=4'b1101`，`wdata=0x3746_d5ca`。
+- 后续读 `0x0004_aa81`；两地址相差 `0x4000`，在 256 KiB DMEM 中是不同存储位置，RTL 正确返回初始化值 `0`。
+- scoreboard 将二者都映射为 key `0x0000_2a80`，错误地期望前一笔写合并后的值 `0x3746_00ca`，从而报 mismatch。
+
+RTL 的 `simple_ram` 使用 `(addr_i - DMEM_BASE) >> 2` 作为 16-bit word index，能区分上述两个地址。因此，这些失败是 golden model 的误报，不能据此判定 RTL 存在 DMEM 数据损坏。
+
+### 为什么 200 次回归会通过
+
+`DS_dmem_random_test_200` 的汇总为 `correct_num=0, error_num=0, skip_num=200`：它没有形成一次被 scoreboard 正确比较的写后读，只是尚未随机触发该错误别名。2000 次运行扩大了随机碰撞概率，最终得到 `correct_num=18, error_num=108, skip_num=1874`。
+
+此外，当前随机激励的地址池实际上未跨事务生效：virtual sequence 在每轮 `repeat` 内新建 `simple_bus_dmem_random_access_seq`，并将 `num_items` 设为 1。该 sequence 内维护的 `written_word_keys` 和 `written_word_seen` 会在唯一一笔请求结束后随对象丢弃。因此后续 read 无法从先前 write 的地址池中选择地址，当前随机测试主要是读从未写过的位置；200 次日志的 `correct_num=0` 正是这一问题的表现。
+
+### 随机地址池的修复方式
+
+保留 `simple_bus_dmem_random_access_seq` 作为地址池的唯一所有者，但将 `bus_seq` 的创建移至 virtual sequence 的 `repeat` 外。随后在每轮中启动同一个 `bus_seq`，并保持 `bus_seq.num_items = 1`；这样该对象的已写地址池能覆盖整个 200/2000 笔访问流。wrapper sequence 也可在循环外创建并在每轮重复 `start()`，其 `body()` 每次都会重新随机生成一笔 delay 配置，不会复用上次的配置值。推荐结构如下：
+
+```systemverilog
+bus_seq = simple_bus_dmem_random_access_seq::type_id::create("bus_seq");
+bus_seq.num_items = 1;
+wrp_seq = wrapper_dmem_cfg_random_seq::type_id::create("wrp_seq");
+wrp_seq.num_items = 1;
+
+repeat (num_items) begin
+    wrp_seq.start(p_sequencer.wrp_sequencer);
+    bus_seq.start(p_sequencer.bus_sequencer);
+end
+```
+
+`simple_bus_dmem_random_access_seq` 当前以 `addr[XLEN-1:2]` 保存 word 地址，足以区分完整 DMEM 空间；其地址池本身不需要采用 scoreboard 现有的错误截断方式。应确保其生命周期按上述方式延续，并可补充显式清池方法以便同一个 sequence 对象被不同测试阶段复用时重置状态。
+
+### 预期修复方向
+
+scoreboard 应以完整的 DMEM 相对 byte offset 对齐后作为 key，例如使用 `(addr - DMEM_BASE) >> 2` 的 16-bit word index；该口径应与 RAM 的实际 16-bit word index / 256 KiB 容量一致。与此同时，按上述方式延续随机 sequence 的地址池生命周期，确保产生真实的写后读事务。
+
+### 验证与关闭条件
+
+- 修复后使用原测试、原随机种子运行 `DS_dmem_random_test_200` 与 `DS_dmem_random_test_2000`，两者均无 UVM error 即可关闭。

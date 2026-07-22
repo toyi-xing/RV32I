@@ -67,4 +67,21 @@ class wrapper_item extends uvm_sequence_item;
                     object_kind, target_name(), delay_cycles);
     endfunction
 
+    function bit randomize_with_dev(
+        bit use_target = 1'b0,
+        soc_pkg::target_e target_sel = soc_pkg::TARGET_UNDEFINED
+    );
+        if(!use_target) begin
+            return this.randomize();
+        end
+        else begin
+            if (target_sel == soc_pkg::TARGET_UNDEFINED) begin
+                return 0;
+            end
+            return this.randomize() with {
+                target == target_sel;
+            };
+        end
+    endfunction
+
 endclass

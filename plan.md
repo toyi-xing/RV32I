@@ -1689,13 +1689,13 @@ ASSERT_ON=1 uvm/v6_0/data_subsystem/sim/run_test.sh data_subsystem_simple_bus_sm
   通过 monitor analysis port 检查数据、error、delay 和外设功能语义。
 - assertion failure 通过 `$error` 进入仿真日志，`run_test.sh` 的 `SIM_ERROR` 统计将其判为
   FAIL；UVM 不需要直接调用 assertion。
-- 后续 functional coverage 放在 `tb/coverage`，作为由 env 创建、订阅 monitor analysis
+- functional coverage 组件放在 `tb/env`，作为由 env 创建、订阅 monitor analysis
   port 的 UVM subscriber/collector；它采集重建后的 transaction，不替代 SVA 或 scoreboard。
 - 若需要 `cover property` 统计协议场景，则与 assertion 一同放在 `tb/sva`。它与 UVM
   functional coverage 是两类覆盖，不应重复计数或相互依赖。
 
-coverage 的具体 collector 和第一批随机激励放在第 16 章：先稳定确定性 DMEM、wrapper
-delay 和 driver execution 检查，再让 coverage 报告具有可解释的输入分布；不要求等 MMIO
+coverage 的具体 collector 和第一批随机激励放在第 15 章：先稳定确定性 DMEM 和 wrapper
+delay 检查，再让 coverage 报告具有可解释的输入分布；不要求等 MMIO
 和全部黄金模型完成才建立覆盖框架，但每个纳入 legal traffic/coverage 的场景必须已有明确
 spec 和自动检查边界。
 
@@ -1706,7 +1706,7 @@ spec 和自动检查边界。
 - `data_subsystem_simple_bus_smoke_test` 在基础和状态型 SVA 同时打开时通过。
 - assertion action block 使用清晰名称和 `[SVA]` 日志前缀；故障注入仅作为可选调试，不作为本章强制完成标准。
 - 关闭 `ASSERT_ON` 时不编译 assertion 状态逻辑，普通 smoke 仍可运行。
-- 不新增 UVM coverage collector；coverage 保持第 16 章实现。
+- 本章不新增 UVM coverage collector；coverage 在第 15 章实现。
 
 ## 11. bus item 与 observed transfer 分层 `已完成`
 
@@ -1737,8 +1737,8 @@ uvm/v6_0/data_subsystem/tb/transaction/simple_bus_transfer.svh
   绝对仿真拍数。
 - target 仍由实际地址推导，不作为独立随机字段。
 
-monitor 不读取 sequence item，也不把“计划值”填入 transfer。计划值与观察值是否一致由后续
-driver execution checker 配对检查，不能在一个对象中混合两个来源。
+monitor 不读取 sequence item，也不把“计划值”填入 transfer。计划值与观察值不能在一个
+对象中混合；如后续需要严格验证 driver 执行行为，可由第 18.1 节的可选 checker 配对检查。
 
 ### 11.2 调整 driver 输出边界 `已完成`
 
@@ -1756,7 +1756,7 @@ uvm_analysis_port #(simple_bus_item) planned_item_ap;
 ~~~
 
 driver 在开始执行 item 前发布该 item 的 clone，不能直接广播后续仍可能被修改的原对象。该
-analysis port 暂时可以无人订阅，第 15 章接入 driver execution checker。
+analysis port 当前可以无人订阅；第 18.1 节保留可选 driver execution checker 方向。
 
 driver 的调试日志应明确是 planned/completed item；它不再承担 scoreboard 使用的“真实总线
 结果”来源。
@@ -1784,7 +1784,7 @@ env 连接保持一对多：
 simple_bus_monitor.transfer_ap
     -> simple_bus_scoreboard.transfer_imp
     -> 后续 wrapper delay checker
-    -> 后续 driver execution checker
+    -> 可选 driver execution checker
     -> 后续 coverage
 ~~~
 
@@ -2080,176 +2080,222 @@ env 创建 wrapper checker，并连接 cfg AP 与 transfer AP。确定性 wrappe
 - scoreboard 与 wrapper checker 同时订阅同一 transfer，检查职责不重叠。
 - 普通 0 delay smoke 也经过 checker，默认 expected state 为 0。
 
-## 15. driver execution checker 与 idle-gap 定向验证 `执行中`
+## 15. Functional coverage 与随机 case 收口 `执行中`
 
-目标：把 UVM master 自身的“计划 item 是否如实出现在 interface”做成独立 testbench
-self-checker，避免把 driver 调度错误误判为 DUT 功能错误。
+目标：在当前 UVM 基础设施上补齐第一批 constrained-random case，并生成可复现、可解释、
+可查看具体 bin/cross 的 functional coverage 报告。本章不追求 coverage closure，也不把
+完整 MMIO/error 场景作为 v6 收口条件。
 
-### 15.1 新增 driver execution checker
+### 15.1 基础 functional coverage `已完成`
+
+当前实现：
+
+~~~text
+uvm/v6_0/data_subsystem/tb/env/data_subsystem_coverage.svh
+~~~
+
+`data_subsystem_coverage` 继承 `uvm_subscriber #(simple_bus_transfer)`，只采样 simple bus
+monitor 重建的实际完成 transaction，不读取 sequence、driver 或 wrapper 配置 item。
+
+当前 covergroup 包含：
+
+- read/write 实际数据分布及 access kind x data。
+- observed idle gap：0、短、中、长。
+- observed response delay：0、1、短、中、长、超长、127 最大边界。
+- response OK/error。
+- op x delay、idle gap x delay。
+
+env 已创建 coverage subscriber 并连接 `bus_agent.monitor.transfer_ap`；现有
+`data_subsystem_smoke_test` 已能在 `report_phase` 输出非空 functional coverage 汇总。
+当前百分比只表示已定义 bins/cross 的命中情况，不表示 RTL 已完成同等比例的功能验证。
+
+### 15.2 constrained-random DMEM physical sequence `已完成`
+
+在 `simple_bus_sequences.svh` 中新增可复用的随机 DMEM access-stream physical sequence：
+
+~~~text
+simple_bus_dmem_random_access_seq
+~~~
+
+第一版保持当前 generic simple data bus 的 byte-address 口径：
+
+- 每轮独立生成一笔 read 或 write，不将 write/read 固定绑成相邻 pair。
+- 地址位于 DMEM，保留随机 `addr[1:0]`；当前固定 `be=4'b1111` 的非零低地址位属于generic bus corner，不代表 CPU-shaped 的合法 word profile。
+- 每笔 item 的 `idle_cycles` 独立随机，范围覆盖 0、短、中、长 gap。
+- `wdata` 对全 0、全 1 和普通数值区间加权，避免边界数据只能依赖极低概率自然命中。
+- 若复用 `send_write32()`/`send_read32()`，为 helper 增加默认值为 0 的 `idle_cycles` 参数，保持所有现有调用行为不变。
+- sequence 按 word key（例如 `addr[XLEN-1:2]`）维护已写地址池。write 后将对应 word 加入地址池；多数 read 从地址池选择 word，再随机补低两位 byte offset，使 DMEM scoreboard 能比较实际 `rdata`。
+- 少量 read 保持完全随机，允许访问尚未写入的 word；现有 DMEM scoreboard 对此类 read 记录跳过而不误报，避免将无已知预期的数据当作 DUT 错误。
+
+### 15.3 constrained-random virtual sequence/test `已完成`
 
 新增：
 
 ~~~text
-uvm/v6_0/data_subsystem/tb/checker/simple_bus_driver_execution_checker.svh
+data_subsystem_random_delay_vseq
+data_subsystem_random_delay_test
 ~~~
 
-输入：
+每轮按以下顺序执行：
 
-~~~text
-simple_bus_driver.planned_item_ap
-simple_bus_monitor.transfer_ap
-~~~
+1. 随机选择一组 0～127 wrapper delay，显式提高 0、1、127 和中间区间的权重。
+2. 在 wrapper physical sequencer 上启动 `apply_wrapper_cfg_seq`，配置 `TARGET_DMEM`。
+3. wrapper sequence 完成后，在 bus physical sequencer 上启动一段随机 DMEM access stream。
+4. bus sequence 返回后才进入下一轮，确保修改 wrapper 配置时没有 outstanding request。
 
-checker 分别排队 planned item 和 observed transfer，并按顺序一一配对。当前总线 single
-outstanding、in-order completion，因此不需要 transaction ID；若以后允许多 outstanding，
-本 checker 必须重新设计关联方式。
+virtual sequence 不直接访问 vif，不使用额外 `@(clock)` 制造 idle gap，也不重复实现
+scoreboard/checker。第一版可执行 20～30 组 transaction，并将固定 seed `1/17/42` 纳入回归。
 
-每对对象检查：
+随机权重提高边界命中概率，但不能替代确定性边界。现有 deterministic smoke 保留 0/1/3/7，
+并补充至少一组 `delay=127`，保证最大边界必定进入 wrapper checker 和 coverage。
 
-- `write/be/addr/wdata` 计划值与实际 accepted request 完全一致。
-- 非首笔 transaction 的 `item.idle_cycles` 与 `transfer.observed_idle_cycles` 完全一致。
-- 首笔 initial idle 不参与严格比较，避免把 reset 释放到首笔 request 的启动约定混入普通
-  transaction gap。
-- 结构性缺项、仿真结束仍有未配对对象属于 testbench 错误，在 `check_phase` 明确报告。
+### 15.4 VCS VDB/URG 报告入口
 
-checker 只验证 UVM stimulus 执行，不检查 rdata/error，也不把 mismatch 归因于 DUT。
+在仿真脚本中增加可选 `COVERAGE_ON=1` 模式：
 
-### 15.2 新增确定性 idle-gap virtual sequence/test
+- coverage 编译配置使用独立 `_cov` build 目录，不能与普通或 `ASSERT_ON` 增量缓存混用。
+- 每个 test/seed 使用独立 VDB 目录，避免不同运行相互覆盖。
+- 增加 URG 报告入口，可生成包含 coverpoint/bin/cross 明细的 HTML 报告。
+- 支持合并多个固定 seed 的 coverage 数据；报告中保留每个 test/seed 的来源。
+- build、VDB、URG HTML 等生成物加入 `.gitignore`，不提交仿真产物。
 
-新增：
+本阶段以 functional coverage 为主；line/branch/toggle/FSM code coverage 可以作为附加输出，
+但不作为 v6 收口门槛。完成标准：
 
-~~~text
-uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_idle_gap_vseq.svh
-uvm/v6_0/data_subsystem/tb/tests/data_subsystem_idle_gap_test.svh
-~~~
+- console summary 与 URG 报告均非空。
+- read/write、delay 0/1/127、0/nonzero idle gap 等基础 bins 已命中。
+- 未覆盖 error/MMIO 等 bins 被明确记录为当前场景空洞，不通过删除 bin 或追求 100% 掩盖。
+- smoke、random fixed-seed 和 `ASSERT_ON` random 均无 scoreboard/checker/SVA 错误。
 
-virtual sequence 先通过 wrapper cfg agent 把 DMEM delay 设为 0，再发送一笔 warm-up
-transaction；随后按 0/1/3/7/0 设置 bus item 的 `idle_cycles`。sequence 不额外使用
-`@(clock)` 制造 gap，所有计划间隔只来自 item 字段。
+## 16. RTL-001 复现、修复与前后对比 `待执行`
 
-验证节点：
+目标：使用当前 UVM 平台稳定暴露 `docs/known_issues.md` 中记录的 RTL-001，修复主线 RTL，
+并以同一 test 的修复前 FAIL、修复后 PASS 建立可展示、可回归的 bug closure。
 
-- execution checker 对非首笔 transaction 精确比较，不默认允许调度造成的 +1。
-- scoreboard 继续验证 DMEM 数据。
-- wrapper checker 确认 delay 仍为 0。
-- SVA 不误报。
-- checker 的 planned/observed 队列在 test 结束时为空。
+### 16.1 最小 MMIO 检查能力
 
-## 16. 逐笔随机 wrapper delay、idle gap 与基础 coverage
+只建立 RTL-001 所需的最小软件可见模型或专用 checker，不在本阶段实现完整外设黄金模型：
 
-目标：在确定性路径稳定后，让每笔 transaction 都能通过两个 agent 独立随机配置
-`idle_cycles` 和 wrapper delay，并建立第一版可运行 functional coverage。
+- 选择 GPIO OUT/OE 等无复杂副作用的 RW register。
+- known register 的合法 byte/halfword 访问必须返回 `error=0`。
+- 按 `be` 更新参考寄存器的对应 byte lane，再通过 aligned word read 比较完整值。
+- 真正未定义的 register word offset 必须继续返回 `error=1`，防止修复产生错误 alias。
+- checker 只按 `dut/docs/periph_register_abi.md` 建模，不复制 GPIO 内部 RTL 实现。
 
-### 16.1 constrained-random virtual sequence
+### 16.2 CPU-shaped 定向复现 case
 
-新增：
+新增独立定向 sequence/test，至少覆盖：
 
-~~~text
-uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_random_delay_vseq.svh
-uvm/v6_0/data_subsystem/tb/tests/data_subsystem_random_delay_test.svh
-~~~
+- `reg+1` byte access：`be = 4'b0001 << addr[1:0]`。
+- `reg+2` halfword access：`addr[0] == 0`，`be = 4'b1100`。
+- 对应 aligned word readback。
+- 0 delay 和至少一个非 0 wrapper delay。
+- 一个真正 unknown word offset 的 negative case。
 
-第一版仍限定为合法 DMEM word traffic：
+测试按修复后的正确规格写成自动检查，不在 checker 中接受当前错误行为。修复前该 test 应稳定
+FAIL；复现提交暂不加入默认 `run_all.sh`，在 `known_issues.md` 记录命令、失败现象和 commit。
+问题进入实际处理后，状态由 `Deferred` 更新为 `Open`。
 
-- 每组先随机一个 0～127 的 wrapper delay，再由 cfg agent 应用。
-- delay 分布提高 0、1、最大值 127 和若干中间值的命中权重。
-- 每笔 bus item 独立随机合法 `idle_cycles`。
-- 使用 write/read pair，保证 DMEM scoreboard 有确定的 expected value。
-- 每次修改 wrapper 配置前必须等上一笔 bus item `finish_item()` 返回。
-- 固定 seed 回归保留；后续可增加多个 seed，但不能替代 0/1/3/7/127 定向边界。
+### 16.3 修复主线 RTL
 
-wrapper checker 自动比较 expected/observed delay，execution checker 自动比较 planned/observed
-request 和 idle gap；random sequence 本身不重复实现 checker 逻辑。
+- 先修根目录主线 RTL，再运行验证，不先修改归档快照。
+- 保留 simple data bus 的原始 byte address 语义，不在 `mem_stage` 中清除地址低两位。
+- MMIO register decode 使用 word-aligned offset 识别寄存器，再由 `be` 选择有效 byte lane。
+- 检查 GPIO、UART、TIMER32 是否存在同类完整 offset 比较，保证修复口径一致。
+- 未定义 register word offset、窗口外地址和当前未定义访问仍保持明确 error 语义。
 
-### 16.2 新增基础 functional coverage
+### 16.4 修复后回归与问题关闭
 
-新增目录和组件：
+- 同一 UVM case 在修复后 PASS，并加入正式 UVM regression。
+- 0/nonzero delay 下功能 checker 与 wrapper checker 同时通过。
+- 增加至少一条 CPU 侧 Verilator ASM 定向测试，覆盖真实 `SB reg+1`/`SH reg+2` 路径。
+- 运行 Verilator ASM/C 全量回归，确认 MMIO word access、trap/interrupt 和 wait-state 不退化。
+- `known_issues.md` 将 RTL-001 更新为 `Fixed`，记录修复 commit、修复前/后结果和回归依据。
+- 明确 v6.0 UVM DUT snapshot 最终归档的是带 RTL-001 修复的主线版本。
 
-~~~text
-uvm/v6_0/data_subsystem/tb/coverage/simple_bus_coverage.svh
-~~~
+## 17. 0835 回归、快照归档与文档收口 `待执行`
 
-`simple_bus_coverage` 订阅 monitor 的 `simple_bus_transfer`，只采样实际完成的 transaction。
-第一版 coverpoints：
+目标：冻结一套可独立复现的 v6 data_subsystem UVM 工作区，明确当前已实现能力和后续边界，
+然后进入 v7/AXI-Lite，不继续扩张当前 simple bus UVM 完整度。
 
-- op：read/write。
-- observed response delay：0、1、短延迟、中间延迟、127。
-- observed idle gap：0、短 gap、长 gap。
-- response：OK/error。
-- op x delay。
-- idle gap x delay。
+### 17.1 最终回归矩阵
 
-当前 traffic 只覆盖 DMEM，因此不以 target coverage 百分比作为本章完成门槛。后续加入 MMIO
-后扩展 target、register、side effect 和 error crosses。coverage 证明场景发生过，不替代
-scoreboard/SVA/checker。
+UVM/VCS 至少保留：
 
-env 创建 coverage subscriber，并将同一 monitor transfer AP 连接给它。VCS coverage 数据库
-和报告入口在实现时按本机版本固化到 sim 脚本；`COVERAGE_ON` 若作为编译/运行配置开关，必须
-像 `ASSERT_ON` 一样使用独立 build 目录，避免增量缓存串配置。
+- base test、simple bus smoke、deterministic wrapper-delay smoke。
+- fixed-seed random delay/idle test。
+- RTL-001 byte/halfword 修复回归与 unknown-offset negative case。
+- `ASSERT_ON` smoke/random。
+- functional coverage console summary 和 VDB/URG HTML 报告。
 
-### 16.3 回归与完成标准
+同时运行：
 
-`run_all.sh` 保留：
+- `sim/soc_asm/run_all.sh`。
+- `sim/soc_c/run_all.sh`。
 
-- base/smoke。
-- ASSERT_ON smoke。
-- deterministic wrapper delay。
-- deterministic idle gap。
-- fixed-seed random delay/idle。
+UVM 文件不进入 Verilator 默认编译路径；VCS/UVM 与 Verilator directed regression 继续并行存在。
 
-本轮 wait-state UVM 主目标完成标准：
+### 17.2 v6 DUT RTL snapshot
 
-- 功能 scoreboard、wrapper checker、driver execution checker 同时通过。
-- random sequence 能逐笔切换 delay，不需要命令行 `+DMEM_DELAY`。
-- SVA 在固定和随机 wait-state 下不误报。
-- coverage 能生成非空报告，并命中 0/1/127 delay、read/write、0/nonzero idle gap 等基础 bins。
-- 日志能区分 planned item、observed transfer、功能 mismatch、wrapper mismatch 和
-  testbench execution mismatch。
+- RTL-001 修复并完成主线回归后，从根目录主线复制 data_subsystem 最小 RTL 编译闭包。
+- `dut/README.md` 记录基础 release、来源 commit、VCS 兼容性修改和 RTL-001 修复差异。
+- `sim/filelist.f` 从开发期根目录 `rtl/` 切回 `uvm/v6_0/data_subsystem/dut/rtl` 快照。
+- 切回快照后重新执行全部 UVM 回归，确认归档环境不依赖后续主线。
+- 冻结后不再静默同步主线；AXI-Lite 或后续 RTL 使用新版本工作区。
 
-## 17. 后续章节占位：MMIO register smoke
+### 17.3 文档同步
 
-后续根据实际 UVM MVP 完成情况展开。
+- 根 `README.md` 正式列出 VCS/UVM/SVA/functional coverage 能力和当前验证边界。
+- `uvm/readme.md` 将旧 `v6_0/simple_bus` 路径更新为 `v6_0/data_subsystem`。
+- 新增 `uvm/v6_0/data_subsystem/README.md`，记录测试命令、test matrix、coverage 报告入口、
+  DUT snapshot 来源、已实现检查和已知限制。
+- `spec.md` 区分 v6 已实现能力与未来可扩展项，不再把完整 MMIO/side-effect model 写成本阶段
+  完成门槛。
+- `docs/08xx/0835` 只同步阶段成果、方法和边界，不写具体脚本执行步骤。
+- `docs/known_issues.md` 与 RTL-001 最终状态一致。
 
-计划方向：
+### 17.4 阶段完成标准
 
-- 为 GPIO/UART/TIMER32 分别建立最小软件可见参考模型或专用 checker，不能只看日志。
-- GPIO OUT/OE 基本读写。
-- UART TXDATA write event。
-- TIMER32 MTIME/MTIMECMP/CTRL/STATUS 基本读写。
-- unknown offset error。
-- 以 `dut/docs/periph_register_abi.md` 为唯一寄存器 ABI 来源。
+- UVM regression、Verilator ASM/C regression 和 `ASSERT_ON` regression 全部通过。
+- functional coverage 报告可复现，未闭合 bins 有明确解释。
+- RTL-001 有修复前 FAIL、修复后 PASS 和端到端 directed regression 证据。
+- filelist 只引用冻结 DUT snapshot，工作区可以脱离后续主线独立编译运行。
+- README/spec/0835/known issues 与实际实现一致。
+- 创建明确的 v6 验证收口 commit/tag 后，再开始 v7 AXI-Lite RTL 与验证规划。
+
+## 18. 后续方向占位：阶段收口时迁移到工作区 README/spec
+
+以下内容保留为有价值的后续方向，但不作为当前 v6/0835 完成门槛。第 17 章归档时，将其按
+“Deferred extensions / Out of scope”口径迁移到 `uvm/v6_0/data_subsystem/README.md` 或
+`spec.md`；是否在 v6 simple bus 环境继续实现，取决于 v7 AXI-Lite 进度和学习收益。
+
+### 18.1 driver execution checker 与确定性 idle-gap 自检
+
+- 可增加 `simple_bus_driver_execution_checker`，分别订阅 planned item 与 observed transfer，
+  检查 driver 是否精确执行 `write/be/addr/wdata`。
+- 如需严格检查 planned/observed idle gap，必须先固定 item 交付与 clocking event 的调度口径；
+  当前 coverage、scoreboard 和 DUT checker 继续以 monitor observed transfer 为准。
+- 可增加 0/1/3/7/0 deterministic idle-gap test，作为 UVM stimulus 自检，不归因于 DUT。
+- 若未来支持多 outstanding，必须增加 transaction ID 或重新设计关联方式。
+
+### 18.2 完整 MMIO register smoke/reference model
+
+- 为 GPIO/UART/TIMER32 分别建立最小软件可见 reference model 或专用 checker。
+- GPIO OUT/OE 基本读写；UART TXDATA write event；TIMER32 MTIME/MTIMECMP/CTRL/STATUS 基本读写。
 - known-register smoke 和 unknown-offset error 使用不同定向 virtual sequence。
-- wrapper cfg agent 为对应 target 配置 delay；wrapper checker 继续复用，不新增第二套 bus
-  monitor。
+- 以 `dut/docs/periph_register_abi.md` 为唯一寄存器 ABI 来源。
+- wrapper cfg agent 和现有 wrapper checker 继续复用，不新增第二套 bus monitor。
+- 本阶段第 16 章只实现 RTL-001 所需的代表性 GPIO 子集，其余寄存器模型保留在此。
 
-## 18. 后续章节占位：byte enable 和 error
-
-后续根据实际 UVM MVP 完成情况展开。
-
-计划方向：
+### 18.3 完整 byte enable、access profile 和 error 场景
 
 - 扩展 DMEM reference model，支持 byte/half/word write strobe。
-- unaligned 地址是否由当前 DUT 定义处理。
-- 未映射地址 error。
-- 外设 unknown offset error。
-- 新增 CPU-shaped byte-enable sequence：同一 `simple_bus_item` 按 access profile 施加
-  `addr/be` 联合约束。byte profile 使用 `be = 4'b0001 << addr[1:0]`；halfword profile
-  要求 `addr[0] == 0`，并按 `addr[1]` 选择 `4'b0011` 或 `4'b1100`；word profile 要求
-  `addr[1:0] == 0` 且 `be == 4'b1111`。
-- CPU-shaped sequence 与 generic bus-corner sequence 分开。后者可以产生任意非零 be 组合，
-  前者模拟当前 core 实际可能发出的请求，二者预期不得混用。
-- 对 MMIO，先从 ABI 中选择已定义的 word-aligned register offset，再按 access profile 生成
-  byte offset。
-- `RTL-001` 的 `reg+1` byte 和 `reg+2` halfword 用例应先稳定复现 error，随后进入 RTL 修复
-  和回归。
-- 未定义 MMIO offset、窗口外地址和当前未定义的 misaligned access 分别使用专门 negative
-  virtual sequence，不混入 legal random traffic。
+- CPU-shaped byte/half/word profile 与 generic bus-corner sequence 分开，不混用预期。
+- 对 MMIO 先选择已定义的 word-aligned register offset，再按 access profile 生成 byte offset。
+- 未映射地址、unknown offset、窗口外地址和未定义 misaligned access 使用独立 negative sequence。
+- 本阶段只实现 RTL-001 所需的 `reg+1` byte、`reg+2` halfword 和 unknown word offset 子集。
 
-## 19. 后续章节占位：side effect scoreboard
-
-后续根据实际 UVM MVP 完成情况展开。
-
-计划方向：
+### 18.4 side-effect scoreboard
 
 - GPIO W1C。
 - UART RXDATA read-clear。
@@ -2258,42 +2304,27 @@ env 创建 coverage subscriber，并将同一 monitor transfer AP 连接给它�
 - wait-state 下副作用只发生一次。
 - side-effect reference model 只按软件可见 ABI 建模，不复制 RTL 内部实现。
 
-## 20. 后续章节占位：扩展 random sequence 和 coverage
-
-后续根据 MMIO、byte/error 和 side-effect checker 的完成情况展开。
-
-计划方向：
+### 18.5 扩展 random sequence 和 coverage
 
 - random target、read/write、legal/illegal offset。
-- legal traffic 初始分布建议 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%。
+- legal traffic 初始分布可采用 DMEM 50%、GPIO0 20%、UART0 15%、TIMER0 15%。
 - known-register、unknown-offset、unmapped-address 使用不同 traffic bucket。
-- random sequence 在 sequence/virtual sequence 层先选择 target，再约束 item 地址；target
-  仍由最终 observed transfer 的地址推导。
-- 扩展 coverage：target x access-profile、MMIO known/unknown x read/write、
-  target x response、target x delay、target x idle gap、side effect x delay。
-- coverage 只采样 monitor transfer，不以 sequence 计划值代替实际覆盖。
+- 扩展 target x access-profile、MMIO known/unknown x read/write、target x response、
+  target x delay、target x idle gap、side effect x delay 等 coverage。
 - 每个进入 legal random traffic 的场景必须已有明确 spec 和自动 checker/reference model。
 
-## 21. 后续章节占位：SoC directed 回归保持
+### 18.6 data_subsystem 专用硬件边界 SVA
 
-后续根据实际 UVM MVP 完成情况展开。
+- 通用 simple bus 协议 SVA 与 data_subsystem/wrapper 专用硬件边界 SVA 分层维护。
+- 可增加 bounded-latency assertion：每笔 accepted request 必须在 0～127 拍内产生 response，
+  保留 0-delay 同拍 response 语义。
+- 该 assertion 只检查最大等待边界；精确配置匹配继续由 wrapper scoreboard 检查。
+- assertion 受 `ASSERT_ON` 控制，并应以清晰名称进入脚本 `SIM_ERROR`/FAIL 统计。
+- wrapper 被 AXI-Lite 或新 slave latency 语义替代后重新评估，不迁移为通用协议约束。
 
-计划方向：
+### 18.7 长期回归与文档维护
 
-- Verilator `sim/soc_asm/run_all.sh` 保持可运行。
-- Verilator `sim/soc_c/run_all.sh` 保持可运行。
+- Verilator ASM/C directed regression 与 VCS/UVM regression 长期并行保留。
 - UVM 文件不进入 Verilator 默认编译路径。
-- README 说明 Verilator/VCS 分工。
-
-## 22. 后续章节占位：文档与阶段收口
-
-后续根据实际 UVM MVP 完成情况展开。
-
-计划方向：
-
-- README 当前特性同步。
-- `docs/08xx/0835` 若实现口径变化再补充。
-- `uvm/v6_0/data_subsystem/tb` 使用说明。
-- `uvm/v6_0/data_subsystem/sim` 脚本说明。
-- 最终保存 v6.0 DUT RTL snapshot，并把 UVM filelist 从开发期主工程 RTL 切回归档镜像。
-- 阶段完成标准检查。
+- README 持续说明两套验证路径的职责分工。
+- 冻结工作区只修复可复现问题，不静默跟随主线；新协议或新 RTL release 建立新目录和 spec。
