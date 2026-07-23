@@ -78,7 +78,7 @@ class data_subsystem_coverage extends uvm_subscriber #(simple_bus_transfer);
 
         // 访问宽度，根据实际应用场景分类
         cp_accses_width: coverpoint tr.observed_item.be{
-            bins word32 = {4'b111};
+            bins word32 = {4'b1111};
             bins half16 = {4'b0011, 4'b1100};
             bins byte8  = {4'b0001, 4'b0010, 4'b0100, 4'b1000};
         }

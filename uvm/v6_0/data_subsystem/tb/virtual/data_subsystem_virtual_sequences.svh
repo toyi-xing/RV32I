@@ -63,7 +63,11 @@ class data_subsystem_smoke_vseq extends data_subsystem_base_vseq;
 endclass
 
 
-//
+// DMEM wrapper/bus 协同随机 virtual sequence。
+// 每轮先在 wrapper sequencer 上应用一笔随机 DMEM response-delay 配置，再在 bus
+// sequencer 上发送一笔随机 DMEM access。physical sequence 对象在整个场景中复用：
+// wrapper sequence 每轮只产生一笔新配置，bus sequence 则持续保留已写 word 地址池，
+// 以提高后续 read 可由 DMEM scoreboard 比对的数据比例。
 class data_subsystem_dmem_random_vseq extends data_subsystem_base_vseq;
 
     `uvm_object_utils(data_subsystem_dmem_random_vseq)
@@ -79,11 +83,11 @@ class data_subsystem_dmem_random_vseq extends data_subsystem_base_vseq;
 
     task body();
         super.body();
+        bus_seq = simple_bus_dmem_random_access_seq::type_id::create("bus_seq");
+        wrp_seq = wrapper_dmem_cfg_random_seq::type_id::create("wrp_seq");
+        bus_seq.num_items = 1;
+        wrp_seq.num_items = 1;
         repeat (num_items) begin
-            bus_seq = simple_bus_dmem_random_access_seq::type_id::create("bus_seq");
-            wrp_seq = wrapper_dmem_cfg_random_seq::type_id::create("wrp_seq");
-            bus_seq.num_items = 1;
-            wrp_seq.num_items = 1;
             wrp_seq.start(p_sequencer.wrp_sequencer);   // 由 seq 新建 item 对象，seq 保持为本身
             bus_seq.start(p_sequencer.bus_sequencer);   // 维护同一个地址池，因此 bus_seq 需要保持同一个对象
         end

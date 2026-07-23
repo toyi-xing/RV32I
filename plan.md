@@ -2149,23 +2149,11 @@ scoreboard/checker。第一版可执行 20～30 组 transaction，并将固定 s
 随机权重提高边界命中概率，但不能替代确定性边界。现有 deterministic smoke 保留 0/1/3/7，
 并补充至少一组 `delay=127`，保证最大边界必定进入 wrapper checker 和 coverage。
 
-### 15.4 VCS VDB/URG 报告入口
+### 15.4 VCS VDB/URG 报告入口 `暂缓`
 
-在仿真脚本中增加可选 `COVERAGE_ON=1` 模式：
+已验证 VCS 可以采样 covergroup 并在 UVM `report_phase` 输出稳定的 functional coverage summary。尝试生成 VDB/URG HTML 时，VCS coverage 仿真可以完成并生成 VDB，但当前 W-2024.09-SP1 环境中的 URG 在读取干净 VDB 时仍发生工具级崩溃，因此本阶段不把 HTML 报告作为 v6 收口门槛，也不让 URG 失败影响正常 UVM PASS/FAIL。
 
-- coverage 编译配置使用独立 `_cov` build 目录，不能与普通或 `ASSERT_ON` 增量缓存混用。
-- 每个 test/seed 使用独立 VDB 目录，避免不同运行相互覆盖。
-- 增加 URG 报告入口，可生成包含 coverpoint/bin/cross 明细的 HTML 报告。
-- 支持合并多个固定 seed 的 coverage 数据；报告中保留每个 test/seed 的来源。
-- build、VDB、URG HTML 等生成物加入 `.gitignore`，不提交仿真产物。
-
-本阶段以 functional coverage 为主；line/branch/toggle/FSM code coverage 可以作为附加输出，
-但不作为 v6 收口门槛。完成标准：
-
-- console summary 与 URG 报告均非空。
-- read/write、delay 0/1/127、0/nonzero idle gap 等基础 bins 已命中。
-- 未覆盖 error/MMIO 等 bins 被明确记录为当前场景空洞，不通过删除 bin 或追求 100% 掩盖。
-- smoke、random fixed-seed 和 `ASSERT_ON` random 均无 scoreboard/checker/SVA 错误。
+当前以 console summary、scoreboard/checker 统计和固定 seed 回归作为 coverage 证据。VDB/URG 合并报告保留为后续工具环境可用时的扩展项，不阻塞第 16 章 RTL-001 复现与修复。
 
 ## 16. RTL-001 复现、修复与前后对比 `待执行`
 
@@ -2226,7 +2214,7 @@ UVM/VCS 至少保留：
 - fixed-seed random delay/idle test。
 - RTL-001 byte/halfword 修复回归与 unknown-offset negative case。
 - `ASSERT_ON` smoke/random。
-- functional coverage console summary 和 VDB/URG HTML 报告。
+- functional coverage console summary；VDB/URG HTML 因当前工具环境崩溃不作为本阶段门槛。
 
 同时运行：
 
@@ -2247,8 +2235,7 @@ UVM 文件不进入 Verilator 默认编译路径；VCS/UVM 与 Verilator directe
 
 - 根 `README.md` 正式列出 VCS/UVM/SVA/functional coverage 能力和当前验证边界。
 - `uvm/readme.md` 将旧 `v6_0/simple_bus` 路径更新为 `v6_0/data_subsystem`。
-- 新增 `uvm/v6_0/data_subsystem/README.md`，记录测试命令、test matrix、coverage 报告入口、
-  DUT snapshot 来源、已实现检查和已知限制。
+- 新增 `uvm/v6_0/data_subsystem/README.md`，记录测试命令、test matrix、functional coverage summary、DUT snapshot 来源、已实现检查和已知限制。
 - `spec.md` 区分 v6 已实现能力与未来可扩展项，不再把完整 MMIO/side-effect model 写成本阶段
   完成门槛。
 - `docs/08xx/0835` 只同步阶段成果、方法和边界，不写具体脚本执行步骤。
@@ -2257,7 +2244,7 @@ UVM 文件不进入 Verilator 默认编译路径；VCS/UVM 与 Verilator directe
 ### 17.4 阶段完成标准
 
 - UVM regression、Verilator ASM/C regression 和 `ASSERT_ON` regression 全部通过。
-- functional coverage 报告可复现，未闭合 bins 有明确解释。
+- functional coverage console summary 可复现，未闭合 bins 有明确解释。
 - RTL-001 有修复前 FAIL、修复后 PASS 和端到端 directed regression 证据。
 - filelist 只引用冻结 DUT snapshot，工作区可以脱离后续主线独立编译运行。
 - README/spec/0835/known issues 与实际实现一致。

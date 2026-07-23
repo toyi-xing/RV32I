@@ -26,6 +26,10 @@ class apply_wrapper_cfg_seq extends wrapper_base_seq;
 
 endclass
 
+// DMEM response-delay 随机配置 sequence。
+// 每次启动生成 `num_items` 笔仅作用于 DMEM 的 wrapper 配置；delay 分布显式提高
+// 0、1 和最大值 127 的命中概率，并保留中间区间。virtual sequence 将其 `num_items`
+// 设为 1 后重复启动，可保证每笔 bus access 前均已有独立的有效 delay 配置。
 class wrapper_dmem_cfg_random_seq extends wrapper_base_seq;
 
     `uvm_object_utils(wrapper_dmem_cfg_random_seq)

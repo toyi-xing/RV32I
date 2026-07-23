@@ -90,6 +90,7 @@ byte enable 和 error 阶段重新处理本问题。
 | 项目 | 内容 |
 | --- | --- |
 | 状态 | `Fixed` |
+| 发现日期 | 2026-07-01 |
 | 修复日期 | 2026-07-01 |
 | 修复版本 | v5.6（提交 `7af8c51`，tag `v5.6-bugfix-regression-stat`） |
 | 影响范围 | SoC 汇编和 C directed regression 的结果统计；被掩盖的失败用例包括汇编 `0603_gpio_rw`、C `0651_soc_mmio_smoke` 和 `0652_soc_mmio_gpio_uart` |
@@ -114,8 +115,9 @@ byte enable 和 error 阶段重新处理本问题。
 
 | 项目 | 内容 |
 | --- | --- |
-| 状态 | `Open` |
+| 状态 | `Fixed` |
 | 发现日期 | 2026-07-23 |
+| 修复日期 | 2026-07-23 |
 | 影响范围 | `uvm/v6_0/data_subsystem` 的 DMEM 随机测试及其 scoreboard 结果 |
 | 相关文件 | `uvm/v6_0/data_subsystem/tb/checker/simple_bus_scoreboard.svh`、`uvm/v6_0/data_subsystem/tb/seq/simple_bus_sequences.svh`、`uvm/v6_0/data_subsystem/tb/virtual/data_subsystem_virtual_sequences.svh` |
 | 关联 RTL | `rtl/mem/simple_ram.sv`（本问题中未发现 RTL 读写错误） |

@@ -1,13 +1,14 @@
 //------------------------------------------------------------------------------
 // 文件      : uvm/v6_0/data_subsystem/tb/seq/simple_bus_sequences.svh
-// 用途      : 定义 v6.0 simple data bus UVM 环境使用的定向与参数化 sequence。
+// 用途      : 定义 v6.0 simple data bus UVM 环境使用的定向、参数化与随机 sequence。
 //
 // 规范：
 //   - sequence 只构造并发送 `simple_bus_item`，不直接访问 virtual interface。
 //   - response delay 由 DUT wrapper 配置，实际观察结果由 driver/monitor 记录。
 //
 // 功能：
-//   - 收纳 simple bus 侧可复用的基础 smoke 与 DMEM raw access sequence。
+//   - 收纳 simple bus 侧可复用的基础 smoke、DMEM raw access 与 constrained-random
+//     access-stream sequence。
 //------------------------------------------------------------------------------
 
 // 固定 DMEM word 写后读序列，作为 simple bus 的最小端到端 smoke。
@@ -69,7 +70,7 @@ class simple_bus_dmem_random_access_seq extends simple_bus_base_seq;
 
     `uvm_object_utils(simple_bus_dmem_random_access_seq)
 
-    typedef logic [core_pkg::XLEN-3:0] dmem_word_key;
+    typedef logic [core_pkg::DMEM_ADDR_WIDTH-1:0] dmem_word_key;
     // 保证大部分 read 是 write 过的 dmem（这样读的数才有 scoreboard 意义）
     // 本 seq 内部维护一个 word 地址池，read 时不完全只依靠默认的 randomize
     dmem_word_key written_word_keys[$];                 // 队列，用来随机抽一个已写过的 word
@@ -106,7 +107,7 @@ class simple_bus_dmem_random_access_seq extends simple_bus_base_seq;
         logic [core_pkg::XLEN-1:0] addr
     );
         dmem_word_key word_key;
-        word_key = addr[core_pkg::XLEN-1:2];
+        word_key = addr_2_dmem_word_key(addr);
         if (!written_word_seen.exists(word_key)) begin
             written_word_seen[word_key] = 1'b1;
             written_word_keys.push_back(word_key);
@@ -118,7 +119,7 @@ class simple_bus_dmem_random_access_seq extends simple_bus_base_seq;
         logic [core_pkg::XLEN-1:0] addr
     );
         dmem_word_key word_key;
-        word_key = addr[core_pkg::XLEN-1:2];
+        word_key = addr_2_dmem_word_key(addr);
         if (written_word_seen.num() == 0 || written_word_seen.exists(word_key)) begin
             return addr;     // 地址池里还没有有效地址 或 地址本就在地址池中
         end else begin
@@ -126,12 +127,32 @@ class simple_bus_dmem_random_access_seq extends simple_bus_base_seq;
             i = $urandom_range(1,100);
             if (i <= 80) begin
                 word_key = written_word_keys[$urandom_range(0,written_word_keys.size()-1)];
-                return {word_key,addr[1:0]};   // 80% 概率随机到地址池内，低二位保持不变
+                return dmem_word_key_2_addr(word_key, addr[1:0]);   // 80% 概率随机到地址池内，低二位保持不变
             end
             else begin
                 return addr;     // 20% 的概率保持原值
             end
         end
     endfunction
+
+    // 将 32bit 的 addr 转化为 dmem 的 word 地址
+    protected function dmem_word_key addr_2_dmem_word_key(
+        logic [core_pkg::XLEN-1:0] addr
+    );
+        dmem_word_key word_key;
+        word_key = (addr - core_pkg::DMEM_BASE) >> 2;
+        return word_key;
+    endfunction
+
+    // 将 dmem 的 word 地址转化为 32bit 的 addr
+    protected function logic [core_pkg::XLEN-1:0] dmem_word_key_2_addr(
+        dmem_word_key word_key,
+        logic [1:0] byte_offset
+    );
+        logic [core_pkg::XLEN-1:0] word_offset;
+        word_offset = word_key;
+        return core_pkg::DMEM_BASE + (word_offset << 2) + byte_offset;
+    endfunction
+
 
 endclass

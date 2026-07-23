@@ -18,7 +18,7 @@ class simple_bus_scoreboard extends uvm_scoreboard;
 
     uvm_analysis_imp #(simple_bus_transfer, simple_bus_scoreboard) tr_imp;
 
-    bit [core_pkg::XLEN-1:0] ref_dmem  [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]];
+    bit [core_pkg::XLEN-1:0] ref_dmem  [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]]; // 关联数组，作为 dmem 的模型参考
     bit                      ref_valid [logic [core_pkg::DMEM_ADDR_WIDTH-1:0]];
     // 统计信息，用于 check/report 阶段判断测试是否真正完成。
     int unsigned compare_count;
@@ -80,7 +80,7 @@ class simple_bus_scoreboard extends uvm_scoreboard;
 
     // 命中 dmem 时，将 core 返回的 byte 地址转化为 word 地址
     function logic[core_pkg::DMEM_ADDR_WIDTH-1:0] addr_2_dmem_word_addr(logic [31:0] addr);
-        return {addr[core_pkg::DMEM_ADDR_WIDTH-3:2], 2'b00};
+        return (((addr - core_pkg::DMEM_BASE) >> 2));
     endfunction
 
     // dmem 的 gold model
