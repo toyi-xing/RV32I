@@ -634,10 +634,12 @@ coverage 的作用是回答：
 uvm/
   readme.md
   v6_0/
-    simple_bus/
+    data_subsystem/
+      readme.md
       spec.md
+      verification_report.md
       dut/
-        README.md
+        readme.md
         rtl/
           common/
           mem/
@@ -645,20 +647,16 @@ uvm/
           soc/
         docs/
       tb/
-        simple_bus_if.sv
-        simple_bus_assert.svh
-        data_subsystem_pkg.sv
-        simple_bus_item.svh
-        simple_bus_sequencer.svh
-        simple_bus_driver.svh
-        simple_bus_monitor.svh
-        simple_bus_agent.svh
-        simple_bus_scoreboard.svh
-        data_subsystem_env.svh
-        data_subsystem_base_test.svh
-        data_subsystem_simple_bus_smoke_test.svh
-        data_subsystem_simple_bus_random_wait_test.svh
-        tb_data_subsystem_uvm.sv
+        interfaces/
+        seq/
+        agent/
+        checker/
+        env/
+        virtual/
+        sva/
+        tests/
+        pkg/
+        top/
       sim/
         filelist.f
         run_test.sh

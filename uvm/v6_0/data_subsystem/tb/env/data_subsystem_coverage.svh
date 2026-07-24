@@ -12,8 +12,8 @@
 //
 // 功能：
 //   - 覆盖实际 read/write 数据分布及其 access-kind cross。
-//   - 覆盖实际 idle gap、response delay、response error，以及 op/delay、
-//     idle-gap/delay cross。
+//   - 覆盖实际 idle gap、response delay、response error、地址低位，以及 op/delay、
+//     target/address-low、GPIO0 address-low/error 和 idle-gap/delay cross。
 //------------------------------------------------------------------------------
 
 class data_subsystem_coverage extends uvm_subscriber #(simple_bus_transfer);
@@ -76,6 +76,14 @@ class data_subsystem_coverage extends uvm_subscriber #(simple_bus_transfer);
             bins undef  = default;
         }
 
+        // byte address 在 word 内的偏移，用于观察对齐访问和非零低位访问。
+        cp_addr_low: coverpoint tr.observed_item.addr[1:0]{
+            bins aligned = {2'b00};
+            bins byte1   = {2'b01};
+            bins half2   = {2'b10};
+            bins byte3   = {2'b11};
+        }
+
         // 访问宽度，根据实际应用场景分类
         cp_accses_width: coverpoint tr.observed_item.be{
             bins word32 = {4'b1111};
@@ -107,6 +115,16 @@ class data_subsystem_coverage extends uvm_subscriber #(simple_bus_transfer);
         // 访问不同设备 x 不同 resp 延迟。访问为定义时不经过 wrapper，延迟也是固定当拍响应
         cross_dev_delay: cross cp_addr_dev, cp_resp_delay {
             ignore_bins ignore_undef =
+                binsof(cp_addr_dev.undef);
+        }
+        // 各 target 是否实际覆盖四种 word 内 byte offset。
+        cross_dev_addr_low: cross cp_addr_dev, cp_addr_low;
+        // GPIO0 非零地址低位与 error 行为，直接观察 RTL-001 修复前后的差异。
+        cross_gpio_addr_low_error: cross cp_addr_dev, cp_addr_low, cp_resp_error {
+            ignore_bins ignore_non_gpio =
+                binsof(cp_addr_dev.dmem)   ||
+                binsof(cp_addr_dev.uart0)  ||
+                binsof(cp_addr_dev.timer0) ||
                 binsof(cp_addr_dev.undef);
         }
         // 不同访问间隔 x 不同 resp 延迟

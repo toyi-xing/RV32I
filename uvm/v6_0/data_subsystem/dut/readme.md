@@ -1,18 +1,18 @@
 # v6.0 Simple Bus DUT RTL 快照
 
-本目录保存 `v6_0/simple_bus` UVM 环境使用的最小 DUT RTL 编译闭包。保存快照的目的是让本环境在主线后续切换到 AXI-Lite、修改 package 或删除 `data_subsystem` 后，仍能从当前仓库独立编译和复现。
+本目录保存 `v6_0/data_subsystem` UVM 环境使用的最小 DUT RTL 编译闭包。保存快照的目的是让本环境在主线后续切换到 AXI-Lite、修改 package 或删除 `data_subsystem` 后，仍能从当前仓库独立编译和复现。
 
 ## 来源基线
 
 | 项目 | 值 |
 |---|---|
-| 源仓库 commit | `c2f7d82` |
-| 源仓库 tag | `v6.0-data-side-variable-delay` |
-| 快照建立日期 | `2026-07-10` |
+| 源仓库 commit | `8930f3a` |
+| 源仓库 release | v6.17，0835 最终收口 tag 待创建 |
+| 快照建立日期 | `2026-07-24` |
 | 验证对象 | `data_subsystem + simple_ram + GPIO0/UART0/TIMER0` |
 | data bus 版本 | v6.0 single-outstanding simple request/response bus |
 
-快照建立时，下列 RTL 文件与根目录对应文件逐字节一致。
+快照建立时，下列 RTL/ABI 文件与根目录对应文件逐字节一致。`sim/filelist.f` 只引用本目录的镜像文件。
 
 ## 文件映射
 
@@ -47,4 +47,6 @@
 
 ## 快照差异
 
-当前没有相对 `c2f7d82` / `v6.0-data-side-variable-delay` 的 RTL 差异。
+相对 v6.0 `v6.0-data-side-variable-delay` 基线，本快照包含后续 VCS 兼容性整理和 RTL-001 修复。RTL-001 将 GPIO0、UART0、TIMER0 的寄存器 decode 从原始 byte offset 改为 word-aligned offset `{full_offset[11:2], 2'b00}`；原始 byte address 继续透传，`be` 继续决定有效 byte lane。修复前后 UVM 证据记录在根目录 `docs/known_issues.md`。
+
+本快照中的 RTL 不包含 UVM 专用改动；任何未来主线变更若需要同步，必须重新完成主线回归、更新本说明并重新运行本工作区回归。

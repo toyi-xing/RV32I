@@ -30,6 +30,7 @@
 - **interrupt directed test**：覆盖 timer interrupt、GPIO/UART external interrupt、MEIP/MTIP 优先级、CSR 写同拍中断、MRET 同拍中断重入和周期 GPIO 输入测量，测试程序由 TB mailbox 机制自行激发。
 - **data_subsystem response delay wrapper**：在固定响应的 DMEM/GPIO0/UART0/TIMER0 目标外侧统一插入可配置 response delay，用于验证 LSU single outstanding、MEM backpressure、delayed response error 和 MMIO 副作用不重复触发。delay 配置由当前 testbench 的 TB mailbox 提供，只属于仿真验证约定，不是 SoC 真实 MMIO ABI，也不改变外设寄存器软件接口。
 - **FPGA board bring-up**：[fpga/readme.md](fpga/readme.md) 作为 FPGA 上板验证入口，归档板卡资料、通用上板方法，以及已完成版本的专项迁移文档和验证结果。
+- **VCS/UVM/SVA 验证工作区**：[uvm/v6_0/data_subsystem](uvm/v6_0/data_subsystem/readme.md) 独立验证 data_subsystem: simple bus 与 response-delay wrapper，包含 active bus/wrapper agent、monitor、DMEM/GPIO0 reference check、wrapper delay checker、SVA 和 functional coverage；其 DUT RTL 使用版本化快照，固定 seed 结果、coverage 见 [verification report](uvm/v6_0/data_subsystem/verification_report.md)。
 
 ---
 
@@ -78,13 +79,13 @@
 | 目录 | 说明 |
 |------|------|
 | `docs/` | 说明文档 |
-| `fpga/` | FPGA 上板验证工作区，包含板卡资料、版本归档工程、上板流程和验证结果入口 |
+| [`fpga/`](fpga/readme.md) | FPGA 上板验证工作区，包含板卡资料、版本归档工程、上板流程和验证结果入口 |
 | `rtl/` | RTL 源码（core_pkg、pipeline_pkg、core 各阶段模块、memory 封装） |
 | `scripts/` | 辅助脚本（bin2mem32 等） |
 | `sim/` | 编译和仿真脚本（按汇编/C 分目录） |
 | `sw/` | 汇编和 C 裸机测试程序 |
 | `tb/` | testbench（当前维护 SoC 级 testbench） |
-| `uvm/` | 按 release/验证对象归档的独立 UVM 工作区；当前 `v6_0/simple_bus` 处于 0835 开发阶段 |
+| [`uvm/`](uvm/readme.md) | Linux/VCS CLI UVM 验证工作区，按 release 和验证对象归档；当前 `v6_0/data_subsystem` 为 0835 收口版本 |
 
 ---
 
@@ -95,22 +96,40 @@
 | 单周期 RV32I | `core_single_cycle.sv` | 历史版本已完成，当前不再维护 | v1.0 | 最终兼容版本为 v2.0，自 v2.10 起删除该文件 |
 | 五级流水线 RV32I（data hazard + control hazard） | `core_pipeline5.sv` | 已完成 | v2.0 | - |
 | 同步异常扩展、CSR 与最小特权级（CSR/exception trap） | `core_pipeline5.sv` | 已完成 | v3.0 | 自 v3.4 起，将 `core_pipeline5.sv` 改名为 `core.sv` |
-| 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` |
-| machine interrupt：MTIP、MEIP | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 1. 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 <br> 2. 回归测试统计存在 bug，已在 v5.6 定位并修复，详见对应版本的提交说明 |
-| FPGA 分支：基于 v5.1 的 FPGA 上板验证 | FPGA 顶层 `e10_rv32i_top.sv` <br> FPGA 工程 `e10_rv32i.qpf` | 已完成 | v5.2 | - |
+| 增加 MMIO 最简外设与 SoC 平台集成 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v4.0 | 1. 自 v4.10 起，删除旧的 CPU 核测试平台 `tb_core_pipeline5.sv` <br>  2. 外设 offset 计算逻辑存在 bug [RTL-001](docs/known_issues.md)，已在v7.0定位并修复 |
+| machine interrupt：MTIP、MEIP | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v5.0 | 1. 自 v5.1 起，拆分 SoC 顶层电路的 mem 单元 <br> 2. 回归测试统计存在 bug [REG-001](docs/known_issues.md)，已在 v5.6 定位并修复 |
+| FPGA 分支：基于 v5.1 的 FPGA 上板验证 | FPGA 顶层 [`e10_rv32i_top.sv`](fpga/project_v5.1_original_to_fpga/project_v5.1_fpga/rtl/fpga/e10_rv32i_top.sv) <br> FPGA 工程 [`e10_rv32i.qpf`](fpga/project_v5.1_original_to_fpga/project_v5.1_fpga/fpga/quartus/e10_rv32i.qpf) | 已完成 | v5.2 | - |
 | data-side 可变延迟 | CPU 核 `core.sv` <br> SoC 平台 `rv32i_soc` | 已完成 | v6.0 | - |
+| UVM 分支：基于 v6.0 的 data_subsystem UVM/SVA 验证 | DUT rtl top: [`data_subsystem.sv`](uvm/v6_0/data_subsystem/dut/rtl/soc/data_subsystem.sv) <br> UVM top: [`tb_data_subsystem_uvm_top.sv`](uvm/v6_0/data_subsystem/tb/top/tb_data_subsystem_uvm_top.sv) | 已完成 | v7.0 | UVM 固定 seed 回归暴露并修复 [RTL-001](docs/known_issues.md) |
 
 ---
 
 ## 环境依赖
 
-- **RV32I 工具链**：`riscv64-unknown-elf-gcc` 等，将测试程序编译为 .elf 并提取二进制 .bin。
-- **Verilator**：SystemVerilog 仿真器
-- **Python 3**：运行 `bin2mem32.py`，编译出的裸二进制 .bin 转成每行一个 32-bit hex word 的 .mem 文件。
+### 主仓库仿真 —— Linux
+
+- **RISC-V bare-metal GCC 工具链**：`riscv64-unknown-elf-gcc` 等，需支持 `rv32i_zicsr` 和 `ilp32`，用于生成 ELF/BIN。
+- **Verilator**：运行根目录 ASM/C directed regression。
+- **Python 3**：运行 `bin2mem32.py` ，编译出的裸二进制 .bin 转成每行一个 32-bit hex word 的 .mem 文件。
+
+### FPGA 工作区 —— Windows
+
+- **Quartus Prime Lite 25.1std.0 Build 1129**：综合、布局布线、生成 `.sof` 和 Programmer 下载。
+- **USB-Blaster 驱动**：连接 E10 开发板并下载 FPGA。
+- **RISC-V bare-metal GCC 工具链、Bash 与 Python 3**：构建裸机程序并生成 `.mem`/`.mif` 初始化镜像。
+- **USB-TTL 串口工具**：观察和验证真实 UART TX/RX。
+
+FPGA 板卡、工具和版本化工程说明见 [fpga/readme.md](fpga/readme.md)。
+
+### VCS/UVM 工作区 —— Linux
+
+- **Synopsys VCS**：编译和运行 UVM 仿真平台。
+
+UVM 工具、命令和结果说明见 [uvm/readme.md](uvm/readme.md)。
 
 ---
 
-## 五级流水线核
+## 五级流水线核（主仓库仿真）
 
 ### 涉及文件
 
@@ -228,6 +247,22 @@ MMIO 外设操作手册见 [rtl/periph/readme.md](rtl/periph/readme.md)。
 
 MMIO 地址图镜像查阅见 [sw/linker/readme.md](sw/linker/readme.md)。
 
-## FPGA 上板验证
+## FPGA 上板验证（FPGA 工作区）
 
 FPGA 上板验证入口见 [fpga/readme.md](fpga/readme.md)。该目录维护板卡资料、通用上板方法、版本归档工程、专项迁移说明和板级验证结果；根 README 只保留总入口，具体 FPGA 版本的工程细节以后统一在 `fpga/` 工作区内维护。
+
+
+## UVM 平台仿真（VCS/UVM 工作区）
+
+```bash
+# —— 单个 UVM test，第二个参数为 random seed ——
+uvm/v6_0/data_subsystem/sim/run_test.sh DS_map_random_test 1
+
+# —— 启用 simple bus SVA ——
+ASSERT_ON=1 uvm/v6_0/data_subsystem/sim/run_test.sh simple_bus_smoke_test 1
+
+# —— 当前 UVM 受控回归 ——
+uvm/v6_0/data_subsystem/sim/run_all.sh
+```
+
+UVM 工作区总入口见 [uvm/readme.md](uvm/readme.md)，当前环境的完整命令、PASS/FAIL 口径和本地产物见 [uvm_simulation_flow.md](uvm/v6_0/data_subsystem/dut/docs/uvm_simulation_flow.md)。

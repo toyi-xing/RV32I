@@ -94,3 +94,52 @@ class data_subsystem_dmem_random_vseq extends data_subsystem_base_vseq;
     endtask
     
 endclass
+
+
+// 全 data-side 地址图 constrained-random virtual sequence。
+// 每个 delay 档位开始前依次配置四个 target，随后启动同一个 map random physical sequence；
+// bus sequence 跨档位保留全局已写 word 地址池，且不读取 wrapper 或 scoreboard 内部状态。
+class data_subsystem_map_random_vseq extends data_subsystem_base_vseq;
+
+    `uvm_object_utils(data_subsystem_map_random_vseq)
+
+    simple_bus_map_random_access_seq bus_seq;
+
+    function new(string name = "data_subsystem_map_random_vseq");
+        super.new(name);
+        num_items = 300;
+    endfunction
+
+    task body();
+        int delay_cycles[7] = '{0, 1, 3, 8, 32, 64, 127};
+
+        super.body();
+        bus_seq = simple_bus_map_random_access_seq::type_id::create("bus_seq");
+        bus_seq.num_items = num_items;
+
+        foreach (delay_cycles[i]) begin
+            apply_all_target_delay(delay_cycles[i]);
+            bus_seq.start(p_sequencer.bus_sequencer);
+        end
+    endtask
+
+    // 在没有 outstanding request 时，为四个已实现 target 应用同一 delay 档位。
+    protected task automatic apply_all_target_delay(int delay_cycles);
+        apply_wrapper_cfg_seq wrp_seq;
+
+        wrp_seq = apply_wrapper_cfg_seq::type_id::create(
+            $sformatf("wrp_seq_delay%0d", delay_cycles)
+        );
+        wrp_seq.delay_cycles = delay_cycles;
+
+        wrp_seq.target = TARGET_DMEM;
+        wrp_seq.start(p_sequencer.wrp_sequencer);
+        wrp_seq.target = TARGET_GPIO0;
+        wrp_seq.start(p_sequencer.wrp_sequencer);
+        wrp_seq.target = TARGET_UART0;
+        wrp_seq.start(p_sequencer.wrp_sequencer);
+        wrp_seq.target = TARGET_TIMER0;
+        wrp_seq.start(p_sequencer.wrp_sequencer);
+    endtask
+
+endclass

@@ -25,6 +25,7 @@ TESTS=(
     simple_bus_smoke_test
     data_subsystem_smoke_test
     DS_dmem_random_test
+    DS_map_random_test
 )
 
 SEED=1

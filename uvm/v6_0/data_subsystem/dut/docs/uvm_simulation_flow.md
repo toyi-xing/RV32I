@@ -14,7 +14,10 @@ uvm/v6_0/data_subsystem/sim/run_test.sh <test_name> <seed> [extra_plusargs...]
 
 ```bash
 uvm/v6_0/data_subsystem/sim/run_test.sh simple_bus_smoke_test 1
-ASSERT_ON=1 uvm/v6_0/data_subsystem/sim/run_test.sh simple_bus_wait_test 17
+uvm/v6_0/data_subsystem/sim/run_test.sh data_subsystem_smoke_test 1
+uvm/v6_0/data_subsystem/sim/run_test.sh DS_dmem_random_test 1
+uvm/v6_0/data_subsystem/sim/run_test.sh DS_map_random_test 1
+ASSERT_ON=1 uvm/v6_0/data_subsystem/sim/run_test.sh simple_bus_smoke_test 1
 ```
 
 `ASSERT_ON=1` 在 VCS 编译期加入 `+define+ASSERT_ON`，启用 `simple_bus_if` 及后续 bind SVA。开启和关闭断言使用不同 build 目录，不会复用彼此的增量编译产物。
@@ -29,7 +32,7 @@ ASSERT_ON=1 uvm/v6_0/data_subsystem/sim/run_test.sh simple_bus_wait_test 17
 2. v6.0 DUT RTL 闭包。
 3. static interface、UVM package/class 和 harness top。
 
-UVM top 实例化 DUT、simple bus interface、delay configuration interface 和外部 DMEM model。`run_test.sh` 通过 `+UVM_TESTNAME=<test_name>` 让 `run_test()` 从 factory 创建派生 test；test 创建 env，sequence 经 sequencer 交给 driver，monitor 将观察到的 transaction 广播给 scoreboard、coverage 和 DUT 专用 checker。
+`filelist.f` 的 DUT 路径均位于 `../dut/rtl`，因此本环境不依赖根目录主线 RTL。UVM top 实例化 DUT、simple bus interface、delay configuration interface 和外部 DMEM model。`run_test.sh` 通过 `+UVM_TESTNAME=<test_name>` 让 `run_test()` 从 factory 创建派生 test；test 创建 env，sequence 经 sequencer 交给 driver，monitor 将观察到的 transaction 广播给 scoreboard、coverage 和 DUT 专用 checker。
 
 ## 3. 产物与日志
 
@@ -60,7 +63,7 @@ build/log 产物属于本地仿真输出，不纳入版本控制。排查失败�
 - UVM Report Summary 中 `UVM_FATAL` 非零。
 - runtime log 中 VCS `Error:` 或 `%Error` diagnostics 非零；这包括当前 SVA fail action 的 `$error`。
 
-因此 `PASS` 表示仿真基础设施正常完成，且已接入的 UVM checker、scoreboard、coverage threshold check、SVA 和 SystemVerilog runtime checks 均未报告失败。它不是“DUT 未经检查即天然正确”的含义；DUT 功能正确性由各 test 的 checker/scoreboard/SVA 覆盖范围共同定义。
+因此 `PASS` 表示仿真基础设施正常完成，且已接入的 UVM checker、scoreboard、SVA 和 SystemVerilog runtime checks 均未报告失败。functional coverage 负责记录场景命中，不设独立 PASS threshold。DUT 功能正确性由各 test 的 checker/scoreboard/SVA 覆盖范围共同定义。
 
 ## 5. 回归汇总
 
@@ -71,3 +74,7 @@ build/log 产物属于本地仿真输出，不纳入版本控制。排查失败�
 - `SIM_ERROR` 是 UVM 之外的 simulator runtime error 计数，主要用于 SVA `$error`。
 
 回归中任一 test 为 `FAIL` 时，`run_all.sh` 最终返回非零退出码，适合后续 CI 或批量 nightly regression 使用。
+
+## 6. Coverage 边界
+
+`data_subsystem_coverage` 在 UVM `report_phase` 输出 console summary，采样实际完成的 transfer。当前 VCS 可生成运行期 coverage 数据，但本机 URG 在读取 VDB 时存在工具级崩溃，因此 VDB/URG HTML 不作为 0835 的 PASS 条件。固定 seed 回归、scoreboard/wrapper checker 统计和 console coverage summary 是当前可复现证据。

@@ -6,8 +6,8 @@
 //   - 保存 request payload 和 request 前 idle_cycles，不保存 DUT response。
 //   - sequence/driver 使用的实例表示计划驱动值；observed transfer 可内嵌独立实例
 //     保存 monitor 实际观测值，两者不是同一个对象句柄。
-//   - 通用约束只限制 byte enable 非零；CPU access profile、target 和 MMIO offset
-//     的专属约束由后续 sequence 施加。
+//   - 通用约束限制 byte enable 非零，并提供默认 data-side 地址分布；CPU access profile
+//     和 MMIO offset 的专属约束由后续 sequence 施加。
 //
 // 功能：
 //   - 为计划值和观测值提供统一的 master-side 字段结构。
@@ -31,9 +31,21 @@ class simple_bus_item extends uvm_sequence_item;
         `uvm_field_int(idle_cycles, UVM_ALL_ON)
     `uvm_object_utils_end
 
-    // be 非零（当前只做基础约束，后续联合约束由专属 sequence 施加）
+    // be 非零（CPU access profile 与 addr/be 联合约束由专属 sequence 施加）
     constraint c_non0_be {
         be != 4'b0000;
+    }
+
+    // 默认地址分布；:/ 表示各 window 总权重，避免大容量 DMEM 按字节数放大概率。IMEM 未映射到
+    // 当前 data-side，作为 TARGET_UNDEFINED 的代表性 negative traffic。
+    constraint c_addr_distribution{
+        addr dist {
+            [core_pkg::DMEM_BASE  : core_pkg::DMEM_BASE  + core_pkg::DMEM_SIZE_BYTES  - 1] :/ 50,
+            [soc_pkg::GPIO0_BASE  : soc_pkg::GPIO0_BASE  + soc_pkg::GPIO0_SIZE_BYTES  - 1] :/ 20,
+            [soc_pkg::UART0_BASE  : soc_pkg::UART0_BASE  + soc_pkg::UART0_SIZE_BYTES  - 1] :/ 10,
+            [soc_pkg::TIMER0_BASE : soc_pkg::TIMER0_BASE + soc_pkg::TIMER0_SIZE_BYTES - 1] :/ 10,
+             [32'h0000_0000 : 32'hFFFF_FFFF] :/ 10
+        };
     }
 
     // wdata 分布

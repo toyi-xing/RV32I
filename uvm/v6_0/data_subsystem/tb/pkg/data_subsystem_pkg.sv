@@ -10,9 +10,8 @@
 //
 // 功能：
 //   - 汇总 data_subsystem UVM 环境所需的公共 package 和宏依赖。
-//   - 当前已接入 bus/wrapper transaction、sequence、agent、virtual sequencer、DMEM
-//     scoreboard、wrapper scoreboard、env、base test 和 smoke test；后续继续加入
-//     coverage 与更多派生 test。
+//   - 当前已接入 bus/wrapper transaction、sequence、agent、virtual sequencer、DMEM/GPIO0
+//     scoreboard、wrapper scoreboard、functional coverage、env 与派生 test。
 //------------------------------------------------------------------------------
 
 package data_subsystem_pkg;

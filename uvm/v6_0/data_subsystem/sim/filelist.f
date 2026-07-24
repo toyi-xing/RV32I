@@ -15,16 +15,12 @@
 ../dut/rtl/common/soc_pkg.sv
 ../dut/rtl/common/data_bus_pkg.sv
 
-// DUT rtl
-// -y ../dut/rtl/mem
-// -y ../dut/rtl/periph
-// -y ../dut/rtl/soc
-// +libext+.sv
-../../../../rtl/soc/data_subsystem.sv
-../../../../rtl/periph/mmio_gpio.sv
-../../../../rtl/periph/mmio_timer32.sv
-../../../../rtl/periph/mmio_uart.sv
-../../../../rtl/mem/simple_ram.sv
+// 只编译本工作区冻结的 DUT RTL 快照，不引用根目录主线 RTL。
+../dut/rtl/soc/data_subsystem.sv
+../dut/rtl/periph/mmio_gpio.sv
+../dut/rtl/periph/mmio_timer32.sv
+../dut/rtl/periph/mmio_uart.sv
+../dut/rtl/mem/simple_ram.sv
 
 // UVM package 先于导入它的静态 testbench top 编译。
 ../tb/interfaces/simple_bus_if.sv

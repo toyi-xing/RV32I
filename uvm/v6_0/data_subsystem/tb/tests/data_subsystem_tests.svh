@@ -8,7 +8,7 @@
 //
 // 功能：
 //   - 收纳直接启动 simple bus sequence 的 protocol smoke，以及通过 virtual sequencer
-//     协调 wrapper/bus agent 的 data_subsystem smoke 和 DMEM 随机回归。
+//     协调 wrapper/bus agent 的 data_subsystem smoke、DMEM 与全地址图随机回归。
 //------------------------------------------------------------------------------
 
 // simple bus protocol smoke，直接在 simple bus physical sequencer 上启动固定 DMEM sequence。
@@ -62,12 +62,38 @@ class DS_dmem_random_test extends data_subsystem_base_test;
 
     function new(string name = "DS_dmem_random_test", uvm_component parent = null);
         super.new(name, parent);
+        // uvm_top.set_timeout(10ms); // 当 num_items 设置的较大时可以延长超时保护，大概量可以参考：2000 笔约运行 0.438 ms
     endfunction
 
     task run_phase(uvm_phase phase);
         data_subsystem_dmem_random_vseq vseq;
         vseq = data_subsystem_dmem_random_vseq::type_id::create("vseq");
         vseq.num_items = 2000;
+
+        phase.raise_objection(this);
+        vseq.start(env.vseqr);
+        phase.drop_objection(this);
+    endtask
+
+endclass
+
+
+// 全 data-side 地址图 constrained-random regression test。
+// 通过 virtual sequencer 分批覆盖全部 wrapper delay 区间，并在每个档位运行通用 map
+// random access stream；固定 seed 可用于 RTL-001 修复前 FAIL、修复后 PASS 的对比。
+class DS_map_random_test extends data_subsystem_base_test;
+
+    `uvm_component_utils(DS_map_random_test)
+
+    function new(string name = "DS_map_random_test", uvm_component parent = null);
+        super.new(name, parent);
+        uvm_top.set_timeout(10ms);
+    endfunction
+
+    task run_phase(uvm_phase phase);
+        data_subsystem_map_random_vseq vseq;
+        vseq = data_subsystem_map_random_vseq::type_id::create("vseq");
+        vseq.num_items = 300;
 
         phase.raise_objection(this);
         vseq.start(env.vseqr);

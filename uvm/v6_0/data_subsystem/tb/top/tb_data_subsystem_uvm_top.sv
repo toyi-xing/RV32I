@@ -118,7 +118,7 @@ module tb_data_subsystem_uvm_top;
             "wrapper_vif",
             wrapper_vif.mon_mp
         );
-        uvm_top.set_timeout(1ms,1'b0);
+        uvm_top.set_timeout(1ms,1'b1);
         run_test();
     end
     

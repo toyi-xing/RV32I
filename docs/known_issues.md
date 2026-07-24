@@ -12,13 +12,13 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 状态 | `Deferred` |
+| 状态 | `Fixed` |
 | 发现日期 | 2026-07-13 |
+| 修复日期 | 2026-07-24 |
+| 修复版本 | v6.17（提交 `8930f3a`） |
 | 影响范围 | 当前主线 RTL、v6.0 UVM DUT 快照 |
 | 相关模块 | `rtl/core/mem_stage.sv`、`rtl/soc/data_subsystem.sv`、各 MMIO 外设 |
-| 暂缓原因 | 当前先完成 simple bus UVM 基础环境和 word access/wait-state MVP，避免在复现用例建立前直接修改 RTL |
-| 预计处理时点 | 0835 `plan.md` 第 13 章 byte enable 和 error 阶段：先补充失败用例稳定复现，再修复主线 RTL并完成回归 |
-| 预计修复版本 | 主线修复归属的 release 待定；v6.0 DUT 快照是否同步修复，在问题复现后按快照策略确定 |
+| 修复内容 | GPIO0、UART0、TIMER0 的寄存器 offset decode 改为 word-aligned offset；保留原始 byte address 与 byte enable 总线语义 |
 
 ### 问题说明
 
@@ -29,9 +29,9 @@ CPU 当前向 simple data bus 输出未经对齐的字节地址，同时根据�
 
 该语义在 data memory 中可以正常工作：RAM 使用地址的 word index 选择存储字，再使用 `be` 更新对应 byte lane。
 
-当前 GPIO、UART、timer 等 MMIO 外设则直接使用完整的低 12 位地址偏移匹配word-aligned 寄存器地址。因此，访问已定义寄存器内部的非零 byte offset 时，地址无法命中寄存器：
+修复前 GPIO、UART、timer 等 MMIO 外设直接使用完整的低 12 位地址偏移匹配 word-aligned 寄存器地址。因此，访问已定义寄存器内部的非零 byte offset 时，地址无法命中寄存器：
 
-| 访问形式 | 当前结果 |
+| 访问形式 | 修复前结果 |
 | --- | --- |
 | 对齐的 `LW/SW reg+0` | 正常命中 |
 | `LB/SB reg+0` | 可以命中 |
@@ -40,6 +40,14 @@ CPU 当前向 simple data bus 输出未经对齐的字节地址，同时根据�
 | 对齐的 `LH/SH reg+2` | 被识别为未知偏移并返回 access fault |
 
 这不是一套完整一致的“MMIO 仅支持 word 访问”规则。外设内部已经使用 `be` 控制 byte lane；若请求使用 word-aligned 地址并携带非零 lane 的 `be`，外设可以处理，但 CPU 生成的等价子字节请求却会因地址偏移不匹配而失败。因此，按当前simple data bus 的“字节地址 + byte enable”口径，应将其视为 RTL 问题。
+
+### UVM 修复前复现证据
+
+2026-07-23 使用固定 seed `1` 运行 `uvm/v6_0/data_subsystem/sim/run_test.sh DS_map_random_test 1`，该 test 在 `0/1/3/8/32/64/127` 七个 response delay 档位下分别配置 DMEM、GPIO0、UART0、TIMER0，并共完成 2100 笔 data-side transaction。
+
+UVM 汇总得到 `UVM_ERROR=52`、`UVM_FATAL=0`。其中 48 条为 GPIO0 已定义 word offset 的非零 byte address 被错误返回 error，例如 `offset=0x014 addr=0x00080015`：scoreboard 按 word-aligned offset 正确识别 `0x014` 是已定义寄存器，而当前 GPIO RTL 直接使用原始偏移 `0x015` 解码，因而返回 access fault。其余 2 条 OUT read mismatch 和 2 条 OE read mismatch 是上述错误拒绝写请求后，DUT 寄存器状态未更新导致的后续可观测结果，不是独立问题。
+
+同一日志中，真正未知的 GPIO0 word offset（例如对齐 offset `0x038`）均返回 error 并被 scoreboard 记录为 expected behavior；DMEM 没有 mismatch/error，wrapper scoreboard 为 `check_num=2100, correct_num=2100, error_num=0`。functional coverage 为 data `96.67%`、behavior `97.12%`。因此该 FAIL 能隔离为 RTL-001 的修复前证据，可用于同 seed 修复后的 PASS 对比。
 
 ### 当前定向测试未暴露问题的原因
 
@@ -52,38 +60,17 @@ CPU 当前向 simple data bus 输出未经对齐的字节地址，同时根据�
 
 所以，当前回归通过只能说明 DMEM 子字节语义和 MMIO word 访问语义分别正确，不能说明 MMIO 子字节访问已经正确实现。
 
-### 预期修复方向
+### 修复内容
 
-优先保留 simple data bus 当前的原始字节地址语义，不在 `mem_stage` 中强制清除地址低两位。建议在 MMIO 寄存器解码处使用 word-aligned 的寄存器偏移进行匹配，再由 `be` 选择有效 byte lane，例如按 `full_offset[11:2]` 识别寄存器。
+修复保留 simple data bus 的原始 byte address 语义，未在 `mem_stage` 强制清除地址低两位。GPIO0、UART0、TIMER0 的寄存器 decode 均改为使用 `{full_offset[11:2], 2'b00}` 形成 word-aligned offset，再由原有 `be` 逻辑选择有效 byte lane。
 
-不建议在 core 侧直接对所有 data address 做 word 对齐，因为这会改变总线地址契约、隐藏原始 byte offset，并限制后续总线或外设扩展。最终修复前仍需结合MMIO 寄存器的只读、只写和 side effect 语义，确认各 byte lane 的合法行为。
+因此 core 继续保留 byte address、MMIO register decode 忽略地址低两位、byte lane 仍由 `be` 决定，三者的职责边界保持一致。真正未定义的 word offset 不发生 alias，仍由各外设输出 `access_fault_o`。
 
-### 计划验证方法
+### 验证与关闭依据
 
-本问题暂不打断当前从 `plan.md` 第 3 章开始的 UVM 基础环境搭建。完成基础
-agent/env/scoreboard、word access smoke 和 wait-state smoke 后，在第 13 章
-byte enable 和 error 阶段重新处理本问题。
+修复后使用相同命令和 seed `1` 运行 `uvm/v6_0/data_subsystem/sim/run_test.sh DS_map_random_test 1`，结果从修复前的 `UVM_ERROR=52` 变为 `UVM_ERROR=0`、`UVM_FATAL=0`。同一 2100 笔事务中，simple bus scoreboard 汇总为 `correct_num=819, error_num=0, partial_num=703, skip_num=578`，wrapper scoreboard 为 `check_num=2100, correct_num=2100, error_num=0`，functional coverage 为 data `96.67%`、behavior `100.00%`。
 
-届时先补充定向用例，至少覆盖：
-
-- 对可读写 MMIO 寄存器执行 `SB reg+1`，检查对应 byte lane 更新且不报错。
-- 对可读写 MMIO 寄存器执行 `SH reg+2`，检查高两个 byte lane 更新且不报错。
-- 用 CPU-shaped byte/halfword bus request 读取非零 byte offset，检查 response 的 `rdata/error`。load 数据选择和符号扩展属于 core `mem_stage`，继续由 SoC directed regression 覆盖，不属于本 data_subsystem 级 UVM harness 的职责。
-- 检查真正未定义的寄存器 word offset 仍然返回 access fault。
-- 在固定延迟和可变延迟配置下重复关键场景，确保修复不破坏 request/response 和 backpressure 语义。
-
-测试应先在当前 DUT 上稳定复现失败，再修复根因，避免仅根据代码推断问题已经被覆盖。
-
-### 关闭条件
-
-满足以下条件后可将状态更新为 `Fixed`：
-
-- 新增测试能够在修复前暴露该问题，并在修复后通过。
-- 已映射 MMIO 寄存器的合法 byte/halfword 访问符合约定。
-- 未定义 MMIO 寄存器偏移仍能正确返回错误。
-- 现有 Verilator C/ASM 定向自检回归全部通过。
-- 相关 UVM 定向测试在固定延迟和可变延迟下通过。
-- 明确 v6.0 DUT 快照的处理方式：同步修复并记录快照差异，或保留 v6.0 行为并将修复归入后续 release。
+修复前日志中的未知 GPIO0 word offset 在修复后仍返回 error，说明修复没有把未定义寄存器错误 alias 为已定义寄存器。用户已运行现有 Verilator C/ASM 定向自检仿真，结果通过。至此，修复前 FAIL、修复后同 seed PASS、wrapper timing 检查和主线软件回归均具备证据，RTL-001 关闭。
 
 ## REG-001：SoC 回归脚本将 FAIL/TIMEOUT 误统计为 PASS
 

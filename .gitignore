@@ -15,15 +15,15 @@ obj_dir/
 *.vcd.*
 
 # VCS/UVM generated outputs
-uvm/v6_0/simple_bus/sim/build/
-uvm/v6_0/simple_bus/sim/logs/
-uvm/v6_0/simple_bus/sim/csrc/
-uvm/v6_0/simple_bus/sim/simv
-uvm/v6_0/simple_bus/sim/simv.daidir/
-uvm/v6_0/simple_bus/sim/ucli.key
-uvm/v6_0/simple_bus/sim/vcs.log
-uvm/v6_0/simple_bus/sim/*.vpd
-uvm/v6_0/simple_bus/sim/*.fsdb
+uvm/v6_0/data_subsystem/sim/build/
+uvm/v6_0/data_subsystem/sim/logs/
+uvm/v6_0/data_subsystem/sim/csrc/
+uvm/v6_0/data_subsystem/sim/simv
+uvm/v6_0/data_subsystem/sim/simv.daidir/
+uvm/v6_0/data_subsystem/sim/ucli.key
+uvm/v6_0/data_subsystem/sim/vcs.log
+uvm/v6_0/data_subsystem/sim/*.vpd
+uvm/v6_0/data_subsystem/sim/*.fsdb
 
 # FPGA/Quartus generated outputs
 fpga/**/project_*_fpga/build/

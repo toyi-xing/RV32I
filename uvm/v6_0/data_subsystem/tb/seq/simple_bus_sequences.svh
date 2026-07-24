@@ -156,3 +156,91 @@ class simple_bus_dmem_random_access_seq extends simple_bus_base_seq;
 
 
 endclass
+
+
+// 全 data-side 地址图 constrained-random access stream。
+// 每轮独立随机生成一笔 read 或 write，地址、byte enable、write data 与 idle gap 均复用
+// simple_bus_item 的通用约束。sequence 只按完整 word address 维护已写地址池，不区分
+// DMEM/MMIO/undefined target，也不依赖任何 scoreboard/reference model 的实现范围。
+class simple_bus_map_random_access_seq extends simple_bus_base_seq;
+
+    `uvm_object_utils(simple_bus_map_random_access_seq)
+
+    typedef logic [core_pkg::XLEN-1:2] map_word_key;
+    // 保证大部分 read 指向 write 过的 word，提高已实现 reference model 的有效比较概率。
+    // 地址池覆盖整个 data-side 地址图，是否具备完整 expected behavior 由 scoreboard 决定。
+    map_word_key written_word_keys[$];
+    bit          written_word_seen[map_word_key];
+
+    function new(string name = "simple_bus_map_random_access_seq");
+        super.new(name);
+        num_items = 20;
+    endfunction
+
+    task body();
+        repeat (num_items) begin
+            req = simple_bus_item::type_id::create("req");
+            start_item(req);
+            if (!req.randomize()) begin
+                `uvm_fatal(get_type_name(), "failed to randomize data-side map req item")
+            end
+            if (!req.write) begin
+                req.addr = read_word_addr_convert(req.addr);
+            end
+            finish_item(req);
+            if (req.write) begin
+                remember_written_word_addr(req.addr);
+            end
+        end
+    endtask
+
+    // helper ---------------------------------------------------------
+    // 将 write 的完整 word address 记录到队列中。
+    protected function void remember_written_word_addr(
+        logic [core_pkg::XLEN-1:0] addr
+    );
+        map_word_key word_key;
+        word_key = addr_2_map_word_key(addr);
+        if (!written_word_seen.exists(word_key)) begin
+            written_word_seen[word_key] = 1'b1;
+            written_word_keys.push_back(word_key);
+        end
+    endfunction
+
+    // read 高概率复用任一已写 word，低两位保持原随机值；其余情况保留原随机地址。
+    protected function logic [core_pkg::XLEN-1:0] read_word_addr_convert(
+        logic [core_pkg::XLEN-1:0] addr
+    );
+        map_word_key word_key;
+        word_key = addr_2_map_word_key(addr);
+        if (written_word_seen.num() == 0 || written_word_seen.exists(word_key)) begin
+            return addr;
+        end else begin
+            int i;
+            i = $urandom_range(1,100);
+            if (i <= 80) begin
+                word_key = written_word_keys[$urandom_range(0, written_word_keys.size()-1)];
+                return map_word_key_2_addr(word_key, addr[1:0]);
+            end
+            else begin
+                return addr;
+            end
+        end
+    endfunction
+
+    // 将 byte address 转化为覆盖整个 32-bit 地址图的 word key。
+    protected function map_word_key addr_2_map_word_key(
+        logic [core_pkg::XLEN-1:0] addr
+    );
+        return addr[core_pkg::XLEN-1:2];
+    endfunction
+
+    // 将完整 word key 和 byte offset 还原为 byte address。
+    protected function logic [core_pkg::XLEN-1:0] map_word_key_2_addr(
+        map_word_key word_key,
+        logic [1:0]  byte_offset
+    );
+        return {word_key, byte_offset};
+    endfunction
+
+endclass

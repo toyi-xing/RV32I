@@ -66,7 +66,7 @@ uvm/
     simple_bus/
       spec.md
       dut/
-        README.md
+        readme.md
         rtl/
           common/
           mem/
@@ -77,7 +77,7 @@ uvm/
       sim/
 ```
 
-`dut/rtl` 已从 `c2f7d82` / `v6.0-data-side-variable-delay` 复制 `data_subsystem` 的最小编译闭包；`dut/docs/periph_register_abi.md` 保存匹配的外设 ABI。具体文件映射、开发期同步和冻结规则见 `uvm/v6_0/data_subsystem/dut/README.md`。
+`dut/rtl` 已从 `c2f7d82` / `v6.0-data-side-variable-delay` 复制 `data_subsystem` 的最小编译闭包；`dut/docs/periph_register_abi.md` 保存匹配的外设 ABI。具体文件映射、开发期同步和冻结规则见 `uvm/v6_0/data_subsystem/dut/readme.md`。
 
 本步骤不改现有 `rtl/`、`tb/sv`、`sim/soc_asm`、`sim/soc_c`。工作区建立时 `tb/` 和 `sim/` 留空，后续 UVM 源码和脚本由本计划逐步创建。
 
@@ -2080,7 +2080,7 @@ env 创建 wrapper checker，并连接 cfg AP 与 transfer AP。确定性 wrappe
 - scoreboard 与 wrapper checker 同时订阅同一 transfer，检查职责不重叠。
 - 普通 0 delay smoke 也经过 checker，默认 expected state 为 0。
 
-## 15. Functional coverage 与随机 case 收口 `执行中`
+## 15. Functional coverage 与随机 case 收口 `已完成`
 
 目标：在当前 UVM 基础设施上补齐第一批 constrained-random case，并生成可复现、可解释、
 可查看具体 bin/cross 的 functional coverage 报告。本章不追求 coverage closure，也不把
@@ -2155,12 +2155,12 @@ scoreboard/checker。第一版可执行 20～30 组 transaction，并将固定 s
 
 当前以 console summary、scoreboard/checker 统计和固定 seed 回归作为 coverage 证据。VDB/URG 合并报告保留为后续工具环境可用时的扩展项，不阻塞第 16 章 RTL-001 复现与修复。
 
-## 16. RTL-001 复现、修复与前后对比 `待执行`
+## 16. RTL-001 复现、修复与前后对比 `已完成`
 
 目标：使用当前 UVM 平台稳定暴露 `docs/known_issues.md` 中记录的 RTL-001，修复主线 RTL，
 并以同一 test 的修复前 FAIL、修复后 PASS 建立可展示、可回归的 bug closure。
 
-### 16.1 最小 MMIO 检查能力
+### 16.1 最小 MMIO 检查能力 `已完成`
 
 只建立 RTL-001 所需的最小软件可见模型或专用 checker，不在本阶段实现完整外设黄金模型：
 
@@ -2170,21 +2170,19 @@ scoreboard/checker。第一版可执行 20～30 组 transaction，并将固定 s
 - 真正未定义的 register word offset 必须继续返回 `error=1`，防止修复产生错误 alias。
 - checker 只按 `dut/docs/periph_register_abi.md` 建模，不复制 GPIO 内部 RTL 实现。
 
-### 16.2 CPU-shaped 定向复现 case
+### 16.2 全地址图 constrained-random 复现 case `已完成`
 
-新增独立定向 sequence/test，至少覆盖：
+新增不感知 scoreboard/reference model 实现范围的通用 map random sequence/test：
 
-- `reg+1` byte access：`be = 4'b0001 << addr[1:0]`。
-- `reg+2` halfword access：`addr[0] == 0`，`be = 4'b1100`。
-- 对应 aligned word readback。
-- 0 delay 和至少一个非 0 wrapper delay。
-- 一个真正 unknown word offset 的 negative case。
+- `simple_bus_map_random_access_seq` 复用 `simple_bus_item` 的通用地址、BE、数据和 idle-gap 约束，每轮独立随机生成 read/write。
+- sequence 按完整地址图的 word key 维护已写地址池；多数 read 复用任一已写 word 并保留原随机 `addr[1:0]`，提高已建模 target 的有效 readback 比例，但不按 DMEM/GPIO0/UART0/TIMER0 的模型完成度筛选激励。
+- `data_subsystem_map_random_vseq` 在没有 outstanding request 时依次配置四个 target，并在 delay `0/1/3/8/32/64/127` 下分别运行同一个 map random sequence，覆盖现有 wrapper delay bins。
+- `DS_map_random_test` 负责启动 virtual sequence；固定 seed 用于 RTL-001 修复前 FAIL、修复后 PASS 的对比，复现完成前不加入默认 `run_all.sh`。
+- functional coverage 增加 `addr[1:0]`、target x address-low 和 GPIO0 address-low x error，证明非零地址低位已实际命中目标。
 
-测试按修复后的正确规格写成自动检查，不在 checker 中接受当前错误行为。修复前该 test 应稳定
-FAIL；复现提交暂不加入默认 `run_all.sh`，在 `known_issues.md` 记录命令、失败现象和 commit。
-问题进入实际处理后，状态由 `Deferred` 更新为 `Open`。
+测试按修复后的正确规格写成自动检查，不在 checker 中接受当前错误行为。GPIO0 已定义寄存器 word 的非零地址低位访问应被最小参考模型识别为合法，当前 RTL 的原始 offset decode 会返回 error，因此无需让 sequence 与 GPIO0 已建模 offset 耦合也能随机暴露 RTL-001。2026-07-23 已使用 seed `1` 得到修复前稳定 FAIL：2100 笔 transaction 中出现 52 条 GPIO0 相关 UVM error，而 DMEM 与 wrapper checker 均无 error；命令和关键日志证据记录于 `docs/known_issues.md` 的 RTL-001。
 
-### 16.3 修复主线 RTL
+### 16.3 修复主线 RTL `已完成`
 
 - 先修根目录主线 RTL，再运行验证，不先修改归档快照。
 - 保留 simple data bus 的原始 byte address 语义，不在 `mem_stage` 中清除地址低两位。
@@ -2192,7 +2190,7 @@ FAIL；复现提交暂不加入默认 `run_all.sh`，在 `known_issues.md` 记�
 - 检查 GPIO、UART、TIMER32 是否存在同类完整 offset 比较，保证修复口径一致。
 - 未定义 register word offset、窗口外地址和当前未定义访问仍保持明确 error 语义。
 
-### 16.4 修复后回归与问题关闭
+### 16.4 修复后回归与问题关闭 `已完成`
 
 - 同一 UVM case 在修复后 PASS，并加入正式 UVM regression。
 - 0/nonzero delay 下功能 checker 与 wrapper checker 同时通过。
@@ -2201,12 +2199,12 @@ FAIL；复现提交暂不加入默认 `run_all.sh`，在 `known_issues.md` 记�
 - `known_issues.md` 将 RTL-001 更新为 `Fixed`，记录修复 commit、修复前/后结果和回归依据。
 - 明确 v6.0 UVM DUT snapshot 最终归档的是带 RTL-001 修复的主线版本。
 
-## 17. 0835 回归、快照归档与文档收口 `待执行`
+## 17. 0835 回归、快照归档与文档收口 `已完成`
 
 目标：冻结一套可独立复现的 v6 data_subsystem UVM 工作区，明确当前已实现能力和后续边界，
 然后进入 v7/AXI-Lite，不继续扩张当前 simple bus UVM 完整度。
 
-### 17.1 最终回归矩阵
+### 17.1 最终回归矩阵 `已完成`
 
 UVM/VCS 至少保留：
 
@@ -2223,25 +2221,25 @@ UVM/VCS 至少保留：
 
 UVM 文件不进入 Verilator 默认编译路径；VCS/UVM 与 Verilator directed regression 继续并行存在。
 
-### 17.2 v6 DUT RTL snapshot
+### 17.2 v6 DUT RTL snapshot `已完成`
 
 - RTL-001 修复并完成主线回归后，从根目录主线复制 data_subsystem 最小 RTL 编译闭包。
-- `dut/README.md` 记录基础 release、来源 commit、VCS 兼容性修改和 RTL-001 修复差异。
+- `dut/readme.md` 记录基础 release、来源 commit、VCS 兼容性修改和 RTL-001 修复差异。
 - `sim/filelist.f` 从开发期根目录 `rtl/` 切回 `uvm/v6_0/data_subsystem/dut/rtl` 快照。
 - 切回快照后重新执行全部 UVM 回归，确认归档环境不依赖后续主线。
 - 冻结后不再静默同步主线；AXI-Lite 或后续 RTL 使用新版本工作区。
 
-### 17.3 文档同步
+### 17.3 文档同步 `已完成`
 
 - 根 `README.md` 正式列出 VCS/UVM/SVA/functional coverage 能力和当前验证边界。
 - `uvm/readme.md` 将旧 `v6_0/simple_bus` 路径更新为 `v6_0/data_subsystem`。
-- 新增 `uvm/v6_0/data_subsystem/README.md`，记录测试命令、test matrix、functional coverage summary、DUT snapshot 来源、已实现检查和已知限制。
+- 新增 `uvm/v6_0/data_subsystem/readme.md`，记录测试命令、test matrix、functional coverage summary、DUT snapshot 来源、已实现检查和已知限制。
 - `spec.md` 区分 v6 已实现能力与未来可扩展项，不再把完整 MMIO/side-effect model 写成本阶段
   完成门槛。
 - `docs/08xx/0835` 只同步阶段成果、方法和边界，不写具体脚本执行步骤。
 - `docs/known_issues.md` 与 RTL-001 最终状态一致。
 
-### 17.4 阶段完成标准
+### 17.4 阶段完成标准 `已完成`
 
 - UVM regression、Verilator ASM/C regression 和 `ASSERT_ON` regression 全部通过。
 - functional coverage console summary 可复现，未闭合 bins 有明确解释。
@@ -2250,10 +2248,10 @@ UVM 文件不进入 Verilator 默认编译路径；VCS/UVM 与 Verilator directe
 - README/spec/0835/known issues 与实际实现一致。
 - 创建明确的 v6 验证收口 commit/tag 后，再开始 v7 AXI-Lite RTL 与验证规划。
 
-## 18. 后续方向占位：阶段收口时迁移到工作区 README/spec
+## 18. 后续方向占位：阶段收口时迁移到工作区 README/spec `已归档`
 
 以下内容保留为有价值的后续方向，但不作为当前 v6/0835 完成门槛。第 17 章归档时，将其按
-“Deferred extensions / Out of scope”口径迁移到 `uvm/v6_0/data_subsystem/README.md` 或
+“Deferred extensions / Out of scope”口径迁移到 `uvm/v6_0/data_subsystem/readme.md` 或
 `spec.md`；是否在 v6 simple bus 环境继续实现，取决于 v7 AXI-Lite 进度和学习收益。
 
 ### 18.1 driver execution checker 与确定性 idle-gap 自检
