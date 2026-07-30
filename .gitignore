@@ -53,5 +53,6 @@ fpga/**/project_*_fpga/fpga/quartus/*.cdf
 .DS_Store
 
 # not need to commit md
+AGENTS.md
 agent.md
 tmp.md
