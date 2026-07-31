@@ -134,7 +134,53 @@ axi_lite_router
 
 这里的 `router` 是单 master address decoder 和 response router，不是支持多 master 并发仲裁的 crossbar。模块命名和文档应准确表达这一限制。
 
-### 2.3 SoC 与 memory model 边界
+对应到本阶段规划的 RTL module，连接关系如下：
+
+```text
+core
+  |
+  v
+simple_bus_to_axi_lite
+  |
+  v
+axi_lite_router
+  |    DMEM
+  +------------> axi_lite_ram
+  |    MMIO
+  +------------> axi_lite_to_apb
+  |                       |
+  |                       v
+  |                    apb_decoder
+  |                       |
+  |                       +--> apb_to_reg_adapter --> mmio_gpio
+  |                       +--> apb_to_reg_adapter --> mmio_uart
+  |                       +--> apb_to_reg_adapter --> mmio_timer32
+  |  ACCEL0
+  +------------> AXI-Lite slave module（0836 只预留端口）
+  |  default
+  +------------> axi_lite_error_slave
+```
+
+该图只表达 module 之间的 transaction 连接，不表示所有模块都在同一级实例化。`rv32i_soc` 实例化 `core` 和 `data_subsystem`，`data_subsystem` 再组织 adapter、router、bridge、APB decoder、register adapter 和当前外设；`axi_lite_ram` 位于 testbench 或 FPGA wrapper，通过 SoC 透出的 DMEM AXI-Lite port 连接。`axi_lite_error_slave` 是 router 的一个下游目标分支，正常 DMEM/MMIO 访问不会经过它。
+
+### 2.3 各模块的组合直通与注册边界
+
+本文所说的“组合直通”是指某一层没有在当前 request/response 数据路径中插入 register slice，不代表该模块完全没有状态。router 仍需保存 outstanding transaction 的 target 和 AW/W 完成情况，bridge 仍需保存跨协议 transaction，只是这些状态是否产生额外固定延迟取决于它们是否阻止同一拍的上下游 handshake。
+
+第一版各模块采用以下取舍：
+
+| 模块 | request 路径 | response 路径 | 选择原因 |
+|---|---|---|---|
+| `simple_bus_to_axi_lite` | 接受并锁存 simple request，下一拍再发起 AXI request | AXI B/R handshake 直接形成 simple response，不再额外寄存 | 两侧协议语义不同，优先隔离 CPU ready 与 AXI fabric READY 的组合路径，并可靠保持拆分后的 AXI channel payload |
+| `axi_lite_router` | 地址译码和 selected target READY 组合直通 | selected target 的 B/R 组合返回 | 两侧均为 AXI-Lite，只需路由和保存历史 target；不插入 register slice 可以避免 fabric 无条件增加一拍 |
+| `axi_lite_ram` / default error slave | 空闲时接受 AXI request | 产生并保持注册式 B/R response | slave 必须在 request 完成后生成对应 response，并在上游 backpressure 时稳定保持 payload |
+| `axi_lite_to_apb` | 接受并保存 AXI request，再启动 APB transaction | APB completion 后形成并保持 AXI response | 两侧协议阶段不同，必须保存 transaction，并严格执行 APB SETUP/ACCESS |
+| `apb_decoder` | PSEL、地址和 payload 组合分发 | selected peripheral 的 PREADY/PRDATA/PSLVERR 组合返回 | APB master 会在整个 SETUP/ACCESS 期间保持地址和控制稳定，decoder 无需再保存一份 route state |
+| `apb_to_reg_adapter` 与当前寄存器外设 | APB ACCESS completion 组合形成一次寄存器访问条件 | 固定响应 read data/error 组合返回，寄存器 side effect 在 completion 边沿更新 | 当前外设本体是固定响应寄存器模型，不再人为增加一层 transaction 延迟 |
+
+因此，协议转换边界倾向于保存 transaction，纯路由/译码边界倾向于组合直通，真正的 slave 则倾向于注册 response。若后续时序分析表明 router 或 decoder 的组合路径过长，可以显式加入 register slice，但必须把新增延迟、outstanding 状态和验证边界一起纳入设计，而不能只改信号连接。
+
+### 2.4 SoC 与 memory model 边界
 
 `simple_rom/simple_ram` 继续保持在 testbench 或 FPGA wrapper 一侧，不重新塞回 `rv32i_soc`。主线 SoC 可以透出下游 DMEM AXI-Lite port，由不同环境连接：
 
@@ -287,6 +333,8 @@ CPU 当前不区分 `SLVERR` 与 `DECERR`，但 AXI monitor、日志和 assertio
 
 它不负责多 master 仲裁、QoS、公平性、跨时钟、宽度转换或乱序 response。
 
+第一版 router 不插入 request/response register slice。空闲时，AW/W/AR request 经过地址比较和组合 mux 直接到达 selected slave，selected slave 的 READY 也在同一周期组合返回；request handshake 后，状态机只锁存 target 和 AW/W 完成状态。B/R response 同样通过组合 mux 返回上游。因此 router 虽然包含状态机，但不会因为状态数量而固定增加访问拍数；只有下游 backpressure、response 延迟或未来主动加入的 register slice 才会增加对应等待。
+
 ### 5.2 Write route 的关键状态
 
 W channel 不携带地址，因此 router 不能仅靠当前组合 `AWADDR` 路由 WDATA。它必须正确处理：
@@ -415,12 +463,16 @@ v7.0 的旧 data subsystem 和 delay wrapper 已由 tag、UVM 工作区 RTL 快�
 以下基准延迟采用第一版预期结构：
 
 - adapter 使用 4.5 节所述注册式状态机。
-- AXI-Lite router 只做组合选择和 route 状态保存，不插入额外 register slice。
+- AXI-Lite router 只做组合选择和 route 状态保存，不插入额外 register slice；其状态机与 selected slave 在同一 handshake 边沿并行更新，因此基准延迟不额外计入 router 一拍。
 - 下游 `ARREADY/AWREADY/WREADY` 立即可用。
 - AXI-Lite DMEM slave 在接受 request 后产生注册式 B/R response。
 - AXI-Lite-to-APB4 bridge 严格执行 SETUP、ACCESS，并在 APB completion 后产生注册式 AXI response。
 - GPIO0/UART0/TIMER0 固定 `PREADY=1`。
 - 没有额外仲裁、随机 delay 或 response backpressure。
+
+状态机数量不能直接换算成访问拍数。只有以下情况会在本统计口径中增加周期：某层先锁存输入、到下一拍才允许下游握手；协议规定必须跨越新的阶段；或者 READY/VALID backpressure 使 handshake 推迟。多个模块若在同一个 handshake 边沿同时更新状态，则这些状态转换并行发生，不会逐个累加。
+
+以无 backpressure 的 DMEM 访问为例，adapter 在 `E0` 锁存 simple request，因此直到 `E0` 之后才产生 AXI request，这是一个真实的 request 注册边界；`E1` 发生 AXI request handshake 时，adapter、router 和 RAM 同时更新状态，router 锁存 target 与 RAM 开始生成 response 并不是先后串行的两个周期；RAM 的注册式 response 在下一周期被接受，形成第二个真实阶段。因此约 2 拍来自“adapter 请求入口 1 拍 + RAM 注册 response 1 拍”，而不是 adapter、router、RAM 三个状态机各加一拍。MMIO 路径还必须经过 APB SETUP/ACCESS，所以 bridge 的这些协议阶段会真实增加周期。
 
 在这些假设下，预计延迟为：
 
@@ -430,6 +482,7 @@ v7.0 的旧 data subsystem 和 delay wrapper 已由 tag、UVM 工作区 RTL 快�
 | v7.0 simple bus，wrapper delay=N | N 拍 | 人工 response delay 计数器 |
 | 0836 AXI-Lite DMEM read | 2 拍 | adapter 请求入口 1 拍 + RAM 注册 R response 1 拍 |
 | 0836 AXI-Lite DMEM write | 2 拍 | adapter 请求入口 1 拍 + RAM 注册 B response 1 拍 |
+| 0836 未映射地址或未启用 ACCEL0 | 2 拍 | adapter 请求入口 1 拍 + error slave 注册 DECERR response 1 拍 |
 | 0836 AXI-Lite-to-APB4 MMIO read | 约 4 拍 | adapter 入口、APB SETUP/ACCESS、bridge 注册 R response |
 | 0836 AXI-Lite-to-APB4 MMIO write | 约 4 拍 | adapter 入口、APB SETUP/ACCESS、bridge 注册 B response |
 

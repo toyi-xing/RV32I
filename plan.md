@@ -196,19 +196,19 @@ adapter 按全局 single-outstanding 组织为 read/write 两条受控路径：
 - 语法/elaboration 通过。
 - 本步先做有限的结构检查；独立 channel delay 的完整功能验证留到 RTL 主线完成后统一规划。
 
-## 3. AXI-Lite default error slave `待执行`
+## 3. AXI-Lite default error slave `已完成`
 
-### 3.1 新增文件
+### 3.1 新增文件 `已完成`
 
 新增：
 
 - `rtl/bus/axi_lite/axi_lite_error_slave.sv`
 
-### 3.2 模块定位
+### 3.2 模块定位 `已完成`
 
 该模块为没有实际 target 的地址提供标准 AXI-Lite终止响应，避免 router 对未映射访问永久不返回。
 
-### 3.3 功能结构
+### 3.3 功能结构 `已完成`
 
 - read address 被接受后返回单笔 R response。
 - write address和 write data分别被接受后返回单笔 B response。
@@ -220,7 +220,7 @@ adapter 按全局 single-outstanding 组织为 read/write 两条受控路径：
 
 ACCEL0 未实现期间可以复用该模块返回 DECERR，不需要伪造一个读零写丢弃的 accelerator slave。
 
-### 3.4 本步完成条件
+### 3.4 本步完成条件 `已完成`
 
 - 任意合法单笔 read/write 都能结束，不会 hang。
 - AW/W 任意顺序均能得到一次 B response。
@@ -228,15 +228,15 @@ ACCEL0 未实现期间可以复用该模块返回 DECERR，不需要伪造一个
 - reset 后没有残留 response。
 - 模块不依赖 SoC 地址常量，可被 router 的任意 default route 复用。
 
-## 4. Single-master AXI-Lite router `待执行`
+## 4. Single-master AXI-Lite router `已完成`
 
-### 4.1 新增文件
+### 4.1 新增文件 `已完成`
 
 新增：
 
 - `rtl/bus/axi_lite/axi_lite_router.sv`
 
-### 4.2 模块定位
+### 4.2 模块定位 `已完成`
 
 该模块是单 AXI-Lite master 的 address decoder 和 response router，不是多 master crossbar。
 
@@ -251,7 +251,7 @@ ACCEL0 未实现期间可以复用该模块返回 DECERR，不需要伪造一个
 
 具体地址继续来自 `core_pkg.sv/soc_pkg.sv`，router 不重新硬编码一套地址图。
 
-### 4.3 Write 路由结构
+### 4.3 Write 路由结构 `已完成`
 
 write 路径必须处理 W channel 没有地址的问题：
 
@@ -264,20 +264,20 @@ write 路径必须处理 W channel 没有地址的问题：
 
 第一版可以采用明确的内部缓冲或握手限制来处理 W 先到达，但不能依赖 master 永远 AW 先到达，也不能形成 AW/W 相互等待的死锁。
 
-### 4.4 Read 路由结构
+### 4.4 Read 路由结构 `已完成`
 
 - AR handshake 时确定并保存 target。
 - 只有被选中 slave 接收 AR。
 - 只有该 slave 的 R response 能返回上游。
 - R transaction 完成前不接受会覆盖 route state 的下一笔 read。
 
-### 4.5 Read/write admission
+### 4.5 Read/write admission `已完成`
 
 当前 adapter 不会同时发起 read/write，但 router 仍要防止同拍错误接受两笔而只保存一份状态。
 
 第一版采用固定、可说明的 admission/优先级策略；不能服务的一侧通过 READY backpressure，不把吞掉请求作为简化方式。
 
-### 4.6 本步完成条件
+### 4.6 本步完成条件 `已完成`
 
 - router 只负责路由，不包含 RAM、APB状态机或外设寄存器逻辑。
 - DMEM/MMIO/ACCEL/default 地址边界明确。
@@ -288,21 +288,21 @@ write 路径必须处理 W channel 没有地址的问题：
 - single-outstanding 状态不会被第二笔请求覆盖。
 - 语法/elaboration 通过。
 
-## 5. AXI-Lite DMEM slave `待执行`
+## 5. AXI-Lite DMEM slave `已完成`
 
-### 5.1 新增文件
+### 5.1 新增文件 `已完成`
 
 新增：
 
 - `rtl/mem/axi_lite_ram.sv`
 
-### 5.2 模块定位
+### 5.2 模块定位 `已完成`
 
 该模块提供可综合的 32-bit AXI-Lite RAM slave，用于 Verilator/VCS harness 和后续 FPGA wrapper。它替代主线 testbench 中 simple data bus 直连的 `simple_ram`，但不把程序镜像加载逻辑塞进 SoC。
 
 `axi_lite_ram` 保持独立，最终由 testbench 或 FPGA wrapper 实例化并连接 SoC 透出的 DMEM AXI-Lite port。
 
-### 5.3 功能结构
+### 5.3 功能结构 `已完成`
 
 - 参数化 RAM word depth，地址映射与现有 DMEM window 一致。
 - 支持 AXI-Lite read。
@@ -314,14 +314,14 @@ write 路径必须处理 W channel 没有地址的问题：
 - 地址越界返回 SLVERR，不访问非法数组索引。
 - RAM 存储数组允许 testbench 通过层级或已有加载流程写入，但模块本体不解析 plusarg、不实现 mailbox、不随机延迟。
 
-### 5.4 与现有 `simple_ram` 的关系
+### 5.4 与现有 `simple_ram` 的关系 `已完成`
 
 - 本步不立即删除 `rtl/mem/simple_ram.sv`。
 - 新旧模块在 SoC 切换完成前可以并存。
 - v7.0 UVM snapshot 中的 `simple_ram` 不修改。
 - 主线所有 filelist 和 testbench 切换到 AXI-Lite RAM 后，再决定根目录旧 `simple_ram` 是否仍被 FPGA/其它路径使用。
 
-### 5.5 本步完成条件
+### 5.5 本步完成条件 `已完成`
 
 - word/byte lane 地址语义与当前 CPU 保持一致。
 - `WSTRB` 任意非零组合都按 lane 更新。
