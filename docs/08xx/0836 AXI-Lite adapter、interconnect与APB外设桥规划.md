@@ -19,7 +19,7 @@ core LSU
   -> AXI-Lite router
        -> AXI-Lite DMEM slave port
        -> AXI-Lite-to-APB4 bridge
-            -> APB4 decoder
+            -> APB4 mux
                  -> GPIO0
                  -> UART0
                  -> TIMER0
@@ -150,7 +150,7 @@ axi_lite_router
   +------------> axi_lite_to_apb
   |                       |
   |                       v
-  |                    apb_decoder
+  |                    apb_mux
   |                       |
   |                       +--> apb_to_reg_adapter --> mmio_gpio
   |                       +--> apb_to_reg_adapter --> mmio_uart
@@ -161,7 +161,7 @@ axi_lite_router
   +------------> axi_lite_error_slave
 ```
 
-该图只表达 module 之间的 transaction 连接，不表示所有模块都在同一级实例化。`rv32i_soc` 实例化 `core` 和 `data_subsystem`，`data_subsystem` 再组织 adapter、router、bridge、APB decoder、register adapter 和当前外设；`axi_lite_ram` 位于 testbench 或 FPGA wrapper，通过 SoC 透出的 DMEM AXI-Lite port 连接。`axi_lite_error_slave` 是 router 的一个下游目标分支，正常 DMEM/MMIO 访问不会经过它。
+该图只表达 module 之间的 transaction 连接，不表示所有模块都在同一级实例化。`rv32i_soc` 实例化 `core` 和 `data_subsystem`，`data_subsystem` 再组织 adapter、router、bridge、APB mux、register adapter 和当前外设；`axi_lite_ram` 位于 testbench 或 FPGA wrapper，通过 SoC 透出的 DMEM AXI-Lite port 连接。`axi_lite_error_slave` 是 router 的一个下游目标分支，正常 DMEM/MMIO 访问不会经过它。
 
 ### 2.3 各模块的组合直通与注册边界
 
@@ -175,10 +175,10 @@ axi_lite_router
 | `axi_lite_router` | 地址译码和 selected target READY 组合直通 | selected target 的 B/R 组合返回 | 两侧均为 AXI-Lite，只需路由和保存历史 target；不插入 register slice 可以避免 fabric 无条件增加一拍 |
 | `axi_lite_ram` / default error slave | 空闲时接受 AXI request | 产生并保持注册式 B/R response | slave 必须在 request 完成后生成对应 response，并在上游 backpressure 时稳定保持 payload |
 | `axi_lite_to_apb` | 接受并保存 AXI request，再启动 APB transaction | APB completion 后形成并保持 AXI response | 两侧协议阶段不同，必须保存 transaction，并严格执行 APB SETUP/ACCESS |
-| `apb_decoder` | PSEL、地址和 payload 组合分发 | selected peripheral 的 PREADY/PRDATA/PSLVERR 组合返回 | APB master 会在整个 SETUP/ACCESS 期间保持地址和控制稳定，decoder 无需再保存一份 route state |
+| `apb_mux` | 根据 PADDR 译码并组合分发 PSEL、地址和 payload | selected peripheral 的 PREADY/PRDATA/PSLVERR 组合返回 | APB master 会在整个 SETUP/ACCESS 期间保持地址和控制稳定，mux 无需再保存一份 route state |
 | `apb_to_reg_adapter` 与当前寄存器外设 | APB ACCESS completion 组合形成一次寄存器访问条件 | 固定响应 read data/error 组合返回，寄存器 side effect 在 completion 边沿更新 | 当前外设本体是固定响应寄存器模型，不再人为增加一层 transaction 延迟 |
 
-因此，协议转换边界倾向于保存 transaction，纯路由/译码边界倾向于组合直通，真正的 slave 则倾向于注册 response。若后续时序分析表明 router 或 decoder 的组合路径过长，可以显式加入 register slice，但必须把新增延迟、outstanding 状态和验证边界一起纳入设计，而不能只改信号连接。
+因此，协议转换边界倾向于保存 transaction，纯路由/译码边界倾向于组合直通，真正的 slave 则倾向于注册 response。若后续时序分析表明 router 或 APB mux 的组合路径过长，可以显式加入 register slice，但必须把新增延迟、outstanding 状态和验证边界一起纳入设计，而不能只改信号连接。
 
 ### 2.4 SoC 与 memory model 边界
 
@@ -405,7 +405,7 @@ GPIO/UART/TIMER 属于低带宽寄存器外设，不需要各自实现完整 AXI
 
 ### 7.3 APB 外设接入
 
-APB decoder 根据地址选择 GPIO0、UART0 或 TIMER0。现有外设寄存器本体可以保留，通过薄 APB wrapper 或公共 APB register access 层转换：
+APB mux 根据地址选择 GPIO0、UART0 或 TIMER0，并把 selected peripheral 的响应返回 bridge。现有外设寄存器本体可以保留，通过薄 APB wrapper 或公共 APB register access 层转换：
 
 | APB4 | 现有外设寄存器访问 |
 |---|---|
@@ -438,7 +438,7 @@ v7.0 data_subsystem
   + AXI-Lite router/default error
   + external AXI-Lite DMEM port
   + AXI-Lite-to-APB4 bridge
-  + APB decoder/peripheral wrapper
+  + APB mux/peripheral wrapper
   + GPIO/UART/TIMER register blocks
 ```
 
@@ -447,7 +447,7 @@ v7.0 data_subsystem
 - core 侧 `data_req_t/data_resp_t + req_ready` 接口保持不变，CPU 流水线不感知 AXI-Lite 和 APB channel。
 - 删除旧 `data_subsystem` 内按 target 选择、计数并回放 response 的 delay wrapper 逻辑。
 - 删除 `dmem/gpio0/uart0/timer0_resp_delay_cycles_i` 等验证专用 delay 配置端口，并在同一 SoC/TB 迁移节点同步其连接。
-- 旧 simple bus 组合地址译码与 response mux 由 AXI-Lite router、default error response、AXI-Lite-to-APB4 bridge 和 APB decoder 取代。
+- 旧 simple bus 组合地址译码与 response mux 由 AXI-Lite router、default error response、AXI-Lite-to-APB4 bridge 和 APB mux 取代。
 - 外置 DMEM 的离散 simple RAM 端口切换为下游 AXI-Lite slave port；RAM 仍位于 testbench、FPGA wrapper 或其它系统集成层，不进入 `rv32i_soc`。
 - GPIO0/UART0/TIMER0 的软件寄存器 ABI、外部 IO 和中断语义保持不变，但寄存器访问只在 APB ACCESS completion 时生效。
 - single-outstanding 的保存、等待和完成状态由 adapter/router/bridge 各自按协议边界管理，不再由公共 response delay 计数器模拟。
@@ -731,7 +731,7 @@ coverage 用来确认关键场景确实发生，不把百分比本身作为本�
 | fabric | 单 master AXI-Lite router/default error slave |
 | memory | AXI-Lite DMEM slave 或外部 memory port adapter |
 | bridge | AXI-Lite-to-APB4 |
-| peripheral | APB decoder 和 GPIO/UART/TIMER wrapper |
+| peripheral | APB mux 和 GPIO/UART/TIMER wrapper |
 | SoC | 新 data subsystem 与 `rv32i_soc` 集成 |
 | module verification | AXI/APB driver、monitor、scoreboard、SVA、确定性/random testcase |
 | system verification | Verilator ASM/C 程序、外部 DMEM AXI-Lite delay model、固定响应 APB 外设链路、commit/trap/bus trace |

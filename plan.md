@@ -75,7 +75,7 @@ rtl/
     bridge/
       axi_lite_to_apb.sv
     apb/
-      apb_decoder.sv
+      apb_mux.sv
       apb_to_reg_adapter.sv
   mem/
     axi_lite_ram.sv
@@ -330,19 +330,19 @@ write 路径必须处理 W channel 没有地址的问题：
 - 越界访问得到明确 response。
 - 无 testbench-only 行为进入可综合功能路径。
 
-## 6. AXI-Lite-to-APB4 bridge `待执行`
+## 6. AXI-Lite-to-APB4 bridge `已完成`
 
-### 6.1 新增文件
+### 6.1 新增文件 `已完成`
 
 新增：
 
 - `rtl/bus/bridge/axi_lite_to_apb.sv`
 
-### 6.2 模块定位
+### 6.2 模块定位 `已完成`
 
 该模块上游是一个 AXI-Lite slave port，下游是一个 APB4 master port。它集中吸收 AXI 五通道复杂性，让低速寄存器外设只面对 APB setup/access。
 
-### 6.3 Write 路径结构
+### 6.3 Write 路径结构 `已完成`
 
 - 独立接受并保存 AW 和 W。
 - 两者都完成后启动一次 APB write。
@@ -352,7 +352,7 @@ write 路径必须处理 W channel 没有地址的问题：
 - `PSLVERR=1` 返回 SLVERR。
 - BREADY 未到时保持 BVALID/BRESP。
 
-### 6.4 Read 路径结构
+### 6.4 Read 路径结构 `已完成`
 
 - 接受并保存 AR。
 - 启动一次 APB read。
@@ -360,7 +360,7 @@ write 路径必须处理 W channel 没有地址的问题：
 - 返回 AXI RDATA 和 OKAY/SLVERR。
 - RREADY 未到时保持 RVALID/RDATA/RRESP。
 
-### 6.5 APB 状态边界
+### 6.5 APB 状态边界 `已完成`
 
 - 每笔 APB transaction 必须经历 SETUP 和 ACCESS。
 - SETUP 后才能拉高 PENABLE。
@@ -370,7 +370,7 @@ write 路径必须处理 W channel 没有地址的问题：
 - bridge 同一时刻只处理一笔 read 或 write。
 - read/write 同时到达时采用固定 admission 策略，不同时吞下两笔。
 
-### 6.6 本步完成条件
+### 6.6 本步完成条件 `已完成`
 
 - AW/W 任意顺序不会丢失 write。
 - APB zero-wait 和 multi-cycle wait 结构均成立。
@@ -379,13 +379,13 @@ write 路径必须处理 W channel 没有地址的问题：
 - reset 清除 AXI pending 和 APB state。
 - 模块不包含具体 GPIO/UART/TIMER 地址译码。
 
-## 7. APB decoder 与现有外设适配 `待执行`
+## 7. APB mux 与现有外设适配 `已完成`
 
-### 7.1 新增文件
+### 7.1 新增文件 `已完成`
 
 新增：
 
-- `rtl/bus/apb/apb_decoder.sv`
+- `rtl/bus/apb/apb_mux.sv`
 - `rtl/bus/apb/apb_to_reg_adapter.sv`
 
 现有以下寄存器模块原则上保留内部寄存器和 side effect 逻辑：
@@ -394,15 +394,15 @@ write 路径必须处理 W channel 没有地址的问题：
 - `rtl/periph/mmio_uart.sv`
 - `rtl/periph/mmio_timer32.sv`
 
-### 7.2 `apb_decoder.sv` 职责
+### 7.2 `apb_mux.sv` 职责 `已完成`
 
 - 根据 APB PADDR 选择 GPIO0、UART0 或 TIMER0。
 - 对每个外设产生独立、one-hot 的 APB slave request。
 - mux 被选中外设的 PREADY、PRDATA 和 PSLVERR。
 - APB 地址未命中任何实现外设时返回错误并正常结束，不永久等待。
-- ACCEL0 不进入 APB decoder，它属于预留 direct AXI-Lite control slot。
+- ACCEL0 不进入 APB mux，它属于预留 direct AXI-Lite control slot。
 
-### 7.3 `apb_to_reg_adapter.sv` 职责
+### 7.3 `apb_to_reg_adapter.sv` 职责 `已完成`
 
 该模块把 APB4 access completion 转换为现有外设寄存器接口：
 
@@ -415,7 +415,7 @@ write 路径必须处理 W channel 没有地址的问题：
 
 同一 adapter 可以参数化复用，不为 GPIO/UART/TIMER 复制三套相同 APB握手逻辑。
 
-### 7.4 外设 side effect 边界
+### 7.4 外设 side effect 边界 `已完成`
 
 接入后必须保持：
 
@@ -427,9 +427,9 @@ write 路径必须处理 W channel 没有地址的问题：
 - APB ACCESS 等待期间不重复触发寄存器访问。
 - 未定义 register offset 返回 PSLVERR。
 
-### 7.5 本步完成条件
+### 7.5 本步完成条件 `已完成`
 
-- APB decoder one-hot 选择正确。
+- APB mux 的地址译码与 one-hot 选择正确。
 - 地址图和现有软件 ABI 不变。
 - 三个现有外设无需重复实现 AXI-Lite 五通道。
 - APB fixed-ready 外设路径功能闭合。
@@ -452,7 +452,7 @@ write 路径必须处理 W channel 没有地址的问题：
 - AXI-Lite router。
 - default error slave。
 - AXI-Lite-to-APB4 bridge。
-- APB decoder。
+- APB mux。
 - 三个 APB-to-register adapter。
 - GPIO0、UART0、TIMER0 寄存器模块。
 
@@ -601,7 +601,7 @@ RTL 主线稳定后，将本章覆盖为详细验证执行计划。目前只固�
 - AXI-Lite router/default error。
 - AXI-Lite RAM。
 - AXI-Lite-to-APB4 bridge。
-- APB decoder/peripheral path。
+- APB mux/peripheral path。
 
 重点覆盖 AW/W 独立顺序、各 channel backpressure、response stall、DECERR/SLVERR、PREADY wait、byte strobe 和 side effect exactly once。
 
