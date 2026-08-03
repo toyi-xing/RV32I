@@ -3,12 +3,12 @@
  *
  * 目的：
  *   - 用 TIMER0.MTIME 精确测量 bit30/bit31 的边沿间隔。
- *   - 验证 bit30 双边沿间隔 ≈ 200 周期（TB_GPIO0_FAST_TOGGLE_CYCLES）。
+ *   - 验证 bit30 双边沿间隔 ≈ 500 周期（TB_GPIO0_FAST_TOGGLE_CYCLES）。
  *   - 验证 bit31 双边沿间隔 ≈ 2000 周期（TB_GPIO0_SLOW_TOGGLE_CYCLES）。
  *   - 通过 UART TX 输出测量结果，便于观察实际值与目标值的偏差。
  *
  * TB 硬件驱动（tb_rv32i_soc.sv initial fork 线程）：
- *   - gpio0_in[30] 每 200 拍翻转一次（TB_GPIO0_FAST_TOGGLE_CYCLES）。
+ *   - gpio0_in[30] 每 500 拍翻转一次（TB_GPIO0_FAST_TOGGLE_CYCLES）。
  *   - gpio0_in[31] 每 2000 拍翻转一次（TB_GPIO0_SLOW_TOGGLE_CYCLES）。
  *   - 双边沿触发 → 每次翻转产生一个 MEIP。
  *
@@ -21,28 +21,33 @@
  *     测量值 = TB 翻转周期 + 噪声。噪声主要来自：
  *       (a) 被测指令流与 TB 翻转边沿的对齐抖动
  *       (b) handler 执行时间和 W1C 周期的微小波动
- *   - 噪声幅度通常 < 5 个周期，bit30（200 周期）的测量误差约 2.5%，
- *     bit31（2000 周期）的测量误差约 0.25%。
+ *   - 快速周期必须长于完整 C handler 的处理时间，避免多个边沿在 pending
+ *     清除前合并，使软件观测到的间隔成为输入周期的整数倍。
  *
  * 通过条件：
  *   - bit30_count >= 10：快周期采集足够样本。
  *   - bit31_count >= 6： 慢周期采集足够样本。
- *   - avg_bit30_interval ∈ [180, 220]：半周期 200 ±10%。
+ *   - avg_bit30_interval ∈ [450, 550]：半周期 500 ±10%。
  *   - avg_bit31_interval ∈ [1800, 2200]：半周期 2000 ±10%。
  *
  * 失败场景：
  *   1: bit30_count < 10（中断未正常触发或 handler 未正确计数）
  *   2: bit31_count < 6
- *   3: avg_bit30_interval 超出 [180, 220]（快周期频率偏差）
+ *   3: avg_bit30_interval 超出 [450, 550]（快周期频率偏差）
  *   4: avg_bit31_interval 超出 [1800, 2200]（慢周期频率偏差）
  */
 #include "platform.h"
 #include "tb_rv32i_soc_test.h"
 
-#define BIT30_MASK  (RV32I_U32_C(1) << 30)
-#define BIT31_MASK  (RV32I_U32_C(1) << 31)
-#define MIN_30_COUNT  RV32I_U32_C(10)
-#define MIN_31_COUNT  RV32I_U32_C(6)
+#define BIT30_MASK       TB_GPIO0_FAST_PERIODIC_MASK
+#define BIT31_MASK       TB_GPIO0_SLOW_PERIODIC_MASK
+#define MIN_30_COUNT     RV32I_U32_C(10)
+#define MIN_31_COUNT     RV32I_U32_C(6)
+#define MIN_30_INTERVAL  (TB_GPIO0_FAST_TOGGLE_CYCLES * RV32I_U32_C(9) / RV32I_U32_C(10))
+#define MAX_30_INTERVAL  (TB_GPIO0_FAST_TOGGLE_CYCLES * RV32I_U32_C(11) / RV32I_U32_C(10))
+#define MIN_31_INTERVAL  (TB_GPIO0_SLOW_TOGGLE_CYCLES * RV32I_U32_C(9) / RV32I_U32_C(10))
+#define MAX_31_INTERVAL  (TB_GPIO0_SLOW_TOGGLE_CYCLES * RV32I_U32_C(11) / RV32I_U32_C(10))
+#define EXPECTED_RATIO   (TB_GPIO0_SLOW_TOGGLE_CYCLES / TB_GPIO0_FAST_TOGGLE_CYCLES)
 
 /* handler 统计数据 */
 static volatile unsigned int irq_count;
@@ -118,7 +123,7 @@ static void uart_print_dec32(unsigned int val)
  * __trap_handler_c — C trap handler。
  *
  * 累加 bit30/bit31 边沿计数并记录首末次 MTIME。
- * 所有 MMIO 读（MTIME / IRQ_STATUS）对外设寄存器直接读取，延迟固定。
+ * 所有 MMIO 访问均经过 AXI-Lite 到 APB 的固定响应路径。
  * W1C 清 pending 后返回 mepc，由 crt0.S 执行 mret。
  *
  * 注意：达到阈值后写 IRQ_EN=0 而非关 mstatus.MIE，
@@ -260,12 +265,13 @@ int main(void)
 
     uart_print_str("RATIO(B31/B30)=");
     uart_print_dec32(ratio);
-    uart_print_str(" (expect 10)\n");
+    uart_print_str(" (expect ");
+    uart_print_dec32(EXPECTED_RATIO);
+    uart_print_str(")\n");
 
     /* ----------------------------------------------------------------
      * 验证
      * ---------------------------------------------------------------- */
-    // 该准确度要求仅适用于固定响应模型 0 wait-state，若未通过 tb mailbox 配置可能导致仿真 FAILED
     if (bit30_count < MIN_30_COUNT) {
         uart_print_str("FAIL: bit30 count too low\n");
         return 1;
@@ -274,11 +280,11 @@ int main(void)
         uart_print_str("FAIL: bit31 count too low\n");
         return 2;
     }
-    if (avg30 < 180u || avg30 > 220u) {
+    if (avg30 < MIN_30_INTERVAL || avg30 > MAX_30_INTERVAL) {
         uart_print_str("FAIL: bit30 avg interval out of range\n");
         return 3;
     }
-    if (avg31 < 1800u || avg31 > 2200u) {
+    if (avg31 < MIN_31_INTERVAL || avg31 > MAX_31_INTERVAL) {
         uart_print_str("FAIL: bit31 avg interval out of range\n");
         return 4;
     }

@@ -1,14 +1,14 @@
-# 0801_dmem_wait_basic.S — DMEM wait-state 下基本 load/store 指令正确性
+# 0801_dmem_wait_basic.S — AXI-Lite DMEM 基本 load/store 指令正确性
 #
 # 目的：
-#   - 验证 data_subsystem 在 DMEM 配置非 0 delay 时，基本 load/store
-#     指令仍能正确执行。
+#   - 验证 CPU 经 simple bus 到 AXI-Lite 转换后，基本 load/store 指令仍能
+#     正确访问外部 DMEM。
 #   - 覆盖 SW/LW、SB/LB/LBU、SH/LH/LHU 的读写语义、byte enable、
 #     符号/零扩展和对齐/非对齐访问。
 #
-# 延迟配置：
-#   - DMEM resp_delay = 3（固定），通过 TB_RESP_DELAY_CFG0_ADDR 设置。
-#   - 当拍 response 路径（delay=0）已在旧测试中覆盖，本测试只跑 delay>0。
+# 访问路径：
+#   - simple_bus_to_axi_lite 与 axi_lite_ram 构成固定的多周期访问路径。
+#   - 测试不额外注入 backpressure，不覆盖任意 AXI-Lite wait-state 组合。
 #
 # 通过条件：
 #   - 所有 CHECK_EQ 按位或汇总到 x24，最终 x24 == 0。
@@ -46,11 +46,6 @@ test_main:
     lui   x20, %hi(DMEM_BASE)
     addi  x20, x20, %lo(DMEM_BASE)
     addi  x24, x0, 0
-    # DMEM resp_delay = 3（固定延迟），其余 target 默认 0
-    lui   x21, %hi(TB_RESP_DELAY_CFG0_ADDR)
-    addi  x21, x21, %lo(TB_RESP_DELAY_CFG0_ADDR)
-    addi  x5, x0, 3
-    sw    x5, 0(x21)
 
     # ------------------------------------------------------------------
     # 1. SW/LW 基本回读

@@ -4,7 +4,7 @@
 
 ## 当前地址图
 
-RTL 中 `simple_rom` 和 `simple_ram` 都使用 32-bit word array。当前 `ADDR_WIDTH=16`，因此每块 memory 有 65536 words，即 256 KiB。
+RTL 中当前主线使用 `simple_rom` 作为 IMEM、`axi_lite_ram` 作为 DMEM，两者都使用 32-bit word array。当前 `ADDR_WIDTH=16`，因此每块 memory 有 65536 words，即 256 KiB；`simple_ram` 仅保留为 legacy simple-bus 参考。
 
 | 区域 | 起始地址 | 结束地址 | 大小 | 用途 |
 |---|---:|---:|---:|---|
@@ -85,7 +85,7 @@ trap_handler:
 | 镜像 | 来源段 | 加载目标 |
 |---|---|---|
 | `_imem.mem` | `.text.init/.text.trap/.text` | `simple_rom` |
-| `_dmem.mem` | `.dmem_image` | `simple_ram` |
+| `_dmem.mem` | `.dmem_image` | testbench 中的 `axi_lite_ram.mem` |
 
 C 的 DMEM 布局：
 
@@ -115,14 +115,14 @@ C 的 DMEM 布局：
 
 C runtime 还固定提供 `.text.trap` 入口。该入口保存寄存器、读取 `mcause/mepc/mtval`，调用弱符号 `__trap_handler_c`，再按 handler 返回值写 `mepc` 并执行 `mret`。普通 C 测试不触发 trap 时不会用到它；需要处理 trap 的测试提供同名强定义即可覆盖默认 FAIL handler。
 
-`TB_CMD_BASE = DMEM_BASE + 0x180` 及其后 16 bytes 只属于当前 `tb/sv/tb_rv32i_soc.sv` 的 directed-test mailbox 协议，不是真实 SoC 地址图，也不属于通用外设 MMIO ABI。具体命令地址和 helper 定义见 `sw/include/tb_rv32i_soc_test.h`。
+`TB_CMD_BASE = DMEM_BASE + 0x180` 及其后 16 bytes 只属于当前 `tb/sv/tb_rv32i_soc.sv` 的 directed-test mailbox 协议，不是真实 SoC 地址图，也不属于通用外设 MMIO ABI。当前四个 word 分别用于 GPIO set、GPIO clear、GPIO pulse 和 UART RX；`0x0004_0190` 起不再定义旧 response-delay 命令。具体地址和 helper 定义见 `sw/include/tb_rv32i_soc_test.h`。
 
 ## 修改地址图时要同步的地方
 
 如果后续继续调整 IMEM/DMEM 大小或基址，需要一起检查：
 
 - `rtl/common/core_pkg.sv` 的 `IMEM_*`、`DMEM_*` 常量。
-- `rtl/mem/simple_rom.sv`、`rtl/mem/simple_ram.sv` 的默认 `ADDR_WIDTH` 是否仍引用公共常量。
+- `rtl/mem/simple_rom.sv`、`rtl/mem/axi_lite_ram.sv` 的默认 `ADDR_WIDTH` 是否仍引用公共常量；`simple_ram.sv` 只在 legacy simple-bus 场景需要同步。
 - `sw/linker/asm_test.ld` 和 `sw/linker/c_baremetal.ld` 的 `MEMORY`、`__stack_top`、`__test_status_addr` 等符号。
 - `sw/include/platform.h` 中的软件侧地址常量；若仍有历史手写汇编直接构造地址，也需要同步检查。
 - `sw/include/tb_rv32i_soc_test.h` 中 TB mailbox 地址是否仍落在 linker 保留区内。

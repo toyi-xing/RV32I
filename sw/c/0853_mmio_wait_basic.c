@@ -1,18 +1,11 @@
 /*
- * 0853_mmio_wait_basic.c — MMIO wait-state 下 GPIO/UART/TIMER 基本读写
+ * 0853_mmio_wait_basic.c — APB GPIO/UART/TIMER 基本读写与副作用检查
  *
  * 目的：
- *   - 验证 GPIO0/UART0/TIMER0 各配置非 0 response delay 时，MMIO 读写
- *     仍只产生一次外设副作用（W1C 不重复清、UART TX 不重复发送、
- *     UART RXDATA 读清只发生一次、TIMER32 写寄存器语义不变）。
- *   - 验证 wait-state 下的外设寄存器访问对软件透明：软件看到的寄存器值
- *     与 0 wait-state 时一致。
- *
- * 延迟配置：
- *   - GPIO0  resp_delay = 2（固定）
- *   - UART0  resp_delay = 3（固定）
- *   - TIMER0 resp_delay = 4（固定）
- *   - DMEM  default 0
+ *   - 验证经 AXI-Lite 到 APB 转换后的 MMIO 读写只产生一次外设副作用
+ *     （W1C 不重复清、UART TX 不重复发送、UART RXDATA 读清只发生一次、
+ *     TIMER32 写寄存器语义不变）。
+ *   - 验证固定 PREADY 响应下的软件可见寄存器行为。
  *
  * 测试步骤：
  *   1. GPIO0: 写 OUT/OE，读回确认；模拟 GPIO 中断 PENDING/W1C 语义。
@@ -21,7 +14,7 @@
  *   3. TIMER0: 配置 MTIMECMP 后等待 MTIP，关 timer 后确认 MTIP 清除。
  *
  * 通过条件：
- *   所有检查通过后 errors == 0，末尾恢复全部 delay 为 0 后 return 0。
+ *   所有检查通过后 errors == 0，return 0。
  *   若 errors != 0，按 bit 位定位具体哪一项检查失败。
  *
  * 错误码：
@@ -58,8 +51,6 @@ int main(void)
 
     csr_clear_mstatus(MSTATUS_MIE);
     csr_write_mie(0u);
-    /* GPIO0=2, UART0=3, TIMER0=4, DMEM=0 */
-    tb_set_resp_delay(false, 0u, false, 2u, false, 3u, false, 4u);
 
     /* ==================================================================
      * GPIO0 基本读写 + 中断 PENDING 与 W1C
@@ -91,7 +82,7 @@ int main(void)
     if ((val & 1u) == 0u) {
         errors |= (1u << 3);
     }
-    /* W1C：写 1 到 PENDING，等待 response delay 后确认清除 */
+    /* W1C：写 1 到 PENDING，完成 APB 写传输后确认清除 */
     tb_gpio0_clear_mask(1u);
     wait_cycles(20u);
     mmio_write32(gpio_reg(GPIO0_BASE, GPIO_IRQ_PENDING_OFFSET), 1u);
@@ -158,8 +149,6 @@ int main(void)
         errors |= (1u << 13);
     }
 
-    /* 恢复全部 delay 为 0 */
-    tb_set_resp_delay(false, 0u, false, 0u, false, 0u, false, 0u);
     if (errors != 0u) {
         mmio_write32(DMEM_BASE + TEST_ERROR_CODE_OFFSET, errors);
         return 1;

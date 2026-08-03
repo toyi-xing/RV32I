@@ -1,16 +1,16 @@
-# 0804_mmio_wait_access_fault.S — MMIO wait-state access fault 精确语义
+# 0804_mmio_wait_access_fault.S — APB MMIO access fault 精确语义
 #
 # 目的：
 #   - 验证 GPIO0/UART0/TIMER0 窗口内未定义 offset 的 load/store 在
-#     配置非 0 delay 时，delayed response error 能在 MEM completion 边界
-#     转成精确 load/store access fault。
+#     AXI-Lite 到 APB 访问路径上返回 SLVERR，并在 MEM completion 边界转成
+#     精确 load/store access fault。
 #   - 验证 faulting store 不产生外设副作用（写未定义 offset 不应改变
 #     已知寄存器的值）。
 #   - 验证 fault 后 wrong-path store 被正确 kill。
 #
-# 延迟配置：
-#   - GPIO0/UART0/TIMER0 resp_delay = 3（固定延迟）。
-#   - DMEM 默认 0 delay，不影响 fault 响应。
+# 访问路径：
+#   - APB 外设使用固定 PREADY 响应，本测试不额外注入 APB backpressure。
+#   - 外设窗口内未定义 offset 由 APB 从设备返回 PSLVERR，经 bridge 转成 SLVERR。
 #
 # 测试方法：
 #   每个 step 使用 SET_EXPECT 宏设置预期 cause/mepc/tval 和恢复 PC，
@@ -78,11 +78,6 @@ _start:
 test_main:
     lui   x20, %hi(DMEM_BASE)
     addi  x20, x20, %lo(DMEM_BASE)
-    lui   x21, %hi(TB_RESP_DELAY_CFG0_ADDR)
-    addi  x21, x21, %lo(TB_RESP_DELAY_CFG0_ADDR)
-    # GPIO0/UART0/TIMER0 resp_delay = 3（固定延迟），DMEM = 0
-    li    x5, 0x03030300
-    sw    x5, 0(x21)
 
     sw    x0, TEST_ERROR_CODE_OFFSET(x20)
     sw    x0, TEST_SCORE_OFFSET(x20)

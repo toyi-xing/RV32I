@@ -2,11 +2,12 @@
 
 > 文档编号：0836  
 > 所属系列：083x RV32I 教学核后续完善阶段  
-> 文档定位：规划在 v7.0 已完成 data-side simple request/response bus、MEM backpressure 和 UVM/SVA 验证收口后，如何引入 AXI4-Lite 与 APB4，形成可运行、可验证且不污染 CPU 流水线内部接口的标准总线子系统  
+> 文档定位：定义在 v7.0 已完成 data-side simple request/response bus、MEM backpressure 和 UVM/SVA 验证收口后，如何引入 AXI4-Lite 与 APB4，并记录 0836 的实际实现与验证边界
+> 当前状态：RTL 主线切换与 SoC 集成级定向验证已完成，最终 release tag 待阶段文档提交后确定
 > 对应总规划：`0830 RV32I教学核后续完善路线：从v2.0到最小完整裸机核心.md`  
 > 前置文档：`0804 RISC-V SoC、MMIO与外设互联.md`、`0829 综合、FPGA上板与SoC扩展方向.md`、`0834 可变延迟memory与MMIO、简化内部总线与backpressure规划.md`、`0835 wait-state验证收口、SVA与UVM入门demo规划.md`
 
-本篇只规划“第六阶段实现什么、接口边界是什么、验证到什么程度”。它不是执行阶段的 `plan.md`，不写逐文件、逐信号的施工步骤，也不重复大段 AXI 基础原理。
+本篇定义“第六阶段实现什么、接口边界是什么、验证到什么程度”，并在阶段完成后保留实际收口结论。它不是执行阶段的 `plan.md`，不写逐文件、逐信号的施工步骤，也不重复大段 AXI 基础原理。
 
 0834 已经让 CPU MEM 阶段摆脱固定响应假设：core LSU 通过 single-outstanding simple request/response bus 发起访问，MEM 在 response 返回前 backpressure 流水线，error 可以精确进入 load/store access fault。0835 又把这套边界沉淀为 Verilator 程序回归、VCS/UVM/SVA、scoreboard 和 functional coverage。
 
@@ -27,7 +28,7 @@ core LSU
        -> decode-error response
 ```
 
-本阶段优先完成“单 CPU master、single-outstanding、功能正确”的最小标准总线系统，不追求通用 AXI crossbar、峰值吞吐或完整验证覆盖。
+本阶段已经完成“单 CPU master、single-outstanding、功能正确”的最小标准总线系统，不追求通用 AXI crossbar、峰值吞吐或完整协议覆盖。
 
 ## 第1章 本步目标和非目标
 
@@ -82,8 +83,8 @@ core LSU
 | AXI exclusive/atomic | AXI-Lite 不承担 exclusive、ATOP 或 RISC-V A 扩展 |
 | 修改 IMEM | 本阶段只改 data side，固定响应取指接口继续保留 |
 | accelerator 本体 | 只保留 AXI-Lite control window，不实现计算数据通路、DMA 或中断协议 |
-| 新建完整 AXI UVM 平台 | 0836 以模块级协议验证和现有 SoC 程序回归为主，避免重复搭建大规模验证基础设施 |
-| 全面 coverage closure | 要求关键功能和协议 corner case 有证据，不追求所有合法交叉组合达到 100% |
+| 新建完整 AXI UVM 平台 | 0836 以现有 SoC 程序回归完成主线功能集成，避免重复搭建大规模验证基础设施 |
+| 全面 coverage closure | 当前记录未动态覆盖的协议 corner case，不以 coverage 百分比作为本阶段完成条件 |
 
 ## 第2章 本阶段总线架构
 
@@ -182,17 +183,18 @@ axi_lite_router
 
 ### 2.4 SoC 与 memory model 边界
 
-`simple_rom/simple_ram` 继续保持在 testbench 或 FPGA wrapper 一侧，不重新塞回 `rv32i_soc`。主线 SoC 可以透出下游 DMEM AXI-Lite port，由不同环境连接：
+IMEM/DMEM model 继续保持在 testbench 或 FPGA wrapper 一侧，不重新塞回 `rv32i_soc`。当前 testbench 分别使用 `simple_rom` 和 `axi_lite_ram`，主线 SoC 透出下游 DMEM AXI-Lite port，由不同环境连接：
 
 | 环境 | DMEM AXI-Lite slave |
 |---|---|
-| Verilator/VCS testbench | 可配置 backpressure 的 AXI-Lite RAM model |
+| 当前 Verilator testbench | 固定 ready 的可综合 `axi_lite_ram`，由 TB 负责加载 memory image |
+| 后续协议验证 wrapper | 可配置 AW/W/AR/B/R backpressure 的 AXI-Lite slave model |
 | FPGA wrapper | BRAM controller 或 AXI-Lite memory adapter |
 | 后续系统集成 | 片上 SRAM、总线 bridge 或其它 AXI-Lite slave |
 
-若本阶段新增可综合 `axi_lite_ram`，它应是独立可复用模块，而不是依赖 `$readmemh`、mailbox 或随机延迟的 SoC 内部测试模型。程序镜像加载仍由 testbench/FPGA wrapper 负责。
+本阶段已经新增独立可复用的可综合 `axi_lite_ram`。该模块不依赖 `$readmemh`、mailbox 或随机延迟；当前 testbench 通过层级访问其 `mem` 数组加载程序数据镜像，FPGA 或其它系统集成环境可替换为自己的 memory 初始化方式。
 
-`rv32i_soc` 从旧离散 DMEM 端口切换为 downstream AXI-Lite port 时，现有 `tb_rv32i_soc` 必须在同一实现节点完成最小迁移：连接新端口、实例化 zero-wait AXI-Lite RAM，并同步当前 ASM/C 仿真 filelist。随机 backpressure 和详细 testcase 可以后续补充，但不能让主线 SoC 与现有仿真 top 长时间处于接口不兼容状态。
+`rv32i_soc` 已从旧离散 DMEM 端口切换为 downstream AXI-Lite port，`tb_rv32i_soc` 在同一实现节点完成端口迁移、`axi_lite_ram` 实例化和 ASM/C 仿真 filelist 更新。当前 RAM 不额外注入随机 backpressure；该能力保留给后续独立协议验证 wrapper。
 
 ## 第3章 本阶段采用的 AXI4-Lite 子集
 
@@ -369,16 +371,16 @@ DMEM 地址范围、byte address 语义和 load/store lane 规则保持不变：
 
 ### 6.2 AXI-Lite memory slave
 
-第一版 memory slave 应支持：
+当前 `axi_lite_ram` 支持：
 
 - AW/W 独立接受。
 - 4-bit `WSTRB` 逐 byte 更新。
 - AR read。
 - B/R backpressure。
-- 固定响应和可配置 wait-state 的验证模型。
+- request 完成后产生并保持注册式 B/R response。
 - 地址越界返回明确错误。
 
-验证专用随机 READY/response delay 应位于 testbench wrapper 或仿真配置层，不进入可综合 memory slave 的功能语义。
+当前可综合 RAM 固定允许 request，不内置随机 READY 或 response delay。后续若开展协议级验证，可在独立 testbench slave model 或 simulation wrapper 中注入各 channel backpressure，不把验证专用配置混入 memory slave 的功能语义。
 
 ## 第7章 AXI-Lite-to-APB4 bridge
 
@@ -419,7 +421,7 @@ APB mux 根据地址选择 GPIO0、UART0 或 TIMER0，并把 selected peripheral
 
 GPIO W1C、UART TX event、UART RX read side effect 和 TIMER register write 必须只在 APB access completion 时生效一次，不能在 SETUP 或 `PREADY=0` 的每个等待周期重复触发。
 
-第一版现有寄存器块可以固定 `PREADY=1`；模块级验证必须使用可等待的 APB slave model 检查 bridge 的 wait-state 行为，以免系统正确性依赖固定响应外设。
+当前现有寄存器块固定 `PREADY=1`，SoC 程序回归已经验证 APB SETUP/ACCESS 和外设功能集成。bridge 对多周期 `PREADY=0` 的保持能力由 RTL 结构支持，但尚未通过独立可等待 APB slave model 动态验证，列为后续协议验证项。
 
 ## 第8章 data subsystem 改造与预计访存延迟
 
@@ -502,11 +504,11 @@ AXI-Lite 不规定固定 request-to-response 延迟。实际访问时间应在 8
 
 - read 增加等待 `ARREADY` 和 `RVALID` 的周期。
 - write 增加 AW/W 中最晚完成 channel 的等待，以及等待 `BVALID` 的周期。
-- AXI master 侧延迟 `BREADY/RREADY` 时，增加 response channel 被接受前的等待周期；当前 CPU adapter 进入 response 状态后会立即拉高对应 READY，模块级 slave/router 验证仍需覆盖这一合法 backpressure。
+- AXI master 侧延迟 `BREADY/RREADY` 时，增加 response channel 被接受前的等待周期；当前 CPU adapter 进入 response 状态后会立即拉高对应 READY，后续 slave/router 协议验证仍需覆盖这一合法 backpressure。
 - MMIO 增加 APB `PREADY=0` 的 ACCESS 周期。
 - 后续若加入仲裁、register slice、CDC 或更慢的真实 slave，还需增加对应等待。
 
-因此，0836 删除旧 wrapper 后仍然具备比固定计数器更真实的可变延迟来源。模块级验证必须分别控制各 channel，不能只把所有等待折叠成一个统一的 `resp_delay_cycles`。
+因此，0836 删除旧 wrapper 后仍然具备比固定计数器更真实的可变延迟来源。后续若开展协议级验证，应分别控制各 channel，不能只把所有等待折叠成一个统一的 `resp_delay_cycles`。当前 SoC 回归使用固定 request readiness、注册式 response 和固定 `PREADY=1`，没有动态覆盖这些额外等待组合。
 
 “请求组合直通”保留为 0836 之后的明确性能优化项，而不是本阶段缺失功能。若实施该优化，在相同的无 backpressure 和注册式 slave 假设下，DMEM 基准可由约 2 拍降为约 1 拍，MMIO 基准可由约 4 拍降为约 3 拍；代价是引入 CPU request 到 AXI fabric/READY 的组合路径，并需要重新检查时序、组合环和 channel corner case。优化不得删除 AW/W 独立完成状态，也不得改变 CPU 的 single-outstanding 和精确提交语义。
 
@@ -569,7 +571,7 @@ reset 后必须满足：
 
 ### 10.2 Backpressure
 
-必须分别验证：
+RTL 结构必须允许以下合法 backpressure；后续协议级验证应分别覆盖：
 
 - AWREADY 延迟。
 - WREADY 延迟。
@@ -582,7 +584,7 @@ reset 后必须满足：
 - RREADY 延迟。
 - APB PREADY 多拍为 0。
 
-这些场景不能只测试“所有 READY 永远为 1”。否则虽然程序可能通过，但没有真正证明五通道独立状态机正确。
+当前 0836 SoC 程序回归使用固定 readiness，只能证明现有 CPU 流量与固定 slave 组合的功能集成，不能据此声称已经动态证明上述五通道独立状态。该边界不阻塞本阶段收口，但必须保留为后续协议验证缺口。
 
 ### 10.3 与 CPU trap/interrupt 的关系
 
@@ -607,7 +609,7 @@ AXI-Lite 接入只改变 transaction transport，不改变 CPU 架构提交规�
 | [pulp-platform/axi](https://github.com/pulp-platform/axi) | `axi_lite_xbar`、`axi_lite_to_apb`、AXI-Lite driver/random master/slave 和模块组织 | 主要架构与协议参考 |
 | [fpganinja/taxi](https://github.com/fpganinja/taxi) | AXI-Lite/APB interface、interconnect、adapter 和 RAM | 交叉对照，注意 CERN-OHL-S-2.0 许可 |
 | [ZipCPU/wb2axip](https://github.com/ZipCPU/wb2axip) | AXI-Lite formal properties、常见错误和协议断言 | SVA/formal 思路参考 |
-| [cocotbext-axi](https://github.com/alexforencich/cocotbext-axi) | AXI-Lite/APB master、slave、RAM simulation model | 可选独立验证工具 |
+| [cocotbext-axi](https://github.com/alexforencich/cocotbext-axi) | AXI、AXI-Lite 和 AXI-Stream master、slave、RAM simulation model | 可选 AXI-Lite 独立验证工具；APB 需另选 package/model |
 
 ### 11.2 使用边界
 
@@ -616,109 +618,50 @@ AXI-Lite 接入只改变 transaction transport，不改变 CPU 架构提交规�
 - 若直接复用任何源码，必须固定 upstream commit/tag、保留原许可证和版权头，并放入清晰的 third-party 边界。
 - 文档应区分“参考设计”“直接复用”和“本项目实现”，不能把开源模块包装后描述为完全自研。
 - 开源实现不能替代本项目验证；它只能作为参考或独立对照。
+- 0836 实际 RTL 均为项目内独立实现，没有直接复制第三方 RTL；上述项目只用于协议、状态机和验证思路对照。
 
 ## 第12章 验证方案
 
-### 12.1 总体选择
+### 12.1 实际验证选择与结论边界
 
-0836 不在“只跑程序”和“重新搭一套完整 AXI UVM”之间二选一，而是采用两层验证：
+0836 没有新增 AXI/APB 协议级 testbench、UVM 环境或 SVA 文件，而是继续使用现有 Verilator SoC testbench、mailbox 外部激励和 38 个 ASM/C 程序自检用例完成主线切换验证。该方案能够证明 CPU、adapter、router、AXI-Lite RAM、AXI-Lite-to-APB bridge、APB mux 和外设在当前固定响应组合下功能闭合，但不等价于 AXI4-Lite/APB4 完整协议合规验证。
 
-```text
-模块级：VCS/SystemVerilog transaction driver + scoreboard + SVA
-系统级：现有 Verilator ASM/C self-check 程序回归
-```
+本阶段可以确认读写与 byte strobe 数据语义、地址路由、错误传播、MEM backpressure、精确 trap/interrupt、外设 ABI 和副作用；不能声称已经动态覆盖 AW/W 任意先后、各 channel 长时间 backpressure、上游 B/R response stall 或多周期 `PREADY`。
 
-模块级验证负责证明 AXI/APB 协议和独立 backpressure；程序级验证负责证明 CPU、trap、interrupt、memory map、外设 ABI 和总线集成后的端到端行为。两者缺一不可。
+### 12.2 旧 wait-state 用例迁移
 
-本阶段不新建完整 AXI UVM 平台。0835 已经展示了 UVM agent、sequence、monitor、scoreboard、coverage 和 SVA 的方法；现在重新从零搭建五通道 UVM agent 会明显延长交付时间，而不会直接提高 SoC 集成速度。若后续需要协议级完整 UVM，可由 0837 单独承接。
+- 删除 TB 中已经失效的 response-delay mailbox 地址、配置打包和 C helper，mailbox 只保留 PASS/FAIL、GPIO 输入控制和 UART RX 激励职责。
+- 删除 0801、0802、0804、0805、0853、0856 中对旧 delay mailbox 的无效写入，避免测试无声通过却继续声称覆盖旧 wrapper 延迟。
+- 保留原测试文件名和编号以维持回归入口稳定；测试头注释与说明改为当前实际覆盖的 AXI-Lite DMEM 固定多周期访问、固定 `PREADY` APB 外设、错误传播和混合路由语义。
+- 没有把旧统一 `resp_delay` 映射到某个 AXI channel，也没有为验证重新向可综合 RTL 添加 delay 配置端口。
 
-### 12.2 模块级验证对象
+### 12.3 SoC 集成验证矩阵
 
-至少独立验证：
+| 验证面 | 主要既有用例 | 当前能够证明的行为 |
+|---|---|---|
+| AXI-Lite DMEM 数据语义 | `0104_load_store`、`0801_dmem_wait_basic`、`0802_dmem_wait_forwarding` | word/byte/halfword、`WSTRB` lane、外部 RAM 读写、load-use/forwarding 与 MEM backpressure |
+| APB 外设与副作用 | `0602_uart_tx`、`0603_gpio_rw`、`0651/0652`、`0751`～`0754`、`0853_mmio_wait_basic` | GPIO/UART/TIMER 寄存器 ABI、W1C、读清、TX event exactly once 和固定 `PREADY` 端到端访问 |
+| 总线错误传播 | `0604_mmio_access_fault`、`0804_mmio_wait_access_fault` | router 未映射地址产生 AXI `DECERR`，APB `PSLVERR` 转 AXI `SLVERR`，最终形成精确 load/store access fault |
+| kill 与精确提交 | `0605_mmio_misaligned_priority`、`0606_wrong_path_mmio`、`0705/0706`、`0805_wait_interrupt_boundary` | misaligned 优先级、wrong-path 无副作用、CSR/MRET 同拍中断和 older DMEM 访问完成后再接受 interrupt |
+| DMEM/MMIO 路由切换 | `0856_wait_mixed_random_smoke` | 同一程序在外部 AXI-Lite DMEM 与内部 APB GPIO/UART/TIMER 路径间交替访问且不死锁、不串响应 |
 
-| DUT | 主要检查 |
-|---|---|
-| `simple_bus_to_axi_lite` | read/write 转换、AW/W 任意先后、五通道 backpressure、response/error 映射、single outstanding |
-| AXI-Lite router | 地址译码、W channel route state、B/R 返回目标、default DECERR、同拍 read/write admission |
-| AXI-Lite DMEM slave | byte strobe、readback、B/R stall、越界 error |
-| AXI-Lite-to-APB4 bridge | APB setup/access、PREADY wait、PSLVERR、AW/W 解耦、B/R backpressure |
-| APB peripheral path | GPIO/UART/TIMER register access、非法 offset、side effect exactly once |
+没有为 0836 新增测试程序。既有用例已经覆盖本次 SoC 集成所需的功能路径，commit/trap/data transaction 观察仍用于定位 CPU、adapter、router、AXI slave、APB bridge 和 peripheral 层的问题。
 
-测试平台可以使用轻量 class/task driver、queue/reference model 和随机 delay，不要求为每个模块建立完整 UVM agent。若采用第三方 AXI-Lite/APB VIP，应保留项目自己的 scoreboard 和 SVA，避免验证结果完全依赖外部黑盒。
+### 12.4 回归结果
 
-`axi_lite_to_apb` 的模块级 testbench 直接实例化 bridge，并在其下游 APB 端口连接可配置 slave model。该 model 负责驱动 `PREADY/PRDATA/PSLVERR`，因此可以合法注入 zero-wait、multi-cycle wait 和 error response，而无需穿透已经封装在 `data_subsystem` 内部的 APB 网络。SoC 集成级 peripheral path 继续连接正式外设并固定 `PREADY=1`。
+- `sim/soc_asm/run_all.sh`：25 passed，0 failed。
+- `sim/soc_c/run_all.sh`：13 passed，0 failed。
+- `0757_gpio_periodic_irq` 在修正测试吞吐前提后记录 `B30 CNT=21 AVG=500`、`B31 CNT=6 AVG=2000` 和 `RATIO(B31/B30)=4 (expect 4)`，周期测量通过。
+- 代表性日志确认 0804 的 6 次 APB 外设非法 offset trap、0805 的 older load/interrupt 边界和 0757 的周期测量均实际发生，不只依据脚本退出码判断。
 
-### 12.3 SVA 重点
+### 12.5 明确保留的协议验证缺口
 
-至少覆盖：
+- 当前 `axi_lite_ram` 和 CPU adapter 的实际流量通常同拍给出 AW/W，尚未用独立 master/slave model 动态覆盖 AW/W 任意先后。
+- 尚未注入 AWREADY/WREADY/ARREADY、BVALID/RVALID 的随机或长时间 backpressure，也未验证上游主动拉低 BREADY/RREADY 的组合。
+- 正式 GPIO/UART/TIMER 路径固定 `PREADY=1`，`axi_lite_to_apb` 对多周期 `PREADY=0` 的保持能力仅由 RTL 结构实现，未在本阶段动态验证。
+- 当前结论是 SoC 功能集成通过，不是 AXI4-Lite/APB4 完整协议 compliance 结论。
 
-- 各 channel `VALID && !READY` 时 payload stable。
-- B response 之前已经完成对应 AW 和 W handshake。
-- R response 之前已经完成对应 AR handshake。
-- response 不重复、不凭空产生。
-- pending transaction 数不超过本项目限制。
-- router 在 response 完成前保持 target route。
-- APB `PENABLE` 只能出现在 setup 之后。
-- APB wait 期间控制和 payload 保持稳定。
-- 一笔 APB write side effect 最多发生一次。
-- reset 后无有效 response 和 pending state。
-
-SVA 应允许合法的任意 channel delay，不能把当前 testbench 的固定时序误写成协议要求。
-
-### 12.4 模块级 testcase
-
-最小 testcase matrix：
-
-| 类别 | 场景 |
-|---|---|
-| write channel order | AW/W 同拍、AW 先、W 先 |
-| write backpressure | AWREADY、WREADY、BVALID、BREADY 分别延迟和组合延迟 |
-| read backpressure | ARREADY、RVALID、RREADY 分别延迟 |
-| byte lane | `WSTRB=0001/0010/0100/1000/0011/1100/1111` |
-| target | DMEM、GPIO0、UART0、TIMER0、ACCEL0 reserved、unmapped |
-| response | OKAY、SLVERR、DECERR |
-| APB | zero wait、multi-cycle PREADY wait、PSLVERR |
-| reset | idle reset、transaction 中 reset |
-| side effect | UART TX、GPIO W1C 等在 wait-state 下只发生一次 |
-
-可以增加 constrained-random ready/valid delay，但 random test 不能替代上述确定性 corner case。
-
-### 12.5 Verilator 程序级回归
-
-现有 `sim/soc_asm` 和 `sim/soc_c` 继续作为端到端主线。AXI-Lite 接入后至少执行：
-
-1. 全量 ASM/C zero-wait regression，证明总线替换没有改变软件可见行为。
-2. 选取 DMEM load/store、trap 和 interrupt 代表性程序，在外部 DMEM AXI-Lite channel backpressure 配置下运行。
-3. 在固定 `PREADY=1` 下运行 GPIO/UART/TIMER 端到端程序；APB 自身仍有 SETUP/ACCESS 的协议延迟，但程序级 harness 不额外注入 multi-cycle `PREADY`。
-4. 增加至少一条总线专项程序，连续混合 DMEM 与 GPIO/UART/TIMER 访问，覆盖 byte/half/word、合法响应和 access fault。
-5. 保留 commit/trap/data transaction 观察，失败时能够区分 CPU、adapter、router、AXI slave、APB bridge 和 peripheral 层。
-
-APB multi-cycle `PREADY`、PSLVERR 和等待期间 payload/side-effect 行为由 `axi_lite_to_apb` 模块级 testbench 与 SVA 负责。若未来确实需要程序级随机 APB wait，应先增加清晰的 simulation wrapper 或外部 APB 边界，不通过层级 force，也不把测试专用 delay input 塞回正式 SoC RTL。
-
-程序自检负责确认：
-
-- CPU 真的能通过新 AXI/APB 链路运行裸机程序。
-- DMEM read-after-write、stack 和 C runtime 正常。
-- GPIO/UART/TIMER ABI 不变。
-- MMIO side effect 不重复。
-- unmapped/illegal offset 能进入正确 access fault。
-- memory wait 期间 trap/interrupt/redirect 仍保持精确语义。
-
-### 12.6 UVM 与 coverage 口径
-
-v6.0 `data_subsystem` UVM 工作区继续作为 v7.0 历史资产保留，不改 filelist 去验证新 AXI RTL，也不与 AXI-Lite 版本混编。
-
-0836 可以用 covergroup/SVA cover 记录以下基本覆盖：
-
-- read/write。
-- target。
-- AW/W handshake order。
-- channel delay 档位。
-- OKAY/SLVERR/DECERR。
-- WSTRB。
-- APB wait/error。
-
-coverage 用来确认关键场景确实发生，不把百分比本身作为本阶段唯一完成条件。完整 AXI-Lite UVM agent、protocol coverage 和更系统的 random traffic 保留给 0837，是否继续实施取决于求职时间和后续项目收益。
+以上缺口不阻塞 0836 收口。后续若继续投入协议验证，可使用轻量 SystemVerilog/cocotb testbench、SVA 或新的版本化 UVM 工作区，至少覆盖 channel payload stable、AW/W 任意顺序、B/R response 保持、route state、APB SETUP/ACCESS 与多周期 `PREADY`。v6.0 `data_subsystem` UVM/SVA 工作区继续冻结，不混编新的 AXI/APB 主线 RTL；若使用 `cocotbext-axi`，其适用于 AXI-Lite 侧，APB 侧需单独选择 model/package。
 
 ## 第13章 建议的 RTL 与验证资产边界
 
@@ -733,11 +676,11 @@ coverage 用来确认关键场景确实发生，不把百分比本身作为本�
 | bridge | AXI-Lite-to-APB4 |
 | peripheral | APB mux 和 GPIO/UART/TIMER wrapper |
 | SoC | 新 data subsystem 与 `rv32i_soc` 集成 |
-| module verification | AXI/APB driver、monitor、scoreboard、SVA、确定性/random testcase |
-| system verification | Verilator ASM/C 程序、外部 DMEM AXI-Lite delay model、固定响应 APB 外设链路、commit/trap/bus trace |
-| documentation | 协议边界、开源来源、验证矩阵、已知限制和结果 |
+| optional protocol verification | 后续可新增的 AXI/APB driver、monitor、scoreboard、SVA 和确定性/random testcase；0836 未创建 |
+| system verification | 现有 Verilator ASM/C 程序、固定 readiness 的外部 AXI-Lite RAM、固定响应 APB 外设链路、commit/trap/bus trace |
+| documentation | 协议边界、开源来源、实际验证矩阵、已知限制和结果 |
 
-开发期间可以让新 AXI data subsystem 与 v7.0 `data_subsystem` 并行存在，待模块验证和程序回归通过后再切换主线 SoC。v7.0 tag 和 `uvm/v6_0/data_subsystem/dut/rtl` 快照已经冻结，因此主线后续删除或重构旧 `data_subsystem` 不影响历史复现。
+主线 SoC 已切换到新 AXI data subsystem，旧 simple bus data subsystem 不再并行保留在主线 RTL。v7.0 tag 和 `uvm/v6_0/data_subsystem/dut/rtl` 快照已经冻结，因此主线删除旧实现不影响历史复现。
 
 ## 第14章 本阶段完成标准
 
@@ -747,7 +690,7 @@ coverage 用来确认关键场景确实发生，不把百分比本身作为本�
 RV32I core 保留稳定的 single-outstanding LSU request/response 接口；
 SoC 数据侧通过自有 adapter 转换为标准 AXI4-Lite 五通道，
 DMEM 使用 AXI-Lite slave，GPIO/UART/TIMER 通过 AXI-Lite-to-APB4 bridge 接入，
-并在独立 channel backpressure、错误响应和程序级回归下保持精确访存与 trap/interrupt 语义。
+并经 38 个程序自检用例验证当前固定响应组合下的精确访存与 trap/interrupt 语义。
 ```
 
 具体完成标准：
@@ -755,17 +698,17 @@ DMEM 使用 AXI-Lite slave，GPIO/UART/TIMER 通过 AXI-Lite-to-APB4 bridge 接�
 | 标准 | 判断 |
 |---|---|
 | CPU 边界稳定 | core/mem_stage 不感知 AXI 五通道，internal simple bus 语义不变 |
-| AXI-Lite 合规 | AW/W 独立、五通道 payload stable、B/R response matched |
+| AXI-Lite 结构闭合 | AW/W 独立状态、五通道 payload 保持和 B/R response 匹配由 RTL 实现；完整动态 compliance 验证保留为后续项 |
 | single outstanding 明确 | 系统不接受会覆盖 pending/route state 的第二笔 transaction |
-| APB 合规 | setup/access/PREADY/PSLVERR 正确，等待期间 payload 稳定 |
+| APB 结构闭合 | setup/access/PREADY/PSLVERR 由 RTL 实现，固定 `PREADY=1` 已集成验证，多周期等待保留为后续项 |
 | byte access 正确 | SB/SH/SW 通过 WSTRB/PSTRB 保持现有 lane 语义 |
 | error 正确 | OKAY/SLVERR/DECERR 映射清楚，并进入正确 CPU access fault |
-| side effect 正确 | wait/backpressure 下 MMIO write/read 副作用不重复 |
+| side effect 正确 | 当前固定 `PREADY=1` 下 MMIO write/read 副作用不重复 |
 | 地址图兼容 | 现有 GPIO/UART/TIMER 软件和链接布局无需修改 |
-| 模块验证通过 | adapter/router/DMEM slave/bridge/APB path 的关键 testcase 和 SVA 通过 |
-| 程序回归通过 | Verilator ASM/C zero-wait 全量回归、代表性 DMEM AXI backpressure 回归和固定响应 APB 外设端到端回归通过 |
+| 验证结论清楚 | SoC 集成通过与协议 compliance 缺口分别记录，不用程序通过替代完整协议结论 |
+| 程序回归通过 | Verilator ASM 25/25、C 13/13，覆盖 DMEM、APB 外设、错误、精确提交和混合路由 |
 | 可综合边界清楚 | testbench RAM、随机 delay 和验证代码不进入主线综合层 |
 | 开源归属清楚 | 参考或直接复用内容均有来源、版本和许可证记录 |
 | 后续接口明确 | ACCEL0 direct AXI-Lite control slot 已预留，完整 AXI4/DMA/accelerator 本体不混入本阶段 |
 
-达到这些标准后，0836 才算真正完成。后续可以按项目收益选择进入 0837 AXI-Lite UVM 深化，也可以直接基于已经稳定的 AXI-Lite/APB 控制面展开 accelerator 专题；两条方向都不应反向破坏本阶段已经冻结的 CPU simple bus 与标准总线边界。
+当前实现已达到上述 0836 功能集成标准。后续可以按项目收益选择进入 0837 AXI-Lite 协议验证深化，也可以直接基于已经稳定的 AXI-Lite/APB 控制面展开 accelerator 专题；两条方向都不应反向破坏本阶段已经冻结的 CPU simple bus 与标准总线边界。

@@ -1,4 +1,4 @@
-# 0805_wait_interrupt_boundary.S — MEM wait 期间 interrupt 不越过 older 指令
+# 0805_wait_interrupt_boundary.S — 多周期 DMEM 访问期间 interrupt 不越过 older 指令
 #
 # 目的：
 #   - 验证在 older 的 DMEM load 等待 response 期间，timer interrupt 不
@@ -6,13 +6,13 @@
 #   - response completion 后 core 回到正常提交边界，此时才接受 interrupt。
 #   - 检查 older load 的结果在 interrupt handler 返回后仍可用。
 #
-# 延迟配置：
-#   - DMEM resp_delay = 7（固定），保证 older load 经历多个 wait 周期。
+# 访问条件：
+#   - simple_bus_to_axi_lite 与 axi_lite_ram 保证 older load 经历多周期访问。
 #   - TIMER0 配置 MTIMECMP=2，确保 load wait 期间 MTIP 置位。
 #
 # 测试流程：
 #   1. 配置 timer 在 2 拍后触发 MTIP。
-#   2. 对 DMEM 执行 load（resp_delay=7），该 load 进入 MEM wait。
+#   2. 对 DMEM 执行 load，该 load 进入 MEM wait。
 #   3. 在 wait 期间 MTIP 置位，但 core 不应立即 trap。
 #   4. load response 返回后，core 继续提交，在提交边界接受 timer interrupt。
 #   5. handler 记录 mepc，关 timer，mret 继续。
@@ -51,12 +51,6 @@ test_main:
     csrw  mie, x0
     csrrc x0, mstatus, MSTATUS_MIE
 
-    # DMEM resp_delay = 7（固定延迟）
-    lui   x21, %hi(TB_RESP_DELAY_CFG0_ADDR)
-    addi  x21, x21, %lo(TB_RESP_DELAY_CFG0_ADDR)
-    addi  x5, x0, 7
-    sw    x5, 0(x21)
-
     # 初始化 DMEM 数据区
     li    x5, 0x13572468
     sw    x5, LOAD_VALUE_OFFSET(x20)
@@ -80,7 +74,7 @@ test_main:
     sw    x5, TIMER32_CTRL_OFFSET(x21)
 
     # ==================================================================
-    # 执行 older DMEM load（resp_delay=7），进入 MEM wait。
+    # 执行 older DMEM load，进入 MEM wait。
     # 在 wait 期间 MTIP 应已置位，但 core 不应立即 trap。
     # load response 返回后，在 after_wait_load 边界 core 接受 interrupt。
     # ==================================================================

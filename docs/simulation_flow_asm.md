@@ -32,7 +32,7 @@ build/soc_asm/<test>.elf
 build/soc_asm/<test>.dump
   ↓ objcopy + scripts/bin2mem32.py
 build/soc_asm/<test>.mem
-  ↓ Verilator tb_rv32i_soc + simple_rom/simple_ram + MMIO 外设
+  ↓ Verilator tb_rv32i_soc + simple_rom + axi_lite_ram + AXI-Lite/APB data_subsystem
 PASS / FAIL / TIMEOUT
 ```
 
@@ -50,6 +50,9 @@ PASS / FAIL / TIMEOUT
 ```
 rtl/common/*.sv
 rtl/core/*.sv
+rtl/bus/axi_lite/*.sv
+rtl/bus/bridge/*.sv
+rtl/bus/apb/*.sv
 rtl/mem/*.sv
 rtl/periph/*.sv
 rtl/soc/*.sv
@@ -66,6 +69,10 @@ rtl/soc/*.sv
 | `03xx` | `0301`～`0303` | data/control hazard | SoC |
 | `05xx` | `0501`～`0503` | trap entry、全异常、CSR 指令 | SoC |
 | `06xx` | `0601`～`0606` | SoC 冒烟、UART、GPIO、MMIO fault/优先级/wrong-path | SoC |
+| `07xx` | `0705`～`0706` | CSR/MRET 同拍 interrupt 的精确提交 | SoC |
+| `08xx` | `0801`、`0802`、`0804`、`0805` | AXI-Lite DMEM、APB error、MEM backpressure 与 interrupt boundary | SoC |
+
+当前汇编回归共 25 个测试，0836 收口结果为 25 passed、0 failed。
 
 ### 3.2 branch/JAL/JALR 已支持
 

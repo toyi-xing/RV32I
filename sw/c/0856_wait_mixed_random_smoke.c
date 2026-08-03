@@ -1,19 +1,14 @@
 /*
- * 0856_wait_mixed_random_smoke.c — 随机 wait-state 下混合 DMEM/MMIO smoke
+ * 0856_wait_mixed_random_smoke.c — AXI-Lite DMEM 与 APB MMIO 混合访问 smoke
  *
  * 目的：
- *   - 在 DMEM/GPIO0/UART0/TIMER0 全部配置随机延迟（上限 3）的条件下，
- *     执行混合 DMEM 运算、GPIO 中断模拟、UART RX 和 TIMER0 操作的 smoke 测试。
- *   - 验证随机 wait-state 下不出现数据错误、外设副作用不重复、PASS/FAIL
- *     自检机制正常工作。
- *
- * 延迟配置：
- *   - 四个 target 全部使用随机延迟模式，上限 3。
- *   - TB 为每个 target 的后续 transaction 生成 0..3 的随机 delay。
+ *   - 交替执行 DMEM 运算、GPIO 中断模拟、UART RX 和 TIMER0 操作。
+ *   - 验证 AXI-Lite router 能在外部 DMEM 与内部 APB 外设路径之间正确切换，
+ *     且外设副作用不重复、PASS/FAIL 自检机制正常工作。
  *
  * 注意：
  *   本测试不检查固定周期统计。各外设操作只验证语义正确性（值匹配、
- *   中断标志位、读清行为等），不依赖 0 wait-state 的周期计数。
+ *   中断标志位、读清行为等），不依赖精确周期计数。
  *
  * 测试步骤：
  *   1. DMEM: buf 数组的 store/load/运算/异或。
@@ -22,7 +17,7 @@
  *   4. TIMER0: 配置 MTIMECMP，等待 MTIP 后关 timer。
  *
  * 通过条件：
- *   所有检查通过后 errors == 0，末尾恢复全部 delay 为 0 后 return 0。
+ *   所有检查通过后 errors == 0，return 0。
  *   若 errors != 0，按 bit 位定位具体哪一项检查失败。
  *
  * 错误码：
@@ -54,11 +49,8 @@ int main(void)
 
     csr_clear_mstatus(MSTATUS_MIE);
     csr_write_mie(0u);
-    /* 四个 target 全部随机延迟，上限 3 */
-    tb_set_resp_delay(true, 3u, true, 3u, true, 3u, true, 3u);
-
     /* ==================================================================
-     * DMEM 运算：随机 wait-state 下 store/load/加减/异或
+     * DMEM 运算：AXI-Lite 路径上的 store/load/加减/异或
      * ================================================================== */
     buf[0] = 0x11112222u;
     buf[1] = 0x33334444u;
@@ -122,8 +114,6 @@ int main(void)
     }
     mmio_write32(timer32_reg(TIMER0_BASE, TIMER32_CTRL_OFFSET), 0u);
 
-    /* 恢复全部 delay 为 0 */
-    tb_set_resp_delay(false, 0u, false, 0u, false, 0u, false, 0u);
     if (errors != 0u) {
         mmio_write32(DMEM_BASE + TEST_ERROR_CODE_OFFSET, errors);
         return 1;

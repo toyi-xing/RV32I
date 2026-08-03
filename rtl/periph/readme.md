@@ -8,7 +8,7 @@
 software_address = instance_BASE_ADDR + register_offset
 ```
 
-当前三个外设本体都是固定响应 register block，寄存器 ABI 不包含软件可见的 ready/valid 信号。若系统外层使用 simple data bus wrapper 注入 wait-state，则寄存器访问和读写副作用仍发生在 request accepted 当拍；response 延迟只影响 CPU 看到访问完成的时间，不会让外设本体被重复访问。`access_fault_o` 当前只检测未知 offset：访问未定义 offset 时拉高；写 RO、读 WO、写保留 bit 等访问类型或字段错误当前不额外触发 fault。
+当前三个外设本体都是固定响应 register block，寄存器 ABI 不包含软件可见的 ready/valid 信号。主线数据通路由 `axi_lite_to_apb`、`apb_mux` 和每个外设前的 `apb_to_reg_adapter` 接入：只有 `PSEL && PENABLE && PREADY` 的 APB ACCESS completion 才产生一次寄存器访问脉冲，因此 W1C、读清和 UART TX 等副作用不会在 SETUP 阶段或等待期间重复发生。当前正式外设固定 `PREADY=1`；`access_fault_o` 检测未知 offset，并经 `PSLVERR -> AXI SLVERR -> simple bus error` 形成 CPU load/store access fault。写 RO、读 WO、写保留 bit 等访问类型或字段错误当前不额外触发 fault。
 
 外设端口的 `addr_i` 保持 CPU 发出的 byte address，但寄存器选择按 word-aligned offset 进行：`offset = {(addr_i - BASE_ADDR)[11:2], 2'b00}`。因此同一寄存器 word 内的 `reg+0`、`reg+1`、`reg+2` 和 `reg+3` 都命中同一个寄存器；`addr_i[1:0]` 不参与寄存器 decode，实际读写 byte lane 由 `be_i` 决定。读操作返回完整寄存器 word，CPU 侧再按原始地址和 load 类型提取目标 byte/halfword。只有对齐后的 register word offset 不在本 ABI 中定义时，`access_fault_o` 才应拉高。
 

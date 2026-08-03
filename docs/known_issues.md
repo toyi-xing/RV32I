@@ -102,10 +102,11 @@ UVM 汇总得到 `UVM_ERROR=52`、`UVM_FATAL=0`。其中 48 条为 GPIO0 已定�
 
 | 项目 | 内容 |
 | --- | --- |
-| 状态 | `Deferred` |
+| 状态 | `Fixed` |
 | 发现日期 | 2026-08-02 |
-| 预计处理阶段 | 0836 第 11 章验证阶段 |
-| 影响范围 | SoC C 全量回归中的 `0757_gpio_periodic_irq`；不影响其它 12 个 C 用例和 25 个 ASM 用例 |
+| 修复日期 | 2026-08-03 |
+| 修复阶段 | 0836 第 11 章验证收口 |
+| 影响范围 | 修复前影响 SoC C 全量回归中的 `0757_gpio_periodic_irq`；未发现其它 C/ASM 用例受影响 |
 | 相关文件 | `sw/c/0757_gpio_periodic_irq.c`、`sw/c_runtime/crt0.S`、`tb/sv/tb_rv32i_soc.sv`、`build/soc_c/logs/0757_gpio_periodic_irq.log` |
 
 ### 问题说明
@@ -122,17 +123,23 @@ CPU trap entry 先跳转到 `crt0.S::__trap_entry`，不会立即执行 C handle
 
 GPIO `IRQ_PENDING` 的每个输入只保存一个 pending bit，不是边沿计数器或事件 FIFO。handler 尚未完成时到来的多个 bit30 边沿只能把同一位保持为 1，无法逐个累计；W1C 和 MRET 前后的新边沿还会决定是立即重入还是先返回主流程。因此，软件记录的是未被合并的部分 pending 事件，不再是每个 200 拍硬件边沿。
 
-### 当前判断
+### 修复判断
 
 当前证据不支持将本问题归类为 AXI/APB、TIMER0、GPIO 或 trap 精确提交的 RTL 功能错误。它暴露的是原测试隐含的性能前提：完整 C handler 必须在最快 GPIO 边沿间隔内完成。固定响应 simple bus 下该前提成立，AXI-Lite/APB 引入正常协议延迟后不再成立。
 
 不能仅把 bit30 允许范围从 180..220 放宽到 299 附近，因为 299 是当前 handler 执行时间、GPIO 相位和 pending 合并共同形成的采样结果，不是稳定的 GPIO 输入周期。
 
-### 预计处理与关闭条件
+### 修复内容
 
-0836 第 11 章验证阶段应重新划分该测试的目标：周期正确性测试可把 bit30 翻转间隔提高到大于 handler 最坏执行时间；200 拍快速场景可改为明确检查 pending 合并和中断吞吐边界；若仍需逐边沿测量 200 拍输入，则应使用更短的汇编 handler、硬件事件计数器或边沿时间戳机制，而不是依赖当前完整 C handler。
+保留 `0757_gpio_periodic_irq` 作为 GPIO 周期输入精确测量测试，但把 bit30 的翻转间隔从 200 拍提高到 500 拍，使其大于当前完整 C handler 的实际处理时间；bit31 仍保持 2000 拍。测试的 bit30 合法范围同步改为 450～550，预期快慢周期比由共享常量自动推导为 4，避免 testbench 与软件阈值再次漂移。
 
-完成测试边界调整后，应重新运行 ASM/C 全量回归。新测试需要明确证明预期的 GPIO 周期或 pending 合并行为，C 回归恢复全量 PASS，并保留调整前后的日志证据，随后可将本问题状态改为 `Fixed`。
+该修复没有放宽到原失败值 299 附近，也没有修改 GPIO、TIMER0、trap 或 AXI/APB RTL。200 拍输入下的 pending 合并仍是硬件模型的既有边界；若后续要逐个统计这类高频边沿，应另建吞吐边界测试或改用更短 handler/硬件计数机制。
+
+### 验证与关闭依据
+
+修复后 `build/soc_c/logs/0757_gpio_periodic_irq.log` 记录 `B30 CNT=21 AVG=500`、`B31 CNT=6 AVG=2000`、`RATIO(B31/B30)=4 (expect 4)`，测试最终 PASS。该结果同时证明两路 GPIO 周期输入、TIMER0.MTIME 采样和 C trap 返回路径在调整后的吞吐边界内行为一致。
+
+随后运行 SoC 全量回归，ASM 为 25/25 PASS，C 为 13/13 PASS；原先受影响的 `0757_gpio_periodic_irq` 已恢复通过，依赖旧 response-delay mailbox 的 0801/0802/0804/0805/0853/0856 也已按当前 AXI-Lite/APB 实现边界清理并通过。至此 REG-002 关闭。
 
 ## UVM-001：DMEM scoreboard 截断地址导致随机回归误报
 

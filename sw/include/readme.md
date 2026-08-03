@@ -18,6 +18,8 @@
 
 `tb_rv32i_soc_test.h` 描述 `tb/sv/tb_rv32i_soc.sv` 专用的 directed-test mailbox 协议。测试程序通过向保留 DMEM 地址执行普通 store，请求 testbench 驱动 GPIO 输入或 UART RX 事件。
 
+mailbox 当前只定义 GPIO set/clear/pulse 和 UART RX 四类命令，不再承担旧 data-subsystem response-delay 配置。文件还共享 bit30/bit31 周期输入的 500/2000 拍半周期常量，0757 测试与 TB 使用同一口径。
+
 这个文件只适用于当前 SoC testbench：
 
 - 它不是真实 SoC 地址图。

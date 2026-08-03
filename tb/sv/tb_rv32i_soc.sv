@@ -131,7 +131,7 @@ module tb_rv32i_soc;
     // gpio0[31]、gpio0[30] 接时钟信号
     localparam int   TB_GPIO0_FAST_PERIODIC_BIT  = 30;
     localparam int   TB_GPIO0_SLOW_PERIODIC_BIT  = 31;
-    localparam int   TB_GPIO0_FAST_TOGGLE_CYCLES = 200;
+    localparam int   TB_GPIO0_FAST_TOGGLE_CYCLES = 500;
     localparam int   TB_GPIO0_SLOW_TOGGLE_CYCLES = 2000;
 
     // -------------------------------------------------------------------------

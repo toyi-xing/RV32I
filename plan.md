@@ -591,70 +591,95 @@ RTL 功能阶段先完成：
 - SoC、packages、filelists 和注释同步。
 - RTL 能作为下一阶段详细验证计划的固定 DUT。
 
-## 11. 验证阶段方向 `RTL 完成后展开`
+## 11. SoC 集成级定向验证与问题收口 `已完成`
 
-RTL 主线稳定后，将本章覆盖为详细验证执行计划。目前只固定以下方向。
+### 11.1 验证策略与结论边界 `已完成`
 
-### 11.1 模块级协议验证
+0836 不新增协议级 testbench、UVM 环境或 SVA 文件，继续使用现有 Verilator SoC testbench、mailbox 外部激励和 38 个程序自检用例验证主线切换。该方案能够证明当前 CPU、adapter、router、AXI-Lite RAM、AXI-Lite-to-APB bridge、APB mux 和固定响应外设组合在实际程序访问下功能闭合，但不等价于 AXI4-Lite/APB4 完整协议合规验证。
 
-使用 VCS/SystemVerilog driver、monitor、scoreboard 和 SVA 分别验证：
+本章可以确认当前固定实现中的读写、byte strobe、地址路由、错误传播、流水线 backpressure、精确 trap/interrupt 和外设副作用；不能据此声称已经动态覆盖 AW/W 任意先后、各 channel 长时间 backpressure、B/R response stall 或多周期 `PREADY`。
 
-- simple-bus-to-AXI-Lite adapter。
-- AXI-Lite router/default error。
-- AXI-Lite RAM。
-- AXI-Lite-to-APB4 bridge。
-- APB mux/peripheral path。
+### 11.2 旧 wait-state 测试迁移 `已完成`
 
-重点覆盖 AW/W 独立顺序、各 channel backpressure、response stall、DECERR/SLVERR、PREADY wait、byte strobe 和 side effect exactly once。
+- 删除 `tb_rv32i_soc_test.h` 中已经失效的 response-delay mailbox 地址、配置打包和 C helper，TB mailbox 只保留 PASS/FAIL、GPIO 输入控制和 UART RX 激励职责。
+- 删除 0801、0802、0804、0805、0853、0856 中对旧 delay mailbox 的无效写入，避免用例无声通过却继续声称覆盖旧 wrapper 延迟。
+- 保留原测试文件名和编号以维持回归入口稳定；文件头和内部注释改为当前实际覆盖的 AXI-Lite DMEM 固定多周期访问、固定 `PREADY` APB 外设、错误传播和混合路由语义。
+- 没有把旧统一 `resp_delay` 人工映射到某个 AXI channel，也没有为验证重新向可综合 RTL 添加 delay 配置端口。
 
-`axi_lite_to_apb` 的模块级 testbench 直接把 bridge 作为 DUT，并在其下游 APB 端口连接可配置 slave model；该 model 驱动 `PREADY/PRDATA/PSLVERR`，用于注入 zero-wait、multi-cycle wait 和 error response。SoC 集成级 peripheral path 仍使用正式的固定响应外设，不依赖层级 force 或测试专用 RTL 端口。
+### 11.3 复用测试与集成证据 `已完成`
 
-第一版不新建完整 AXI UVM 平台。可以使用轻量 task/class driver，或在许可证和工具链合适时使用第三方 AXI/APB simulation model 做独立对照。
+| 验证面 | 主要既有用例 | 当前能够证明的行为 |
+|---|---|---|
+| AXI-Lite DMEM 数据语义 | `0104_load_store`、`0801_dmem_wait_basic`、`0802_dmem_wait_forwarding` | word/byte/halfword、`WSTRB` lane、外部 RAM 读写、load-use/forwarding 与 MEM backpressure |
+| APB 外设与副作用 | `0602_uart_tx`、`0603_gpio_rw`、`0651/0652`、`0751`～`0754`、`0853_mmio_wait_basic` | GPIO/UART/TIMER 寄存器 ABI、W1C/读清/TX event exactly once、固定 `PREADY` 端到端访问 |
+| 总线错误传播 | `0604_mmio_access_fault`、`0804_mmio_wait_access_fault` | router 未映射地址的 AXI `DECERR` 与 APB `PSLVERR` 转 AXI `SLVERR`，最终形成精确 load/store access fault |
+| kill 与精确提交 | `0605_mmio_misaligned_priority`、`0606_wrong_path_mmio`、`0705/0706`、`0805_wait_interrupt_boundary` | misaligned 优先级、wrong-path 无副作用、CSR/MRET 同拍中断和 older DMEM 访问完成后再接受 interrupt |
+| DMEM/MMIO 路由切换 | `0856_wait_mixed_random_smoke` | 同一程序在外部 AXI-Lite DMEM 与内部 APB GPIO/UART/TIMER 路径间交替访问且不死锁、不串响应 |
 
-### 11.2 SoC 程序级回归
+没有为 0836 新增测试程序。既有用例已经覆盖本次 SoC 集成需要的功能路径，新建协议级测试平台带来的文件与维护成本高于当前阶段收益；更完整的标准协议验证留给独立的后续版本化验证工作区。
 
-第 9 章已经完成 TB、新 SoC 端口和 zero-wait AXI-Lite RAM 的最小迁移。本阶段在该基线上增加验证能力：
+### 11.4 REG-002 修复 `已完成`
 
-- 为外部 DMEM AXI-Lite RAM 增加 AXI channel delay/backpressure model。
-- 保留 simple ROM、程序镜像加载、PASS/FAIL、commit/trap trace 和现有非 delay mailbox 激励。
-- 旧 DMEM delay 配置可以映射为 AXI-Lite RAM channel delay；旧 GPIO/UART/TIMER delay 配置不静默映射为内部 APB `PREADY`。
-- 依赖旧 MMIO response-delay mailbox 的 testcase 应明确调整或由模块级 APB wait testcase 取代，不能在配置已失效时继续声称覆盖了可变 APB wait。
+`0757_gpio_periodic_irq` 原先使用 200 拍的 bit30 翻转周期，短于 AXI-Lite/APB 接入后完整 C trap handler 的实际处理时间，导致 GPIO pending 合并并测得约 299 拍。修复将快速翻转周期改为 500 拍，慢速周期仍为 2000 拍；软件检查范围由共享常量按 ±10% 推导，预期比值自动推导为 4。
 
-继续运行：
+修复后日志记录 `B30 CNT=21 AVG=500`、`B31 CNT=6 AVG=2000`、`RATIO(B31/B30)=4 (expect 4)` 并 PASS。该问题属于测试吞吐前提失效，不是 GPIO、TIMER0、trap 或 AXI/APB RTL 功能错误；`docs/known_issues.md` 中 REG-002 已更新为 `Fixed`。
 
-- `sim/soc_asm` 全量 zero-wait regression。
-- `sim/soc_c` 全量 zero-wait regression。
-- 代表性的 DMEM AXI backpressure、trap 和 interrupt wait-state regression。
-- 固定 `PREADY=1` 下的 GPIO/UART/TIMER APB 端到端程序回归。
-- 新增 AXI/APB 混合访问专项程序或配置，证明总线切换、地址译码和外设 ABI 正确；APB multi-cycle `PREADY` 不作为程序级入口的当前要求。
+### 11.5 回归结果 `已完成`
 
-### 11.3 Assertion 和基本 coverage
+- `sim/soc_asm/run_all.sh`：25 passed，0 failed。
+- `sim/soc_c/run_all.sh`：13 passed，0 failed。
+- `git diff --check`：本章代码和注释变更无 whitespace error。
+- 代表性日志确认 0804 的 6 次 APB 外设非法 offset trap、0805 的 older load/interrupt 边界和 0757 的周期测量均实际发生，不只依据脚本退出码判断。
 
-- SVA 检查 AXI channel payload stable、response matched、single outstanding 和 APB setup/access。
-- covergroup/SVA cover 只确认关键场景实际发生。
-- 不以全面 protocol coverage 或 100% functional coverage 作为 0836 收口条件。
+### 11.6 明确保留的验证缺口 `已确认`
 
-### 11.4 UVM 边界
+- 当前 `axi_lite_ram` 和 CPU adapter 的实际流量通常同拍给出 AW/W，尚未用独立 master/slave model 动态覆盖 AW/W 任意先后。
+- 尚未注入 AWREADY/WREADY/ARREADY、BVALID/RVALID 的随机或长时间 backpressure，也未验证上游主动拉低 BREADY/RREADY 的组合。
+- 正式 GPIO/UART/TIMER 路径固定 `PREADY=1`，`axi_lite_to_apb` 对多周期 `PREADY=0` 的保持能力仅由 RTL 结构实现，未在本章动态验证。
+- v6.0 `data_subsystem` UVM/SVA 工作区保持冻结，不混编新的 AXI/APB 主线 RTL。
 
-- v6.0 simple bus UVM 保持冻结。
-- 0836 不把新 AXI RTL塞进旧 UVM filelist。
-- 是否在 0837 建立完整 AXI-Lite UVM，由 RTL 完成后的时间、求职收益和现有验证证据共同决定。
+以上缺口不阻塞 0836 的 SoC 功能集成收口；后续若继续投入协议验证，应在新的版本化 AXI-Lite/APB 验证工作区单独处理，不回写 v6.0 simple bus UVM。
 
-## 12. 文档与阶段收口 `验证完成后执行`
+## 12. 文档与阶段收口 `已完成`
 
-最终需要同步：
+本章清单依据当前工作区与 `v7.0-docs-dut-snapshot` 的 RTL、TB、脚本和文档差异整理。当前主线文档已同步，版本号、tag 和提交号仍需在正式 release 后回填。
 
-- 根目录 `README.md` 的当前架构、版本和验证能力。
-- `docs/08xx/0836` 的实际实现边界与计划偏差。
-- memory map、外设 ABI 和总线错误语义。
-- 新 AXI/APB RTL 的模块级 readme 或架构入口。
-- 仿真命令、回归矩阵和已知限制。
-- 直接复用或参考的开源项目来源、版本和许可证。
+### 12.1 阶段规划与问题记录 `已完成`
 
-若实现与 0836 原规划不一致，应按实际证据判断：
+- 更新 `docs/08xx/0836 AXI-Lite adapter、interconnect与APB外设桥规划.md`：保留现有 AXI-Lite/APB 功能边界和原理说明，补充实际模块名与连接关系、实现完成状态、固定响应延迟来源、未做 request 直通优化、SoC 程序回归结果和第 11.6 节验证缺口。
+- 将 0836 原计划中的“模块级协议 TB/SVA 必须完成”改为后续可选增强，明确本阶段实际采用 38 个 Verilator 程序自检完成 SoC 集成级验证，不能表述为完整协议合规验证。
+- 更新 0836 的开源参考说明：本阶段代码为项目内独立实现，没有直接复制第三方 RTL；`cocotbext-axi` 只作为 AXI/AXI-Lite 可选参考，APB 若后续验证需使用独立 APB model/package，不能继续声称该包提供 APB VIP。
+- 更新 `docs/08xx/0830 RV32I教学核后续完善路线：从v2.0到最小完整裸机核心.md`：把 0836 标记为已完成，按实际实现修正 accelerator 仅预留地址/端口的边界，并把 0837 AXI-Lite 协议深化保留为可选后续而非当前完成条件。
+- `docs/known_issues.md` 的 REG-002 已在第 11 章更新为 `Fixed`；正式 release 后只需补最终版本/tag，不再改写原失败日志和根因证据。
 
-- 实现更简单且不削弱标准协议边界，可以更新文档接受。
-- 为了方便而要求 AW/W 同拍、忽略 response backpressure 或绕过 APB 状态机，不接受。
-- 新增多 outstanding、通用 crossbar、CDC、DMA 或 accelerator 本体，移到后续阶段，不扩张本次收口范围。
+### 12.2 根目录 `README.md` `已完成`
 
-本阶段最终完成标准以 `docs/08xx/0836 AXI-Lite adapter、interconnect与APB外设桥规划.md` 第 13 章为准。
+- 更新“当前特性”和“验证能力”：主线 data-side 改为 CPU 内部 single-outstanding simple bus，经 adapter 接 AXI4-Lite router，DMEM 走外置 AXI-Lite RAM，GPIO/UART/TIMER 走 AXI-Lite-to-APB4 bridge；删除主线仍有 response-delay wrapper 和 delay mailbox 的过时描述。
+- 重画系统架构图，明确 `simple_rom` 仍在 TB，`axi_lite_ram` 在 TB/上层 wrapper，`data_subsystem` 内含 adapter/router/bridge/APB mux/register adapter，避免继续显示 `simple_ram + decoder + response delay wrapper`。
+- 更新目录结构和 RTL 文件说明，加入 `rtl/bus/axi_lite`、`rtl/bus/bridge`、`rtl/bus/apb`、`axi_lite_pkg.sv`、`apb_pkg.sv` 和 `axi_lite_ram.sv`；`simple_ram.sv` 标为 legacy simple bus 参考。
+- 更新 0801/0802/0804/0805/0853/0856 的测试描述、TB mailbox 边界和 38 个 directed tests 的覆盖结论，记录 ASM 25/25、C 13/13 以及 REG-002 修复后的 0757 证据。
+- 在项目时间戳中新增 0836 AXI-Lite/APB 主线 release 行；版本号、tag 和提交号在正式提交后填写，不能提前猜测。
+- 保留 v5.1 FPGA 与 v6.0 UVM 的入口，但明确二者是冻结的版本化工作区，不代表当前 AXI/APB 主线 RTL。
+
+### 12.3 当前主线配套文档 `已完成`
+
+- 更新 `rtl/periph/readme.md`：外设寄存器 ABI 和 word-aligned offset 规则不变；把旧 simple bus delay wrapper 描述替换为 `apb_to_reg_adapter` 在 APB ACCESS completion 产生一次寄存器访问、当前固定 `PREADY=1`、`access_fault_o -> PSLVERR -> SLVERR` 的实际路径。
+- 更新 `sw/asm/readme.md`：第 8 章改为 AXI-Lite/APB 集成测试分类，删除 `TB_RESP_DELAY_CFG0_ADDR` 和固定 delay 配置说明，保留旧文件名只是稳定测试编号/入口的说明。
+- 更新 `sw/c/readme.md`：0757 改为 500/2000 拍和 4:1 结果；0853/0856 改为固定 `PREADY` 外设副作用与 AXI DMEM/APB MMIO 混合访问；删除全部 delay helper、`0x190` mailbox 命令和随机 response-delay 流程。
+- 更新 `sw/include/readme.md`：明确 mailbox 只包含 GPIO 输入和 UART RX 激励，并记录 bit30/bit31 的 500/2000 拍共享周期常量；不再出现 response-delay 配置接口。
+- 更新 `sw/linker/readme.md`：IMEM 仍由 `simple_rom` 加载，DMEM 镜像改由 TB 中的 `axi_lite_ram.mem` 加载；地址图和 linker layout 不变，`simple_ram` 只作为 legacy 检查项保留或移出当前主线同步清单。
+- 更新 `docs/simulation_flow_asm.md` 和 `docs/simulation_flow_c.md`：仿真拓扑从 `simple_rom/simple_ram` 改为 `simple_rom/axi_lite_ram + AXI-Lite/APB`，文件收集目录加入三个 `rtl/bus` 子目录；C 文档的超时值同步为 TB 当前 30010 拍，并补全当前 13 个 C 用例入口。
+- 不新增 `rtl/bus/readme.md`：当前总架构入口由根 README 提供，协议规划、实现边界和模块关系由 0836 文档提供，各 RTL 文件头已经说明单模块职责，避免重复维护第三份同类说明。
+
+### 12.4 明确保留不动的版本化/历史文档 `已确认`
+
+- 不修改 `uvm/v6_0/data_subsystem` 下的 spec、verification report、DUT docs 和 RTL 快照；它们记录 v6.0/v7.0 simple bus + response-delay wrapper 验证结果。
+- 不修改 `fpga/project_v5.1_original_to_fpga` 内的 RTL、readme 和迁移文档；该工作区固定描述 v5.1 FPGA 上板实现。
+- 不批量改写 `docs/08xx/0831`～`0835` 和早期 080x/082x 教学文档中的历史阶段接口；这些内容按各自阶段阅读。只在根 README、0830 和 0836 建立当前主线入口与版本边界。
+
+### 12.5 最终收口检查 `已完成`
+
+- 完成上述文档后，用全文搜索确认当前主线入口不再声称存在 response-delay wrapper、delay mailbox、外置 `simple_ram` DMEM 或随机 MMIO delay。
+- 检查文档链接、module/file 名、地址图、错误语义、测试数量和命令与仓库实际一致。
+- 再运行 `git diff --check`，并保留第 11 章 ASM 25/25、C 13/13 的结果作为 release 证据。
+- 正式提交后回填 release 版本、tag 和提交号，再按 `docs/08xx/0836 AXI-Lite adapter、interconnect与APB外设桥规划.md` 的最终完成标准确认 0836 收口。

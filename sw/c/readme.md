@@ -90,7 +90,7 @@ SoC 平台提供 `sw/include/platform.h`，封装了 `mmio_read32`/`mmio_write32
 | `0752_gpio_irq_basic.c` | GPIO0 外部中断基础行为 — IRQ_EN/IRQ_STATUS 关系、上升/下降/高/低电平四类触发、IRQ_PENDING R/W1C、handler 确认 mcause=MEIP |
 | `0753_uart_rx_irq.c` | UART0 RX 中断 — TB 注入 RX 字节、RXDATA/STATUS/IRQ_PENDING 同步更新、CTRL.rx_irq_enable 门控、读 RXDATA 清 pending、W1C 只清 pending 不消耗数据 |
 | `0754_external_timer_priority.c` | MEIP/MTIP 优先级 — 同时制造 GPIO external pending 和 timer pending，同时开 MEIE+MTIE，验证 first trap 选择 MEIP（MEIP > MTIP）；handler 清 external 后 timer 在第二次进入处理 |
-| `0757_gpio_periodic_irq.c` | TB 固定周期 GPIO 输入精确测量 — 用 TIMER0.MTIME 测量 bit30/bit31 边沿间隔，通过 UART TX 输出测量报告，验证快周期均值 ≈ 200、慢周期均值 ≈ 2000 |
+| `0757_gpio_periodic_irq.c` | TB 固定周期 GPIO 输入精确测量 — 用 TIMER0.MTIME 测量 bit30/bit31 边沿间隔，通过 UART TX 输出测量报告，验证快周期均值 ≈ 500、慢周期均值 ≈ 2000、周期比值为 4 |
 
 用 `platform.h` 封装的 CSR 访问函数（`csr_write_mie`、`csr_set_mstatus` 等），不再在测试 .c 内重复定义内联汇编。
 
@@ -98,49 +98,30 @@ SoC 平台提供 `sw/include/platform.h`，封装了 `mmio_read32`/`mmio_write32
 - `0752` 分 6 stage，每 stage 使用不同 GPIO bit。Stage1 轮询验证 IRQ_EN+IRQ_STATUS 关系；Stage2~5 分别验证上升沿、下降沿、高电平、低电平四类触发进入 MEIP handler；Stage6 验证 IRQ_PENDING R/W1C 与 IRQ_EN 的联动。handler 通过关 IRQ_EN 阻止电平重触发。
 - `0753` 分 3 stage。Stage1 验证 TB 注入后 RXDATA/STATUS/IRQ_PENDING 同步变化；Stage2 验证 rx_irq_enable=0 时 pending 可置位但不驱动中断，使能后中断触发；Stage3 验证 W1C 只清 pending 不消费 RXDATA，读 RXDATA 同时清 rx_valid 和 pending。
 - `0754` 先在 MIE=0 下同时置 GPIO pending 和 timer pending（MTIMECMP=1），验证入口 mip 同时有 MEIP 和 MTIP；开 MIE 后第一拍进 MEIP handler，清 GPIO 后 mip.MEIP=0、MTIP 仍为 1；第二拍进 MTIP handler 停 timer。
-- `0757` 利用 TB 固有周期翻转（bit30 每 200 拍翻转、bit31 每 2000 拍翻转）作为中断源，用 TIMER0.MTIME 精确测量边沿间隔。handler 记录每个 bit 的首末次 MTIME，main 计算平均间隔 avg = (last − first) / (count − 1) 并通过 UART TX 输出。中断响应延迟在相减中抵消，实际测量值完全匹配 TB 翻转周期（bit30 avg=200、bit31 avg=2000、ratio=10）。
+- `0757` 利用 TB 固有周期翻转（bit30 每 500 拍翻转、bit31 每 2000 拍翻转）作为中断源，用 TIMER0.MTIME 精确测量边沿间隔。handler 记录每个 bit 的首末次 MTIME，main 计算平均间隔 `avg = (last - first) / (count - 1)` 并通过 UART TX 输出。500 拍快周期长于当前完整 C handler 的处理时间，避免 pending 合并；收口日志为 bit30 avg=500、bit31 avg=2000、ratio=4。
 
 ---
 
-## 1.8 wait-state 测试 `已通过`
+## 1.8 AXI-Lite/APB 数据子系统集成测试 `已通过`
 
 | 文件 | 验证内容 |
 |------|----------|
-| `0853_mmio_wait_basic.c` | GPIO0/UART0/TIMER0 各配置固定延迟（2/3/4）下验证寄存器读写正确、中断 PENDING/W1C 不重复、UART RXDATA 读清只发生一次、TIMER MTIP 置位/清除正常 |
-| `0856_wait_mixed_random_smoke.c` | 四个 target 全部随机延迟（上限 3），执行混合 DMEM 运算、GPIO 中断、UART RX、TIMER 计数操作的 smoke 测试 |
+| `0853_mmio_wait_basic.c` | 固定 `PREADY=1` 下验证 GPIO0/UART0/TIMER0 经 AXI-Lite-to-APB4 链路访问正确，PENDING/W1C、UART TX、RXDATA 读清和 TIMER MTIP 等副作用只发生一次 |
+| `0856_wait_mixed_random_smoke.c` | 交替执行 AXI-Lite DMEM 运算、APB GPIO 中断、UART RX 和 TIMER0 操作，验证 router 跨 target 切换时不串响应、不死锁且软件可见语义不变 |
 
-### delay 配置 helper
+### 迁移说明
 
-`tb_rv32i_soc_test.h` 提供面向语义的 C helper 函数：
+两个文件名沿用 0834 的 `wait`/`random` 命名以保持测试编号和回归入口稳定。0836 已删除统一 response-delay wrapper、delay mailbox 和对应 C helper；当前测试不再配置每个 target 的人工延迟。
 
-```c
-// 单 target 配置（只改一个，不影响其他）
-tb_set_dmem_resp_delay(random_en, cycles_or_max);
-tb_set_gpio0_resp_delay(random_en, cycles_or_max);
-tb_set_uart0_resp_delay(random_en, cycles_or_max);
-tb_set_timer0_resp_delay(random_en, cycles_or_max);
+### 当前验证口径
 
-// 同时配置四个 target
-tb_set_resp_delay(dmem_random,  dmem_cycles,
-                  gpio0_random, gpio0_cycles,
-                  uart0_random, uart0_cycles,
-                  timer0_random, timer0_cycles);
-```
-
-- `random_en = false`：固定延迟模式，`cycles_or_max[6:0]` 是固定延迟拍数。
-- `random_en = true`：随机延迟模式，TB 为后续 transaction 生成 `0..cycles_or_max` 的具体 delay。
-- 单 target helper 使用 shadow 寄存器保留其他 target 的当前配置。
-
-### 验证口径
-
-- **固定延迟 MMIO**（0853）：在外设非 0 delay 下验证寄存器读写结果一致、W1C 不同步重复、RXDATA 读清只发生一次。这是 wait-state 下 MMIO 语义正确性的基线。
-- **随机延迟混合 smoke**（0856）：四个 target 全部使用随机延迟，验证 cross-target transaction 在 random wait 下不出现数据错乱或死锁。测试只检查语义正确性，不依赖固定周期计数。
+- **APB 外设与副作用**（0853）：验证 bridge、APB mux、register adapter 和三个外设的端到端功能，外设固定 `PREADY=1`。
+- **DMEM/MMIO 混合路由**（0856）：验证外部 AXI-Lite DMEM 与内部 APB 外设之间连续切换，不依赖固定周期计数。
 
 ### 注意事项
 
-- 旧 0651/075x 等测试默认 delay=0，不因 data_subsystem 新增延迟能力而改变行为。wait-state 测试使用独立的 08xx 编号，不影响已有回归基线。
-- 随机延迟测试不使用固定周期断言。timer 和 GPIO 周期统计类操作只检查语义正确性（值匹配、中断标志位等），不沿用 0 wait-state 下的严格周期阈值。
-- `tb_rv32i_soc_test.h` 的 delay helper 只属于 TB 定向测试协议，不是 SoC ABI，不写入外设手册。
+- AXI-Lite RAM 使用固定 readiness 和注册式 response，APB 外设固定 `PREADY=1`；现有程序不覆盖 AW/W 任意先后、独立 channel 随机 backpressure 或多周期 `PREADY`。
+- `tb_rv32i_soc_test.h` 当前只保留 GPIO 和 UART RX 外部激励 helper，不属于 SoC ABI。
 
 # 2 TB mailbox 机制与 C 测试编程
 
@@ -153,9 +134,8 @@ C 测试程序                       tb_rv32i_soc.sv
     │                                 │
     ├─ sw DMEM[0x180] = mask ─────--> ├─ gpio0_set(mask)    → GPIO 输入拉高
     ├─ sw DMEM[0x184] = mask ─────--> ├─ gpio0_clear(mask)  → GPIO 输入拉低
-    ├─ sw DMEM[0x188] = cmd   ─────-> ├─ gpio0_pulse(cmd)  → GPIO 输入脉冲
-    ├─ sw DMEM[0x18c] = data  ─────-> ├─ uart0_rx(data)    → UART0 注入 RX 字节
-    └─ sw DMEM[0x190] = cfg   ─────-> ├─ set_resp_delay(cfg) → 配置各 target 响应延迟
+    ├─ sw DMEM[0x188] = cmd   ─────-> ├─ gpio0_pulse(cmd)   → GPIO 输入脉冲
+    └─ sw DMEM[0x18c] = data  ─────-> ├─ uart0_rx(data)     → UART0 注入 RX 字节
 ```
 
 这些地址被定义在 `TB_CMD_BASE = DMEM_BASE + 0x180` 的连续区域内，由 `tb_rv32i_soc_test.h` 提供宏定义：
@@ -165,10 +145,9 @@ C 测试程序                       tb_rv32i_soc.sv
 #define TB_GPIO0_CLR_MASK_ADDR   (TB_CMD_BASE + 0x04)  // 写 mask, TB 驱动对应 GPIO 输入为低
 #define TB_GPIO0_PULSE_CMD_ADDR  (TB_CMD_BASE + 0x08)  // 写 packed command, 驱动 GPIO 脉冲
 #define TB_UART0_RX_ADDR         (TB_CMD_BASE + 0x0c)  // 写 byte[7:0], TB 注入 UART RX 字节
-#define TB_RESP_DELAY_CFG0_ADDR  (TB_CMD_BASE + 0x10)  // 写 packed config, 配置 response delay
 ```
 
-TB mailbox 地址位于 DMEM 的已实现区域，**不是硬件 MMIO 寄存器**。写入这些地址就是一次普通的 DMEM store，经过 `data_subsystem` 的地址译码和 response wrapper 到达外置 `simple_ram`。testbench 同步监控 DMEM 的写信号，在 accepted 当拍执行对应的激励任务。
+TB mailbox 地址位于 DMEM 的已实现区域，**不是硬件 MMIO 寄存器**。写入这些地址就是一次普通的 DMEM store，经 CPU adapter、AXI-Lite router 到达 testbench 中的 `axi_lite_ram`。testbench 观察完成的外部 DMEM write，并执行对应的激励任务。
 
 ## 2.2 为什么需要 TB mailbox
 
@@ -185,7 +164,7 @@ SoC 仿真中的外部激励（GPIO 输入变化、UART RX 字节注入、TIMER 
 
 ```c
 #include "platform.h"              // MMIO 基地址、寄存器 offset、CSR 操作函数
-#include "tb_rv32i_soc_test.h"     // TB mailbox 地址、GPIO/UART/delay helper 函数
+#include "tb_rv32i_soc_test.h"     // TB mailbox 地址、GPIO/UART helper 函数
 ```
 
 **步骤 2：调用 helper 函数**
@@ -200,13 +179,6 @@ tb_gpio0_pulse(0, 10, true);       // GPIO bit0 高脉冲，持续 10 拍
 
 // UART RX 注入
 tb_uart0_rx('A');                  // TB 向 UART0 注入一个 RX 字节 'A'
-
-// Response delay 配置
-tb_set_resp_delay(false, 0u,        // DMEM 固定延迟 0
-                  false, 2u,        // GPIO0 固定延迟 2
-                  false, 3u,        // UART0 固定延迟 3
-                  false, 4u);       // TIMER0 固定延迟 4
-tb_set_dmem_resp_delay(true, 7u);  // DMEM 改为随机延迟，上限 7
 ```
 
 这些 helper 函数的实现都是对 TB mailbox 地址执行普通的 `mmio_write32`。例如：
@@ -232,14 +204,14 @@ wait_cycles(30u);                   // 等待 TB 驱动 + 两级同步 + 中断�
 val = mmio_read32(gpio_reg(GPIO0_BASE, GPIO_IRQ_STATUS_OFFSET));  // 检查结果
 ```
 
-`wait_cycles` 是一个简单的忙等循环，用于消耗足够的周期让 TB 信号传播。等待长度取决于具体场景，需要根据 TB 的同步级数、response delay 配置和测试目标调整。
+`wait_cycles` 是一个简单的忙等循环，用于消耗足够的周期让 TB 信号传播。等待长度取决于具体场景，需要根据 TB 的同步级数、中断处理时间和测试目标调整。
 
 ## 2.4 TB mailbox 限制
 
-- **单次激励**：每次写入触发一次操作。例如 `tb_gpio0_set_mask` 只在 DMEM store 被 accepted 瞬间驱动 GPIO 输入变化，不会持续驱动。如果需要持续维持某个值，测试程序需要确保后续没有其他写操作改写 TB 的内部激励状态。
+- **单次激励**：每次写入触发一次操作。例如 `tb_gpio0_set_mask` 只在对应 DMEM store 完成后驱动一次 GPIO 输入变化，不会持续重复触发。如果需要持续维持某个值，测试程序需要确保后续没有其他写操作改写 TB 的内部激励状态。
 - **不允许写 bit[31:30]**：GPIO bit[31:30] 由 TB 固定驱动（周期翻转），C 测试的 `tb_gpio0_set_mask` 和 `tb_gpio0_clear_mask` 自动屏蔽这两个 bit。
-- **激励不是硬件状态**：TB mailbox 地址不是可读寄存器。写入后无法通过读同一地址确认激励已生效。这也是 `tb_rv32i_soc_test.h` 中 delay 配置使用 shadow 寄存器保存当前值的原因。
-- **监听基于 accepted DMEM write**：testbench 在 DMEM write request 被 accepted 当拍触发激励任务。因此一次 store 最多产生一次激励，不会被 response delay 重复触发。
+- **激励不是硬件状态**：TB mailbox 地址不是可读寄存器，写入后无法通过读同一地址确认激励已生效。
+- **监听基于完成的 DMEM write**：testbench 从外部 AXI-Lite RAM 路径识别 mailbox store，因此一次软件 store 最多产生一次激励。
 
 ## 2.5 典型测试模式
 
@@ -255,8 +227,8 @@ int main(void)
     csr_clear_mstatus(MSTATUS_MIE);
     csr_write_mie(0u);
 
-    // 2. 配置 TB mailbox 参数（延迟、GPIO 初始值等）
-    tb_set_resp_delay(false, 0u, false, 0u, false, 0u, false, 0u);
+    // 2. 通过 TB mailbox 设置外部输入初始值
+    tb_gpio0_clear_mask(1u);
 
     // 3. 写 MMIO 寄存器，配置外设
     mmio_write32(gpio_reg(GPIO0_BASE, GPIO_IRQ_EN_OFFSET), 1u);
@@ -269,8 +241,8 @@ int main(void)
         errors |= (1u << 0);
     }
 
-    // 5. 清除配置（如修改了 delay）
-    tb_set_resp_delay(false, 0u, false, 0u, false, 0u, false, 0u);
+    // 5. 清理本测试改变的外部输入
+    tb_gpio0_clear_mask(1u);
 
     return (errors != 0u) ? 1 : 0;
 }
@@ -488,7 +460,7 @@ PASS after N cycles
 ### 注意事项
 
 - 当前所有 C 测试统一使用 SoC 仿真入口（`sim/soc_c/`）。旧 core-only 仿真入口已删除。
-- 默认 delay=0 时 MMIO 寄存器是固定响应，`mmio_read32` 直接返回结果；若通过 TB mailbox 配置非 0 response delay，`mmio_read32` 直到 wait-state 结束后才返回。
+- 当前 MMIO 经 AXI-Lite-to-APB4 bridge 访问，正式外设固定 `PREADY=1`；`mmio_read32` 仍会等待 adapter、APB SETUP/ACCESS 和 response 完成后返回。
 - `GPIO_IN` 的值由 testbench 驱动，C 程序只能读不能写。
 - UART 的 `uart_putc` 包含忙等循环，测试的是 UART STATUS 寄存器的正确性。
 

@@ -1,3 +1,9 @@
+/*
+ * tb_rv32i_soc_test.h - SoC 定向测试使用的 testbench mailbox 约定。
+ *
+ * 本文件集中定义软件与 tb_rv32i_soc.sv 之间的仿真专用命令地址、周期输入
+ * 参数和 C 辅助函数。这些定义只服务于仿真激励，不属于 SoC 硬件 MMIO ABI。
+ */
 #ifndef RV32I_TB_RV32I_SOC_TEST_H
 #define RV32I_TB_RV32I_SOC_TEST_H
 
@@ -18,8 +24,6 @@
     #define TB_GPIO0_CLR_MASK_ADDR   (TB_CMD_BASE + RV32I_U32_C(0x04))  /* 写 mask，TB 驱动对应 GPIO 输入为低。 */
     #define TB_GPIO0_PULSE_CMD_ADDR  (TB_CMD_BASE + RV32I_U32_C(0x08))  /* 写 packed command，TB 在指定 GPIO 输入上产生脉冲。 */
     #define TB_UART0_RX_ADDR         (TB_CMD_BASE + RV32I_U32_C(0x0c))  /* 写 byte[7:0]，TB 向 UART0 注入一个 RX 字节。 */
-    #define TB_RESP_DELAY_CFG0_ADDR  (TB_CMD_BASE + RV32I_U32_C(0x10))  /* 写 packed config，TB 配置四个 data response 延迟源。 */
-    #define TB_RESP_DELAY_RESET_CFG  RV32I_U32_C(0x00000000)  /* 与 tb_rv32i_soc.sv 复位默认 delay config 保持一致。 */
     
     #define TB_GPIO0_FAST_PERIODIC_BIT   RV32I_U32_C(30)  /* 快速周期翻转 GPIO 的 bit 号。 */
     #define TB_GPIO0_SLOW_PERIODIC_BIT   RV32I_U32_C(31)  /* 慢速周期翻转 GPIO 的 bit 号。 */
@@ -27,7 +31,7 @@
     #define TB_GPIO0_SLOW_PERIODIC_MASK  (RV32I_U32_C(1) << TB_GPIO0_SLOW_PERIODIC_BIT)  /* 慢速周期翻转 GPIO 的 bit mask。 */
     
     /* tb_rv32i_soc.sv 固有周期输入。软件只使用这些常量识别 bit 和周期，不负责生成。 */
-    #define TB_GPIO0_FAST_TOGGLE_CYCLES  RV32I_U32_C(200)  /* 快速周期翻转半周期拍数。 */
+    #define TB_GPIO0_FAST_TOGGLE_CYCLES  RV32I_U32_C(500)  /* 快速周期翻转半周期拍数。 */
     #define TB_GPIO0_SLOW_TOGGLE_CYCLES  RV32I_U32_C(2000)  /* 慢速周期翻转半周期拍数。 */
 
     #ifndef __ASSEMBLER__
@@ -71,81 +75,6 @@
             mmio_write32(TB_UART0_RX_ADDR, (uint32_t)data);
         }
 
-        /*
-         * 打包单个 response delay 配置字节。
-         *
-         * random_en = false 时为固定延迟模式，cycles_or_max[6:0] 是固定延迟拍数。
-         * random_en = true  时为随机延迟模式，cycles_or_max[6:0] 是随机上限，
-         * TB 会为后续 transaction 生成 0..cycles_or_max 的具体延迟拍数。
-         */
-        static inline uint8_t tb_pack_resp_delay_cfg(bool random_en, uint8_t cycles_or_max)
-        {
-            return (uint8_t)((random_en ? 0x80u : 0x00u) | (cycles_or_max & 0x7fu));
-        }
-
-        /*
-         * response delay 配置 shadow。
-         *
-         * TB_RESP_DELAY_CFG0_ADDR 是只写 mailbox 命令，不是真实可读寄存器。
-         * 因此单独配置某一个 target 时，软件侧用 shadow 保留其他 target 的
-         * 最近配置，再写回完整 32-bit packed config。
-         */
-        static inline uint32_t *tb_resp_delay_cfg0_shadow_ptr(void)
-        {
-            static uint32_t cfg = TB_RESP_DELAY_RESET_CFG;
-            return &cfg;
-        }
-
-        /* 同时配置 DMEM/GPIO0/UART0/TIMER0 四个 response delay 源。 */
-        static inline void tb_set_resp_delay(bool dmem_random_en,   uint8_t dmem_cycles_or_max,
-                                             bool gpio0_random_en,  uint8_t gpio0_cycles_or_max,
-                                             bool uart0_random_en,  uint8_t uart0_cycles_or_max,
-                                             bool timer0_random_en, uint8_t timer0_cycles_or_max)
-        {
-            uint32_t cfg = ((uint32_t)tb_pack_resp_delay_cfg(dmem_random_en,   dmem_cycles_or_max)       )
-                         | ((uint32_t)tb_pack_resp_delay_cfg(gpio0_random_en,  gpio0_cycles_or_max)  <<  8)
-                         | ((uint32_t)tb_pack_resp_delay_cfg(uart0_random_en,  uart0_cycles_or_max)  << 16)
-                         | ((uint32_t)tb_pack_resp_delay_cfg(timer0_random_en, timer0_cycles_or_max) << 24);
-            *tb_resp_delay_cfg0_shadow_ptr() = cfg;
-            mmio_write32(TB_RESP_DELAY_CFG0_ADDR, cfg);
-        }
-
-        /* 只配置 DMEM response delay，不改变 GPIO0/UART0/TIMER0 的当前配置。 */
-        static inline void tb_set_dmem_resp_delay(bool random_en, uint8_t cycles_or_max)
-        {
-            uint32_t cfg = (*tb_resp_delay_cfg0_shadow_ptr() & ~UINT32_C(0x000000ff))
-                         |  (uint32_t)tb_pack_resp_delay_cfg(random_en, cycles_or_max);
-            *tb_resp_delay_cfg0_shadow_ptr() = cfg;
-            mmio_write32(TB_RESP_DELAY_CFG0_ADDR, cfg);
-        }
-
-        /* 只配置 GPIO0 response delay，不改变 DMEM/UART0/TIMER0 的当前配置。 */
-        static inline void tb_set_gpio0_resp_delay(bool random_en, uint8_t cycles_or_max)
-        {
-            uint32_t cfg = (*tb_resp_delay_cfg0_shadow_ptr() & ~UINT32_C(0x0000ff00))
-                         | ((uint32_t)tb_pack_resp_delay_cfg(random_en, cycles_or_max) << 8);
-            *tb_resp_delay_cfg0_shadow_ptr() = cfg;
-            mmio_write32(TB_RESP_DELAY_CFG0_ADDR, cfg);
-        }
-
-        /* 只配置 UART0 response delay，不改变 DMEM/GPIO0/TIMER0 的当前配置。 */
-        static inline void tb_set_uart0_resp_delay(bool random_en, uint8_t cycles_or_max)
-        {
-            uint32_t cfg = (*tb_resp_delay_cfg0_shadow_ptr() & ~UINT32_C(0x00ff0000))
-                         | ((uint32_t)tb_pack_resp_delay_cfg(random_en, cycles_or_max) << 16);
-            *tb_resp_delay_cfg0_shadow_ptr() = cfg;
-            mmio_write32(TB_RESP_DELAY_CFG0_ADDR, cfg);
-        }
-
-        /* 只配置 TIMER0 response delay，不改变 DMEM/GPIO0/UART0 的当前配置。 */
-        static inline void tb_set_timer0_resp_delay(bool random_en, uint8_t cycles_or_max)
-        {
-            uint32_t cfg = (*tb_resp_delay_cfg0_shadow_ptr() & ~UINT32_C(0xff000000))
-                         | ((uint32_t)tb_pack_resp_delay_cfg(random_en, cycles_or_max) << 24);
-            *tb_resp_delay_cfg0_shadow_ptr() = cfg;
-            mmio_write32(TB_RESP_DELAY_CFG0_ADDR, cfg);
-        }
-        
     #endif  // __ASSEMBLER__
 
 #endif

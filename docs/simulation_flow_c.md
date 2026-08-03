@@ -48,6 +48,16 @@ Vtb_rv32i_soc "+imem=build/soc_c/<test>_imem.mem" "+dmem=build/soc_c/<test>_dmem
 | `sw/c/0401_control_mix.c` | 嵌套循环冒泡排序、函数调用栈、byte/halfword 访存、分支密集路径 | SoC |
 | `sw/c/0551_trap_smoke.c` | C trap handler：ECALL 触发、CSR 读取、mret 返回 | SoC |
 | `sw/c/0651_soc_mmio_smoke.c` | GPIO OUT/OE/IN 读写、UART 使能/状态查询/TX 发送 | SoC |
+| `sw/c/0652_soc_mmio_gpio_uart.c` | GPIO bit 操作、OUT/OE 独立性与 UART 多字符串 | SoC |
+| `sw/c/0751_timer_smoke.c` | TIMER0 machine timer interrupt | SoC |
+| `sw/c/0752_gpio_irq_basic.c` | GPIO 四类触发、pending/W1C 与 external interrupt | SoC |
+| `sw/c/0753_uart_rx_irq.c` | UART RX 注入、RX interrupt、读清与 W1C | SoC |
+| `sw/c/0754_external_timer_priority.c` | MEIP/MTIP 同时 pending 时的优先级 | SoC |
+| `sw/c/0757_gpio_periodic_irq.c` | 500/2000 拍 GPIO 周期测量与 4:1 比值 | SoC |
+| `sw/c/0853_mmio_wait_basic.c` | 固定 PREADY APB 外设基本读写与副作用 | SoC |
+| `sw/c/0856_wait_mixed_random_smoke.c` | AXI-Lite DMEM 与 APB MMIO 混合路由 | SoC |
+
+当前 C 回归共 13 个测试，0836 收口结果为 13 passed、0 failed。
 
 ## 4. 新建 C 测试
 
@@ -67,10 +77,10 @@ int main(void)
 几点说明：
 
 - **入口约定**：`crt0.S` 固定提供 `.text.trap` 入口，同时负责初始化栈指针、清零 `.bss`、加载 `.dmem_image` 到 DMEM 基址，然后调用 `main()`。
-- **全局变量初始化**：若 C 测试需要在 DMEM 中预置数据，定义全局变量并赋初值即可。链接脚本会将这些初始值收集到 `.dmem_image` 段，仿真启动时 `simple_ram` 通过 `$readmemh` 加载。
-- **PASS/FAIL 约定**：C 测试由 `crt0.S` 统一写 `DMEM_BASE + 0x100`（即 `0x00040100`）。`main()` 返回 0 时写 1 表示 PASS，返回非 0 时写 2 表示 FAIL。超时（20010 周期）自动判 TIMEOUT。
+- **全局变量初始化**：若 C 测试需要在 DMEM 中预置数据，定义全局变量并赋初值即可。链接脚本会将这些初始值收集到 `.dmem_image` 段，仿真启动时 testbench 通过 `$readmemh` 加载到 `axi_lite_ram.mem`。
+- **PASS/FAIL 约定**：C 测试由 `crt0.S` 统一写 `DMEM_BASE + 0x100`（即 `0x00040100`）。`main()` 返回 0 时写 1 表示 PASS，返回非 0 时写 2 表示 FAIL。超时（30010 周期）自动判 TIMEOUT。
 - **trap 约定**：需要处理 trap 的 C 测试实现 `__trap_handler_c(unsigned int mcause, unsigned int mepc, unsigned int mtval)`。handler 返回值会写入 `mepc`，随后由 runtime 执行 `mret`；普通 C 测试使用默认弱 handler，若意外 trap 则写 FAIL。
-- **MMIO 约定**：需要访问 MMIO 外设的测试（06xx）包含 `sw/include/platform.h`，使用 `mmio_read32`/`mmio_write32` 等封装函数操作寄存器，且必须在 SoC 仿真平台（`sim/soc_c/`）下运行。
+- **MMIO 约定**：需要访问 MMIO 外设的测试包含 `sw/include/platform.h`，使用 `mmio_read32`/`mmio_write32` 等封装函数操作寄存器，且必须在 SoC 仿真平台（`sim/soc_c/`）下运行。
 
 ### 4.2 生成 Memory Image
 
@@ -111,4 +121,4 @@ Stack max used:    80 bytes
 - C trap 测试的 commit trace 会额外看到 `trap_entry/trap_return` 打印，以及 runtime 中保存/恢复寄存器的指令。
 - `sw/linker/c_baremetal.ld` 中 `__stack_top` 的值和栈指针初始化代码（`crt0.S`）必须一致，否则 `main()` 内的函数调用会异常。
 - 全局变量的 dmem 地址可通过 `.map` 文件或 `.dump` 中的符号地址确认。
-- RTL 文件由 SoC 仿真脚本自动收集：`rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/mem/*.sv`、`rtl/periph/*.sv`、`rtl/soc/*.sv`。
+- RTL 文件由 SoC 仿真脚本自动收集：`rtl/common/*.sv`、`rtl/core/*.sv`、`rtl/bus/axi_lite/*.sv`、`rtl/bus/bridge/*.sv`、`rtl/bus/apb/*.sv`、`rtl/mem/*.sv`、`rtl/periph/*.sv`、`rtl/soc/*.sv`。
