@@ -98,6 +98,42 @@ UVM 汇总得到 `UVM_ERROR=52`、`UVM_FATAL=0`。其中 48 条为 GPIO0 已定�
 
 修复后的回归入口会把 PASS/FAIL/TIMEOUT 文本结果纳入统计，失败测试不再仅因进程返回码而误报成功。相关 GPIO 用例已按 TB 的实际驱动语义更新，修复提交已随 v5.6 及后续 release 保留。
 
+## REG-002：0757 GPIO 周期中断测试超过 AXI/APB 下的 handler 吞吐边界
+
+| 项目 | 内容 |
+| --- | --- |
+| 状态 | `Deferred` |
+| 发现日期 | 2026-08-02 |
+| 预计处理阶段 | 0836 第 11 章验证阶段 |
+| 影响范围 | SoC C 全量回归中的 `0757_gpio_periodic_irq`；不影响其它 12 个 C 用例和 25 个 ASM 用例 |
+| 相关文件 | `sw/c/0757_gpio_periodic_irq.c`、`sw/c_runtime/crt0.S`、`tb/sv/tb_rv32i_soc.sv`、`build/soc_c/logs/0757_gpio_periodic_irq.log` |
+
+### 问题说明
+
+0836 将主线 data-side 从固定响应 simple bus wrapper 切换为 AXI-Lite/APB 后，SoC ASM 全量回归为 25/25 PASS，C 回归为 12/13 PASS；唯一失败项为 `0757_gpio_periodic_irq`。该测试让 TB 每 200 拍翻转一次 GPIO bit30、每 2000 拍翻转一次 bit31，并在 C trap handler 中读取 TIMER0.MTIME，以相邻 handler 采样时间估算 GPIO 边沿周期。
+
+失败日志汇总为 `B30 CNT=35 AVG=299`、`B31 CNT=6 AVG=1985`、`trap_cnt=35`。bit31 的慢周期仍接近预期 2000，未发现 TIMER0 计数变慢、GPIO 中断不触发或 trap 无法返回；bit30 的 299 也不是“200 拍真实周期加上固定 99 拍总线延迟”，而是 handler 吞吐不足后发生 GPIO pending 合并和采样混叠的结果。
+
+### 根因与日志证据
+
+CPU trap entry 先跳转到 `crt0.S::__trap_entry`，不会立即执行 C handler 中的 TIMER0 读取。入口需要向 DMEM 保存完整 GPR 上下文，C handler 本身还会访问全局统计变量、TIMER0、GPIO IRQ_STATUS 和 IRQ_PENDING，返回前再从 DMEM 恢复完整上下文。切换到 AXI-Lite RAM 后，每笔栈保存、栈恢复和全局变量访问都经历正常的 AXI request/response 延迟，因此整轮 handler 已超过 bit30 的 200 拍输入周期。
+
+第一轮日志显示：cycle 1800 发生 trap entry；cycle 1805 至 1896 完成 31 笔上下文保存相关 DMEM store；cycle 1923 才发起 TIMER0.MTIME read；cycle 1957 写 GPIO IRQ_PENDING 清除当前 pending；cycle 1979 至 2069 完成 31 笔上下文恢复相关 DMEM load；cycle 2072 因期间又产生 GPIO pending 而直接再次进入 trap。后续 TIMER0.MTIME read 出现在 cycle 1923、2195、2521、2792、3121、3392，间隔交替接近 272/326 拍，平均约为 299。
+
+GPIO `IRQ_PENDING` 的每个输入只保存一个 pending bit，不是边沿计数器或事件 FIFO。handler 尚未完成时到来的多个 bit30 边沿只能把同一位保持为 1，无法逐个累计；W1C 和 MRET 前后的新边沿还会决定是立即重入还是先返回主流程。因此，软件记录的是未被合并的部分 pending 事件，不再是每个 200 拍硬件边沿。
+
+### 当前判断
+
+当前证据不支持将本问题归类为 AXI/APB、TIMER0、GPIO 或 trap 精确提交的 RTL 功能错误。它暴露的是原测试隐含的性能前提：完整 C handler 必须在最快 GPIO 边沿间隔内完成。固定响应 simple bus 下该前提成立，AXI-Lite/APB 引入正常协议延迟后不再成立。
+
+不能仅把 bit30 允许范围从 180..220 放宽到 299 附近，因为 299 是当前 handler 执行时间、GPIO 相位和 pending 合并共同形成的采样结果，不是稳定的 GPIO 输入周期。
+
+### 预计处理与关闭条件
+
+0836 第 11 章验证阶段应重新划分该测试的目标：周期正确性测试可把 bit30 翻转间隔提高到大于 handler 最坏执行时间；200 拍快速场景可改为明确检查 pending 合并和中断吞吐边界；若仍需逐边沿测量 200 拍输入，则应使用更短的汇编 handler、硬件事件计数器或边沿时间戳机制，而不是依赖当前完整 C handler。
+
+完成测试边界调整后，应重新运行 ASM/C 全量回归。新测试需要明确证明预期的 GPIO 周期或 pending 合并行为，C 回归恢复全量 PASS，并保留调整前后的日志证据，随后可将本问题状态改为 `Fixed`。
+
 ## UVM-001：DMEM scoreboard 截断地址导致随机回归误报
 
 | 项目 | 内容 |

@@ -39,6 +39,9 @@ cd "${REPO_ROOT}"
 RTL_FILES=(
     rtl/common/*.sv
     rtl/core/*.sv
+    rtl/bus/axi_lite/*.sv
+    rtl/bus/bridge/*.sv
+    rtl/bus/apb/*.sv
     rtl/mem/*.sv
     rtl/periph/*.sv
     rtl/soc/*.sv

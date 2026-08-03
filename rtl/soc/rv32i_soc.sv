@@ -4,16 +4,15 @@
 //
 // 规范：
 //   - 普通输入端口使用 _i 后缀，普通输出端口使用 _o 后缀。
-//   - 本模块集成固定响应 IMEM、data-side simple bus 和最小 MMIO 外设。
-//   - CPU core、外置 IMEM、外置 DMEM/MMIO 数据子系统在本层连接，具体 data 地址译码和 wait-state 注入由 data_subsystem 完成。
+//   - 本模块集成固定响应 IMEM、core-side simple data bus 和 AXI-Lite/APB 数据子系统。
+//   - CPU core、外置 IMEM、外置 AXI-Lite DMEM 和内部 APB MMIO 外设在本层连接。
 //   - data 观察口按 request/response 结构体分组，避免混淆 request 意图和 response completion。
 //
 // 功能：
 //   - 实例化 core 作为 CPU core。
 //   - 透出固定响应 IMEM 端口，由 testbench 或上层 wrapper 连接 simple_rom/ROM model。
-//   - 实例化 data_subsystem 作为数据侧 simple bus 译码/响应包装层，连接外置 DMEM，并包含 GPIO0、UART0、TIMER0。
+//   - 实例化 data_subsystem，把 core simple request 路由到外置 AXI-Lite DMEM 或内部 APB 外设。
 //   - 将 data_subsystem response valid/rdata/error 接回 core LSU response 端口。
-//   - 透出 DMEM/GPIO0/UART0/TIMER0 四个 response delay 配置输入，用于 testbench 注入 wait-state。
 //   - 汇总 GPIO0/UART0 中断为 MEIP，将 TIMER0 中断作为 MTIP 接入 core。
 //   - 透传 commit/trap、GPIO、UART、interrupt 和 data access 观察信号给 testbench。
 //------------------------------------------------------------------------------
@@ -28,11 +27,8 @@ module rv32i_soc (
     input  logic [core_pkg::ILEN-1:0]     imem_rdata_i,          // 外置 IMEM 返回的 instruction。
 
     // ----------------------------以下连接外置 DMEM 和外设激励-----------------------------------
-    output logic                          dmem_we_o,             // 外置 DMEM store 写使能。
-    output logic [3:0]                    dmem_be_o,             // 外置 DMEM byte enable。
-    output logic [core_pkg::XLEN-1:0]     dmem_addr_o,           // 外置 DMEM byte address。
-    output logic [core_pkg::XLEN-1:0]     dmem_wdata_o,          // 外置 DMEM store 写数据。
-    input  logic [core_pkg::XLEN-1:0]     dmem_rdata_i,          // 外置 DMEM load 原始 word 数据。
+    output axi_lite_pkg::axi_lite_req_t   dmem_axi_req_o,        // 发往外置 DMEM AXI-Lite slave 的 request。
+    input  axi_lite_pkg::axi_lite_resp_t  dmem_axi_resp_i,       // 外置 DMEM AXI-Lite slave 的 response。
 
     input  logic [31:0]                   gpio0_in_i,            // GPIO0 输入引脚采样值。
     output logic [31:0]                   gpio0_out_o,           // GPIO0 输出寄存器值。
@@ -43,11 +39,6 @@ module rv32i_soc (
     input  logic                          uart0_rx_valid_i,      // UART0 RX event 脉冲。
     input  logic [7:0]                    uart0_rx_data_i,       // UART0 RX event 对应字节。
 
-    input  logic [6:0]                    dmem_resp_delay_cycles_i,   // DMEM 响应延迟拍数（0=固定响应）。
-    input  logic [6:0]                    gpio0_resp_delay_cycles_i,  // GPIO0 响应延迟拍数。
-    input  logic [6:0]                    uart0_resp_delay_cycles_i,  // UART0 响应延迟拍数。
-    input  logic [6:0]                    timer0_resp_delay_cycles_i, // TIMER0 响应延迟拍数。
-
     // ----------------------------以下为 commit/观察口-----------------------------------------
     // data request/response 观察口；load/store 既可能访问 DMEM，也可能访问外设寄存器。
     output logic                          data_req_ready_o,      // data-side 握手：本拍可接受 request。
@@ -57,6 +48,7 @@ module rv32i_soc (
 
     output logic                          dmem_access_o,         // 本拍 data access 是否命中 DMEM。
     output logic                          mmio_access_o,         // 本拍 data access 是否命中已实现 MMIO。
+    output logic                          undefined_access_o,    // 本拍 data access 是否命中未实现或未映射区域。
 
     // 指令提交
     output logic                          commit_valid_o,        // 当前拍是否有有效指令提交。
@@ -135,11 +127,8 @@ module rv32i_soc (
         .core_req_i            (data_req_o),
         .core_resp_o           (data_resp_o),
 
-        .dmem_we_o             (dmem_we_o),
-        .dmem_be_o             (dmem_be_o),
-        .dmem_addr_o           (dmem_addr_o),
-        .dmem_wdata_o          (dmem_wdata_o),
-        .dmem_rdata_i          (dmem_rdata_i),
+        .dmem_axi_req_o        (dmem_axi_req_o),
+        .dmem_axi_resp_i       (dmem_axi_resp_i),
 
         .gpio0_in_i            (gpio0_in_i),
         .gpio0_out_o           (gpio0_out_o),
@@ -154,13 +143,9 @@ module rv32i_soc (
         .uart0_irq_o           (uart0_irq_o),
         .timer0_irq_o          (timer0_irq_o),
 
-        .dmem_resp_delay_cycles_i   (dmem_resp_delay_cycles_i),
-        .gpio0_resp_delay_cycles_i  (gpio0_resp_delay_cycles_i),
-        .uart0_resp_delay_cycles_i  (uart0_resp_delay_cycles_i),
-        .timer0_resp_delay_cycles_i (timer0_resp_delay_cycles_i),
-
         .dmem_access_o         (dmem_access_o),
-        .mmio_access_o         (mmio_access_o)
+        .mmio_access_o         (mmio_access_o),
+        .undefined_access_o    (undefined_access_o)
     );
 
 endmodule

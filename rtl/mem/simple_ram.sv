@@ -1,10 +1,11 @@
 //------------------------------------------------------------------------------
 // 文件      : rtl/mem/simple_ram.sv
-// 用途      : 教学用固定响应数据 RAM。
+// 用途      : 教学用 legacy 固定响应数据 RAM，保留给 simple bus 独立场景和历史参考。
 //
 // 规范：
 //   - 输入端口使用 _i 后缀，输出端口使用 _o 后缀。
-//   - 本模块是仿真/教学 memory model，第一版固定响应，无 valid/ready 握手。
+//   - 本模块是仿真/教学 memory model，采用固定响应语义，无 valid/ready 握手。
+//   - 当前 SoC 主线 testbench 使用 axi_lite_ram；本模块不再承担主线 DMEM slave 职责。
 //   - 内部 memory 为 32 bit word array，CPU 使用 byte address。
 //   - CPU 地址 core_pkg::DMEM_BASE 映射到内部 mem[0]。
 //   - 写端口在时钟上升沿按 byte enable 更新对应 byte lane。

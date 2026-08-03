@@ -436,15 +436,17 @@ write 路径必须处理 W channel 没有地址的问题：
 - 非法外设地址和非法 register offset 的错误层次清楚。
 - side effect 触发点统一为 APB completion。
 
-## 8. 新 AXI data subsystem 集成 `待执行`
+## 8. 新 AXI data subsystem 集成 `已完成`
 
-### 8.1 集成策略
+### 8.1 集成策略 `已完成`
 
 开发期间先让新 AXI data subsystem 与当前 `rtl/soc/data_subsystem.sv` 并行，避免在 adapter/router/bridge 尚未连通时破坏现有 SoC。
 
+本步并行实现使用 `rtl/soc/axi_data_subsystem.sv` 和 `axi_data_subsystem` 模块名，后续在 SoC 切换与旧实现清理节点统一名称。
+
 新模块稳定后，最终主线仍保留一个通用名称 `data_subsystem`；旧 response-delay wrapper 实现由 v7.0 tag 和 UVM DUT snapshot 保存，不在主线长期保留两套同名职责。
 
-### 8.2 集成内容
+### 8.2 集成内容 `已完成`
 
 新的 data subsystem 负责实例化和连接：
 
@@ -471,7 +473,7 @@ write 路径必须处理 W channel 没有地址的问题：
 - simple RAM 固定响应端口。
 - testbench mailbox 或随机延迟配置。
 
-### 8.3 地址和 target 语义
+### 8.3 地址和 target 语义 `已完成`
 
 - DMEM 送往外部 AXI-Lite DMEM port。
 - GPIO0/UART0/TIMER0 送往 APB bridge。
@@ -480,13 +482,13 @@ write 路径必须处理 W channel 没有地址的问题：
 - APB 外设 window 内未定义 offset 走 SLVERR。
 - 保留区分 DMEM/MMIO/undefined 的观察能力；若新增 target enum，应同步 `soc_pkg.sv`，但不修改已冻结 UVM snapshot。
 
-### 8.4 中断和 sideband
+### 8.4 中断和 sideband `已完成`
 
 - GPIO/UART/TIMER interrupt 仍直接汇总到 SoC/core，不经过 AXI/APB transaction channel。
 - GPIO pin、UART RX/TX event 仍是独立 sideband。
 - 总线改造不改变中断 pending、enable、trap entry 或 MRET 语义。
 
-### 8.5 本步完成条件
+### 8.5 本步完成条件 `已完成`
 
 - 新 data subsystem 可以作为独立 elaboration top。
 - core request 能到达正确 AXI target。
@@ -496,9 +498,9 @@ write 路径必须处理 W channel 没有地址的问题：
 - response-delay wrapper 已从新实现中消失。
 - 模块职责以集成为主，没有重新塞回多个重复协议状态机。
 
-## 9. `rv32i_soc` 切换到新 data subsystem `待执行`
+## 9. `rv32i_soc` 切换到新 data subsystem `已完成`
 
-### 9.1 修改文件
+### 9.1 修改文件 `已完成`
 
 主要修改：
 
@@ -508,7 +510,7 @@ write 路径必须处理 W channel 没有地址的问题：
 
 本步在切换 SoC RTL 的同时完成最小 testbench 端口迁移，保证当前仿真 top 不因接口变化而失去编译能力；不在同一节点展开随机 delay、完整 scoreboard 或专项 testcase。
 
-### 9.2 SoC 顶层变化
+### 9.2 SoC 顶层变化 `已完成`
 
 - core 与 data subsystem 之间的 simple bus 接线保持不变。
 - 旧离散 DMEM we/be/addr/wdata/rdata 端口替换为 downstream DMEM AXI-Lite port。
@@ -517,7 +519,7 @@ write 路径必须处理 W channel 没有地址的问题：
 - commit/trap/mem_wait 观察口保持。
 - data transaction 观察口根据新层次更新注释和语义。
 
-### 9.3 最小 testbench 迁移
+### 9.3 最小 testbench 迁移 `已完成`
 
 - `tb_rv32i_soc.sv` 改接新的 downstream DMEM AXI-Lite port。
 - testbench 实例化第 5 章完成的 `axi_lite_ram`，继续承担程序数据镜像和 PASS/FAIL 状态 RAM。
@@ -528,7 +530,7 @@ write 路径必须处理 W channel 没有地址的问题：
 
 本步不提供内部 APB `PREADY` 注入。当前 GPIO0/UART0/TIMER0 在 SoC 集成中固定 `PREADY=1`，APB multi-cycle wait 由第 11 章的 bridge 模块级 testbench 验证。
 
-### 9.4 CPU RTL 边界
+### 9.4 CPU RTL 边界 `已完成`
 
 原则上不修改：
 
@@ -538,7 +540,7 @@ write 路径必须处理 W channel 没有地址的问题：
 
 若集成时发现必须修改 CPU RTL，应先判断是接口适配遗漏还是现有 bug，不因 AXI 五通道方便而把 channel 状态引入 CPU。
 
-### 9.5 本步完成条件
+### 9.5 本步完成条件 `已完成`
 
 - `rv32i_soc` 能完整 elaboration。
 - `tb_rv32i_soc` 能连接新 SoC、AXI-Lite RAM 和现有 ROM/sideband，不引用已经删除的端口。
@@ -549,9 +551,9 @@ write 路径必须处理 W channel 没有地址的问题：
 - 所有删除或新增端口在注释中准确反映。
 - 未引入悬空 AXI/APB channel。
 
-## 10. 主线切换、旧 wrapper 清理与 RTL 收口 `待执行`
+## 10. 主线切换、旧 wrapper 清理与 RTL 收口 `已完成`
 
-### 10.1 主线文件收敛
+### 10.1 主线文件收敛 `已完成`
 
 完成新 SoC RTL 切换后：
 
@@ -561,13 +563,13 @@ write 路径必须处理 W channel 没有地址的问题：
 - 清理主线 RTL 中已经过时的固定响应、wrapper 和 delay input 注释。
 - 保留 v7.0 tag 与 `uvm/v6_0/data_subsystem/dut/rtl` 快照，不回写旧验证资产。
 
-### 10.2 `simple_ram` 和旧接口清理
+### 10.2 `simple_ram` 和旧接口清理 `已完成`
 
-- 检查根目录 `simple_ram.sv` 是否仍被 FPGA 或其它非 v7 快照路径使用。
-- 只有所有主线 filelist 都切换后，才决定删除、保留或明确标记 legacy。
+- 根目录 `simple_ram.sv` 保留为 simple bus 独立场景和历史教学参考，并在头注释中明确标记 legacy。
+- SoC 主线 testbench 已切换为 `axi_lite_ram`，不再实例化 `simple_ram`。
 - 旧 SoC 离散 DMEM 端口和 TB delay 配置不能半切换；主线 RTL 与后续 testbench 必须采用一致边界。
 
-### 10.3 静态检查
+### 10.3 静态检查 `已完成`
 
 RTL 功能阶段先完成：
 
@@ -581,7 +583,7 @@ RTL 功能阶段先完成：
 
 这些检查只说明 RTL 结构闭合，不代替后续动态协议验证。
 
-### 10.4 本步完成条件
+### 10.4 本步完成条件 `已完成`
 
 - 主线只有一个 data subsystem 实现。
 - 旧 wrapper 不再参与主线 AXI/APB transaction。
